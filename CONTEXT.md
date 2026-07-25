@@ -57,12 +57,24 @@ A named, ordered local collection of Completed Games and Analysis Records. It gr
 _Avoid_: Analysis Record, repertoire
 
 **Personal Library**:
-The local collection of a player's persisted Game Records and Studies.
+The local collection of a player's persisted Game Records, Studies, and player-created Variant Definitions.
 _Avoid_: Game history, memory
+
+**Live Store**:
+The app-managed local durable store that is the source of truth for the Personal Library, Record Graph, unfinished sessions, and other Omachess-owned durable state.
+_Avoid_: Database, app data folder, save directory
+
+**Library Portability Package**:
+The versioned, documented export of a player's Omachess library that preserves Game Records, durable annotations, Source Snapshots, Record Graph relationships, Studies, Variant Definitions, and the portable preferences subset for backup and migration.
+_Avoid_: Full backup zip, database dump, library archive
 
 **Archived Game Record**:
 A Game Record retained with its identity and relationships intact but omitted from the Personal Library's default views.
 _Avoid_: Deleted game, closed game
+
+**Permanent Purge**:
+Irreversible removal of a Game Record, Study, or eligible Variant Definition from the Live Store. It is distinct from archive and does not provide undelete inside Omachess.
+_Avoid_: Delete, remove, trash, soft delete
 
 **Saved Snapshot**:
 The latest durable state of a Game Record to which Omachess returns after unsaved changes are lost or discarded.
@@ -93,20 +105,36 @@ _Avoid_: Freeform Position, Variant Workshop
 ## Engine integration
 
 **Engine Profile**:
-Curated identity, presentation, capability, and rating-context information for a recognized Chess Engine.
+Curated identity, presentation, capability, and rating-context information for a recognized Chess Engine, including official artwork and an approximate display rating.
 _Avoid_: Engine metadata, engine preset
+
+**Display Rating**:
+An approximate, player-editable Elo shown on an Engine Profile for presentation. It is not a live engine fact and does not gate readiness or search strength.
+_Avoid_: Engine Elo, UCI_Elo, true rating
 
 **Recognized Engine**:
 A Chess Engine that Omachess can identify and present automatically through an Engine Profile.
 _Avoid_: Common engine, built-in engine
 
+**Engine Catalog**:
+The curated set of engines Omachess offers for recognition and optional install from each engine’s upstream source into the App Engine Store.
+_Avoid_: Package search, engine marketplace, Wikipedia engine list
+
+**App Engine Store**:
+Omachess-private storage of engines installed on demand from upstream, not system-wide packages and not binaries shipped inside the Omachess package.
+_Avoid_: Bundled engines, system engine install, user-wide engine install
+
 **Custom Engine**:
-A Chess Engine that a player registers manually because Omachess does not recognize it automatically.
+A Chess Engine that a player registers manually by executable path because it is outside the Engine Catalog or not auto-discovered.
 _Avoid_: Niche engine, unknown engine
 
 **Engine Discovery**:
-The process of finding installed Chess Engines and matching them to Engine Profiles without player configuration.
-_Avoid_: Engine detection, auto-setup
+Finding catalog engines already present in the App Engine Store or as known system installs, then matching them to Engine Profiles—without scanning or executing arbitrary unknown binaries.
+_Avoid_: Engine detection, auto-setup, filesystem engine scan
+
+**Engine Readiness**:
+Whether a Chess Engine may be used for play or analysis after consent and a successful live UCI probe. Presence of a package or file alone is not readiness.
+_Avoid_: Installed engine, available engine
 
 ## Desktop integration
 
@@ -131,6 +159,26 @@ The first-class Omarchy shell bar-widget plugin that shows active Background Job
 _Avoid_: Omachess shell app, tray app, status applet
 
 ## Chess variants
+
+**Chess Variant**:
+A complete set of playable chess rules: board geometry, piece set, starting position, and rule families that together define legal play and game endings. Standard chess is the built-in default Chess Variant; workshop creations are additional player-defined ones.
+_Avoid_: Fairy-Stockfish INI, engine config
+
+**Variant Definition**:
+The portable, versioned Omachess description of a Chess Variant. It is the canonical product object that Omachess stores, edits, validates, and migrates in the player's local library. Fairy-Stockfish INI and similar engine packaging are compiled from it as adapter artifacts, never the source of truth. Its schema is intended to grow across Omachess releases without abandoning existing definitions.
+_Avoid_: variants.ini, engine config, raw INI
+
+**Draft Variant Definition**:
+A Variant Definition that is not yet Playable—incomplete, failing validation, or re-edited after a previous Playable status—so it cannot start a Played Game or promise engine analysis under those rules.
+_Avoid_: Invalid variant, temporary variant
+
+**Playable Variant Definition**:
+A Variant Definition that has passed Omachess schema validation, deterministic engine-adapter compile, isolated Fairy-Stockfish consistency check, isolated bounded smoke test, and the current engine capability gate, and that carries a Rule-valid starting position.
+_Avoid_: Validated variant, published variant
+
+**Variant Snapshot**:
+The immutable copy of a Variant Definition bound into a Game Record when play or analysis under that Chess Variant begins. Later edits to the library Variant Definition do not change records that already hold a snapshot.
+_Avoid_: Live variant binding, mutable ruleset
 
 **Variant Workshop**:
 The part of Omachess where a player creates a playable Chess Variant from a constrained catalogue of supported boards, pieces, positions, and rules.
