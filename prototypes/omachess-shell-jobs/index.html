@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Omachess shell background controls</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    PROTOTYPE for issue #18.
+    Question: what Omarchy shell plugin makes Omachess background jobs visible
+    and controllable while keeping execution safe across shell restarts?
+    Three structural variants: A bar+popup · B inline pills · C overlay palette.
+  -->
+  <div id="app"></div>
+  <div id="toast-root"></div>
+  <div id="prototype-bar" aria-label="Prototype variant switcher"></div>
+  <script src="app.js"></script>
+</body>
+</html>
