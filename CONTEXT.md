@@ -122,6 +122,14 @@ _Avoid_: Default palette
 The most recently accepted Quattro Palette, retained when a later palette is structurally incompatible.
 _Avoid_: Cached palette
 
+**Background Job**:
+Long-running Omachess work owned by an Omachess background worker—not by the shell—so it can continue after the workspace closes and across `omarchy-shell` restarts. v0.1 exposes every such long task through a general job list (for example Computer Analysis and other lengthy library or engine work), each advertising only the controls it supports.
+_Avoid_: Shell job, background task, engine job
+
+**Background Controls Plugin**:
+The first-class Omarchy shell bar-widget plugin that shows active Background Jobs when any exist, with a summary chip and popup for progress and job-specific actions, desktop notifications on completion or failure, and deep links that open the standalone Omachess workspace on the job’s record.
+_Avoid_: Omachess shell app, tray app, status applet
+
 ## Chess variants
 
 **Variant Workshop**:
