@@ -11,8 +11,9 @@
     A: { key: "A", name: "Cockpit inspector" },
     B: { key: "B", name: "Guided build stepper" },
     C: { key: "C", name: "Definition + console" },
+    D: { key: "D", name: "Guided cockpit (A + B)" },
   };
-  const VARIANT_KEYS = ["A", "B", "C"];
+  const VARIANT_KEYS = ["A", "B", "C", "D"];
 
   const SCENARIOS = [
     { id: "entry", label: "Library & create" },
@@ -318,6 +319,26 @@ capturesToHand = ${on("drops")}`;
     return `<span class="glyph ${white ? "w" : "b"}">${white ? WHITE_GLYPH[entry.glyph] : entry.glyph}</span>`;
   }
 
+  // Rule families that have a place on the board get shown there while they are
+  // being chosen, so the rail is not the only thing that reacts to a toggle.
+  function overlayClass(r, f, ranks, files) {
+    const rules = state.def.rules;
+    if (rules.castling && (r === 0 || r === ranks - 1) && (f === 2 || f === files - 2)) return "zone-castle";
+    if (rules.promotion && (r === 0 || r === ranks - 1)) return "zone-promo";
+    if (rules.flag && r === Math.floor(ranks / 2) && (f === Math.floor(files / 2) - 1 || f === Math.floor(files / 2)))
+      return "zone-flag";
+    return "";
+  }
+
+  function overlayLegendHTML() {
+    const items = [];
+    if (state.def.rules.promotion) items.push(`<span class="legend promo">promotion rank</span>`);
+    if (state.def.rules.castling) items.push(`<span class="legend castle">castling target files</span>`);
+    if (state.def.rules.flag) items.push(`<span class="legend flag">goal squares</span>`);
+    if (!items.length) return `<span class="hint">No rule family with a board footprint is on yet.</span>`;
+    return `<div class="legend-row">${items.join("")}</div>`;
+  }
+
   function boardHTML(opts = {}) {
     const p = preset();
     const rows = opts.rows || state.def.rows;
@@ -330,7 +351,8 @@ capturesToHand = ${on("drops")}`;
           .map((ch, f) => {
             const dark = (r + f) % 2 === 1;
             const last = opts.last && opts.last.includes(`${r}-${f}`);
-            return `<div class="${cls("sq", dark ? "dark" : "light", last && "last")}"
+            const zone = opts.overlay ? overlayClass(r, f, rows.length, files) : "";
+            return `<div class="${cls("sq", dark ? "dark" : "light", last && "last", zone)}"
               ${editable ? `data-act="place" data-r="${r}" data-f="${f}"` : ""}>${pieceCell(ch)}</div>`;
           })
           .join("")
@@ -521,20 +543,22 @@ capturesToHand = ${on("drops")}`;
       </div>`;
   }
 
-  function positionHTML(compact) {
-    const problems = positionProblems(state.def.rows);
+  function trayHTML() {
     const tray = ["K", "Q", "R", "B", "N", "P", "S"]
       .map(
         (c) => `<button class="tray-piece ${state.tray === c ? "on" : ""}" data-act="tray:${c}">${pieceCell(c)}</button>`
       )
       .join("");
-    return `<div class="setup ${compact ? "compact" : ""}">
-      <div class="setup-tray">
-        <span class="tray-label">Place</span>${tray}
-        <button class="tray-piece ${state.tray === "." ? "on" : ""}" data-act="tray:.">⌫</button>
-        <button class="tiny" data-act="reset-position">Reset</button>
-      </div>
-      <div class="fen-row">
+    return `<div class="setup-tray">
+      <span class="tray-label">Place</span>${tray}
+      <button class="tray-piece ${state.tray === "." ? "on" : ""}" data-act="tray:.">⌫</button>
+      <button class="tiny" data-act="reset-position">Reset</button>
+    </div>`;
+  }
+
+  function fenInfoHTML() {
+    const problems = positionProblems(state.def.rows);
+    return `<div class="fen-row">
         <span class="tray-label">FEN</span>
         <code class="fen">${esc(fen(state.def.rows))}</code>
       </div>
@@ -542,8 +566,11 @@ capturesToHand = ${on("drops")}`;
         ${problems.length
           ? `Not yet a Rule-valid starting position — ${esc(problems.join(" "))}`
           : "Rule-valid starting position for this definition"}
-      </div>
-    </div>`;
+      </div>`;
+  }
+
+  function positionHTML(compact) {
+    return `<div class="setup ${compact ? "compact" : ""}">${trayHTML()}${fenInfoHTML()}</div>`;
   }
 
   function recordStageHTML(mode) {
@@ -882,6 +909,137 @@ capturesToHand = ${on("drops")}`;
     </div>`;
   }
 
+  // ── Variant D: guided cockpit (A's shell, B's sequence) ──────
+  const GUIDED = [
+    { n: 1, id: "board", title: "Board", summary: () => `${preset().name} · ${preset().files}×${preset().ranks}` },
+    { n: 2, id: "pieces", title: "Pieces", summary: () => `${state.def.builtins.length} built-in + ${customLetter()}` },
+    { n: 3, id: "position", title: "Starting position", summary: () => (positionProblems(state.def.rows).length ? "incomplete" : "Rule-valid") },
+    { n: 4, id: "rules", title: "Rules", summary: () => `${RULES.filter((r) => state.def.rules[r.id]).length} families` },
+    { n: 5, id: "validate", title: "Validate", summary: () => (isPlayable() ? "Playable" : `${hardBlockers().length} blocker(s)`) },
+  ];
+
+  function renderD() {
+    const sc = state.scenario;
+    const inPlay = sc === "play" || sc === "analysis";
+    const stepIndex = Math.max(0, GUIDED.findIndex((s) => s.id === (sc === "entry" || sc === "gate" ? "validate" : sc)));
+    const current = GUIDED[stepIndex];
+
+    const libRows = LIBRARY_VARIANTS.map(
+      (v) => `<div class="lib-row ${v.id === "wayfarer" ? "on" : ""}" data-act="noop">
+        <span class="lib-name">${esc(v.name)}</span>
+        <span class="lib-sub">${esc(v.sub)}</span>
+        ${v.status === "playable" ? `<span class="dot ok"></span>` : v.status === "draft" ? `<span class="dot draft"></span>` : ""}
+      </div>`
+    ).join("");
+
+    const bodies = {
+      board: presetGridHTML(),
+      pieces: pieceListHTML(),
+      position: `${fenInfoHTML()}<div class="hint small">Place from the tray under the board.</div>`,
+      rules: rulesHTML(),
+      validate: `${sc === "gate" ? snapshotNoteHTML() : ""}${pipelineHTML({ hideRun: true })}`,
+    };
+
+    const steps = GUIDED.map((s, i) => {
+      const done = i < stepIndex;
+      const on = i === stepIndex;
+      return `<li class="gstep ${cls(done && "done", on && "on")}">
+        <button class="gstep-head" data-act="scenario:${s.id}">
+          <span class="gstep-n">${done ? "✓" : s.n}</span>
+          <span class="gstep-title">${esc(s.title)}</span>
+          <span class="gstep-summary">${esc(s.summary())}</span>
+        </button>
+        ${on ? `<div class="gstep-body">${bodies[s.id]}</div>` : ""}
+      </li>`;
+    }).join("");
+
+    const nextStep = GUIDED[Math.min(stepIndex + 1, GUIDED.length - 1)];
+    const prevStep = GUIDED[Math.max(stepIndex - 1, 0)];
+    const railFoot = current.id === "validate"
+      ? `<button data-act="scenario:${prevStep.id}">Back</button>
+         <span class="grow"></span>
+         ${isPlayable()
+           ? `<button class="primary" data-act="scenario:play">Start Played Game</button>`
+           : `<button class="primary" data-act="run-validation" ${state.run && !state.run.done ? "disabled" : ""}>
+                ${state.run && !state.run.done ? "Validating…" : "Validate → Playable"}</button>`}`
+      : `<button data-act="scenario:${prevStep.id}">Back</button>
+         <span class="grow"></span>
+         <button class="primary" data-act="scenario:${nextStep.id}">Continue</button>`;
+
+    const rail = inPlay
+      ? `<div class="def-summary">
+          <span class="lib-name">${esc(state.def.name)}</span>${statusPill()}
+          <button class="tiny" data-act="scenario:board">Edit definition</button>
+        </div>${evalRailHTML()}`
+      : `<div class="rail-head">Build ${esc(state.def.name)}
+          <span class="hint">Step ${stepIndex + 1} of ${GUIDED.length}</span></div>
+        <div class="progress"><span style="width:${((stepIndex + (isPlayable() ? 1 : 0)) / GUIDED.length) * 100}%"></span></div>
+        <ol class="gsteps">${steps}</ol>
+        <div class="rail-foot">${railFoot}</div>`;
+
+    const stageExtras = {
+      board: `<div class="stage-strip"><span class="hint">Geometry updates the stage as you pick — the board is the preview.</span></div>`,
+      pieces: `<div class="stage-strip">
+          <span class="tray-label">In this variant</span>
+          ${state.def.builtins.concat(["S"]).map((c) => `<span class="tray-piece static">${pieceCell(c)}</span>`).join("")}
+        </div>`,
+      position: `<div class="stage-strip">${trayHTML()}</div>`,
+      rules: `<div class="stage-strip">${overlayLegendHTML()}</div>`,
+      validate: `<div class="stage-strip">
+          <span class="hint">${state.run && !state.run.done
+            ? "Validating in throwaway processes — the workspace engine session is untouched."
+            : isPlayable()
+              ? "Playable. The stage is now a board you can start a game on."
+              : "Nothing runs against the live engine session until this passes."}</span>
+        </div>`,
+    }[current.id];
+
+    const stage = inPlay
+      ? recordStageHTML(sc)
+      : `<div class="stage-col">
+          ${boardHTML({
+            editable: current.id === "position",
+            overlay: current.id === "rules",
+            badge: `<span class="pill draft">Step ${stepIndex + 1} · ${esc(current.title)}</span>`,
+          })}
+          ${pocketHTML()}
+          ${stageExtras}
+        </div>`;
+
+    return `<div class="wsD">
+      <header class="topbar">
+        <span class="brand">Omachess</span>
+        <div class="tabs">
+          <button class="tab">Sicilian week</button>
+          <button class="tab on">${esc(state.def.name)}${inPlay ? ` · ${sc === "analysis" ? "analysis" : "played game"}` : ""} ${statusPill()}</button>
+          <button class="tab ghost">+</button>
+        </div>
+        <div class="topbar-right">
+          <span class="chip">Manual · saved</span>${engineChip()}
+          <button class="tiny" data-act="palette">⌘K</button>
+        </div>
+      </header>
+      <div class="panes">
+        <aside class="rail left">
+          <div class="rail-head">Personal Library</div>
+          <div class="rail-group">Variants</div>
+          ${libRows}
+          <div class="rail-group">Games & analysis</div>
+          ${LIBRARY_GAMES.map((g) => `<div class="lib-row" data-act="noop"><span class="lib-name">${esc(g.title)}</span><span class="lib-sub">${esc(g.sub)}</span></div>`).join("")}
+        </aside>
+        <main class="center">${stage}</main>
+        <aside class="rail right guided">${rail}</aside>
+      </div>
+      <footer class="statusbar ${isPlayable() ? "ok" : ""}">
+        <span>${isPlayable() ? "Playable" : "Draft"} v${state.def.version}</span>
+        <span class="sep">·</span>
+        <span>${hardBlockers().length ? `${hardBlockers().length} blocker(s)` : "no blockers"}</span>
+        <span class="grow"></span>
+        <span class="hint">Guided sequence in the rail, board stays the stage.</span>
+      </footer>
+    </div>`;
+  }
+
   // ── Chrome ───────────────────────────────────────────────────
   function scenarioStripHTML() {
     return `<div class="scenario-strip">
@@ -965,7 +1123,7 @@ capturesToHand = ${on("drops")}`;
 
   // ── Render ───────────────────────────────────────────────────
   function render() {
-    const body = { A: renderA, B: renderB, C: renderC }[state.variant]();
+    const body = { A: renderA, B: renderB, C: renderC, D: renderD }[state.variant]();
     document.getElementById("app").innerHTML = scenarioStripHTML() + body;
     document.getElementById("modal-root").innerHTML = modalHTML();
     document.getElementById("prototype-bar").innerHTML = prototypeBarHTML();

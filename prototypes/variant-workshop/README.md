@@ -21,8 +21,13 @@ interaction fidelity.
 | A | Cockpit inspector | The workshop is the existing three-pane cockpit; the right rail swaps from Live Position Analysis to a Definition inspector. A Variant Definition is just another library record. |
 | B | Guided build stepper | The builder takes over the window: Board → Pieces → Position → Rules → Validate → Play, one decision per step, then an explicit handoff back to the ordinary workspace. |
 | C | Definition + console | Workshop as build tooling: a structured definition document on the left, board preview plus a Problems / Engine log / Compiled INI console on the right, with Validate and Play as run buttons. |
+| D | Guided cockpit (A + B) | A's cockpit and full-size board with B's guided sequence folded into the right rail: five numbered steps, one open at a time, Back / Continue in the rail footer. Passing validation turns the rail into Live Position Analysis with an Edit definition link. |
 
-Switch with the floating bar, `←`/`→`, or `?variant=A|B|C`.
+Switch with the floating bar, `←`/`→`, or `?variant=A|B|C|D`.
+
+In D the board is the work surface for every step: the piece tray sits under it
+during Starting position, and rule families with a board footprint (promotion
+rank, castling target files, goal squares) are drawn on it while Rules is open.
 
 ## Scenarios
 
