@@ -124,7 +124,7 @@ Item {
     // The piece being carried, following the pointer.
     Image {
         visible: board.dragging && board.heldPiece !== ""
-        source: board.heldPiece === "" ? "" : "pieces/cburnett/" + board.heldPiece + ".svg"
+        source: PieceSet.artwork(board.heldPiece)
         width: board.cell
         height: board.cell
         x: board.dragX - width / 2

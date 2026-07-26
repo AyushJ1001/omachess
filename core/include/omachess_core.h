@@ -17,7 +17,7 @@
  * Events:
  *   {"type":"board_changed","variant":"standard","orientation":"white|black",
  *    "squares":[{"name":"a8","light":true,"piece":"black_rook"|null}, ...],
- *    "fen":"...", "sideToMove":"white|black", "inCheck":false,
+ *    "sideToMove":"white|black", "inCheck":false,
  *    "moves":[{"from":"e2","to":"e4","promotions":["queen", ...]}, ...],
  *    "moveList":[{"number":1,"side":"white","san":"e4"}, ...],
  *    "cursor":0, "reviewing":false,

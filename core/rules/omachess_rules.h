@@ -1,4 +1,4 @@
-/* The rules-authority C API over vendored Fairy-Stockfish.
+/* The Rules Authority: a C API over vendored Fairy-Stockfish.
  *
  * Fairy-Stockfish is the only source of legal moves, SAN, FEN, and game
  * results in Omachess. This header is the narrowest surface the Rust core

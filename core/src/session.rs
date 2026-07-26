@@ -5,7 +5,7 @@
 //! the workspace drains the event queue when it is ready to apply changes.
 //!
 //! Every chess answer in an event comes from the Played Game, which gets it
-//! from the rules authority. The session decides nothing about chess: it
+//! from the Rules Authority. The session decides nothing about chess: it
 //! decides what a workspace needs to be told.
 
 use crate::board::Orientation;
@@ -119,8 +119,6 @@ impl Session {
         }
         out.push(']');
 
-        out.push_str(",\"fen\":");
-        json::write_string(&mut out, &self.game.fen());
         out.push_str(",\"sideToMove\":");
         json::write_string(&mut out, if self.game.white_to_move() { "white" } else { "black" });
         out.push_str(",\"inCheck\":");
@@ -154,12 +152,12 @@ impl Session {
             if index > 0 {
                 out.push(',');
             }
-            // Move numbers count full moves, so the two halves of one move
-            // share a number.
+            // The number and the side are the engine's, so a variant whose
+            // sides do not simply alternate is still numbered correctly.
             out.push_str("{\"number\":");
-            out.push_str(&(index / 2 + 1).to_string());
+            out.push_str(&played.number.to_string());
             out.push_str(",\"side\":");
-            json::write_string(&mut out, if index % 2 == 0 { "white" } else { "black" });
+            json::write_string(&mut out, played.side);
             out.push_str(",\"san\":");
             json::write_string(&mut out, &played.san);
             out.push('}');

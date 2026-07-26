@@ -86,6 +86,14 @@ _Avoid_: Temporary mode
 
 ## Positions
 
+**Latest Position**:
+The position after the last move of a Game Record. It is the only position of a Played Game in which a move may be played, and the position whose result the record reports.
+_Avoid_: live position, current position, Live Position Analysis
+
+**Displayed Position**:
+The position of a Game Record the player is currently looking at. It is the Latest Position unless the player has navigated to an earlier one, in which case the record is being reviewed and no move may be played.
+_Avoid_: current position, selected position
+
 **Rule-valid Position**:
 A piece arrangement to which the selected chess rules can be applied coherently, whether or not normal play could have produced it.
 _Avoid_: Legal position
@@ -102,7 +110,19 @@ _Avoid_: Illegal position
 Creating or changing a position directly through FEN or manual piece placement, removal, replacement, and relocation rather than through played moves.
 _Avoid_: Freeform Position, Variant Workshop
 
+**Move Offer**:
+Everything a player may do with one piece on one destination square in the Displayed Position: the two squares, and the pieces a promoting pawn may become. Offers come from the Rules Authority, so a workspace can show a player where a picked-up piece may go without deciding it.
+_Avoid_: legal move list, candidate move
+
+**Termination**:
+Why a Played Game ended — checkmate, stalemate, insufficient material, the fifty-move rule, threefold repetition, or a rule belonging to the Chess Variant. It is reported alongside the result, so a draw says which draw it was.
+_Avoid_: game over reason, end state
+
 ## Engine integration
+
+**Rules Authority**:
+The single component that answers every chess question in Omachess: which moves are legal, how a move reads in notation, what a position's FEN is, and whether and how a game has ended. Vendored Fairy-Stockfish is that component, and no other part of Omachess decides any of those, so nothing can drift from it.
+_Avoid_: chess engine, move generator, Chess Engine
 
 **Engine Profile**:
 Curated identity, presentation, capability, and rating-context information for a recognized Chess Engine, including official artwork and an approximate display rating.

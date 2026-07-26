@@ -7,7 +7,7 @@
 //!
 //! The engine is compiled in its large-board configuration. That is the build
 //! the Variant Workshop needs (12 files by 10 ranks), and using one build for
-//! both play and the workshop keeps a single rules authority rather than two
+//! both play and the workshop keeps one Rules Authority rather than two
 //! engines that could answer differently.
 
 use std::env;

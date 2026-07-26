@@ -3,7 +3,7 @@
 //! The workspace never derives squares itself: the core resolves the position
 //! and the board orientation into the exact sequence of squares to draw.
 //!
-//! A position here is only ever read out of a FEN that the rules authority
+//! A position here is only ever read out of a FEN that the Rules Authority
 //! produced (see [`crate::rules`]). Reading the engine's own answer is not a
 //! second rules implementation: nothing in this module decides what may move.
 
@@ -107,7 +107,7 @@ pub struct Position {
 }
 
 impl Position {
-    /// Reads the piece placement out of a FEN produced by the rules authority.
+    /// Reads the piece placement out of a FEN produced by the Rules Authority.
     ///
     /// Returns `None` when the placement field does not describe an 8x8 board
     /// of pieces this build can draw.

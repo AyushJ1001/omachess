@@ -1,4 +1,4 @@
-//! The rules authority: vendored Fairy-Stockfish, and nothing else.
+//! The Rules Authority: vendored Fairy-Stockfish, and nothing else.
 //!
 //! Every legal move, every SAN string, every FEN, and every game result in
 //! Omachess comes from here. Nothing in this crate reimplements a chess rule,
@@ -125,9 +125,13 @@ pub struct LegalMove {
 
 impl LegalMove {
     /// The engine's coordinate notation for this move, for example `e7e8q`.
+    ///
+    /// A promotion to a piece no pawn may become has no notation, and the
+    /// engine rejects the move that comes back.
     pub fn uci(&self) -> String {
-        match &self.promotion {
-            Some(role) => format!("{}{}{}", self.from, self.to, promotion_letter(role)),
+        match self.promotion.as_deref().map(promotion_letter) {
+            Some(Some(letter)) => format!("{}{}{}", self.from, self.to, letter),
+            Some(None) => format!("{}{}?", self.from, self.to),
             None => format!("{}{}", self.from, self.to),
         }
     }
@@ -139,27 +143,20 @@ impl fmt::Display for LegalMove {
     }
 }
 
-/// The piece names Omachess uses for the pieces a pawn may become.
+/// The pieces a pawn may become, each with the letter the engine writes it as,
+/// in the order they are offered to a player.
+const PROMOTIONS: [(&str, char); 4] =
+    [("queen", 'q'), ("rook", 'r'), ("bishop", 'b'), ("knight", 'n')];
+
+/// The names of those pieces, which is the vocabulary the C ABI carries.
 pub const PROMOTION_ROLES: [&str; 4] = ["queen", "rook", "bishop", "knight"];
 
-fn promotion_letter(role: &str) -> char {
-    match role {
-        "queen" => 'q',
-        "rook" => 'r',
-        "bishop" => 'b',
-        "knight" => 'n',
-        _ => '?',
-    }
+fn promotion_letter(role: &str) -> Option<char> {
+    PROMOTIONS.iter().find(|(name, _)| *name == role).map(|(_, letter)| *letter)
 }
 
 fn promotion_role(letter: char) -> Option<&'static str> {
-    match letter {
-        'q' => Some("queen"),
-        'r' => Some("rook"),
-        'b' => Some("bishop"),
-        'n' => Some("knight"),
-        _ => None,
-    }
+    PROMOTIONS.iter().find(|(_, known)| *known == letter).map(|(name, _)| *name)
 }
 
 /// A game under one Chess Variant's rules, positioned at some point in its
@@ -244,6 +241,13 @@ impl Rules {
         unsafe { omachess_rules_side_to_move(self.handle) == 0 }
     }
 
+    /// The number of the full move about to be played, as the engine counts
+    /// them. Both halves of one move share a number.
+    pub fn move_number(&mut self) -> u32 {
+        // The last field of a FEN is the engine's own full-move counter.
+        self.fen().split_whitespace().last().and_then(|n| n.parse().ok()).unwrap_or(1)
+    }
+
     /// Whether the side to move is in check.
     pub fn in_check(&mut self) -> bool {
         unsafe { omachess_rules_in_check(self.handle) == 1 }
@@ -300,6 +304,17 @@ fn parse_uci(uci: &str) -> Option<LegalMove> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_engine_counts_the_moves() {
+        let mut rules = Rules::standard();
+        assert_eq!(rules.move_number(), 1);
+        assert!(rules.push("e2e4"));
+        // Black's reply belongs to the same full move.
+        assert_eq!(rules.move_number(), 1);
+        assert!(rules.push("e7e5"));
+        assert_eq!(rules.move_number(), 2);
+    }
 
     #[test]
     fn the_starting_position_has_twenty_legal_moves() {

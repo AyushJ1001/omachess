@@ -147,16 +147,6 @@ ApplicationWindow {
                         text: (modelData.side === "white"
                                ? modelData.number + ". "
                                : modelData.number + "... ") + modelData.san
-                        onClicked: {
-                            // Walking to a move is the same navigation the
-                            // buttons use, so the core stays the only place
-                            // that knows the position.
-                            const wanted = index + 1
-                            while (WorkspaceSession.cursor > wanted)
-                                WorkspaceSession.navigate("backward")
-                            while (WorkspaceSession.cursor < wanted)
-                                WorkspaceSession.navigate("forward")
-                        }
                     }
                 }
 
@@ -241,8 +231,8 @@ ApplicationWindow {
                     implicitHeight: 64
                     // The choice is shown in the Piece Set the player is
                     // playing with, so it reads as the piece it will become.
-                    icon.source: "pieces/cburnett/"
-                                 + WorkspaceSession.sideToMove + "_" + modelData + ".svg"
+                    icon.source: PieceSet.artwork(
+                        WorkspaceSession.sideToMove + "_" + modelData)
                     icon.width: 44
                     icon.height: 44
                     ToolTip.text: modelData

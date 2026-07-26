@@ -1,19 +1,24 @@
 //! The Played Game: the moves played so far, and where the player is looking.
 //!
-//! A game keeps two things apart. The *live* position is the end of the move
-//! list, the only place a move may be played. The *displayed* position is
+//! A game keeps two positions apart. The Latest Position is the end of the move
+//! list, the only place a move may be played. The Displayed Position is
 //! wherever the player has navigated to, which may be earlier. Navigating is
-//! popping and pushing moves on the rules authority, so the displayed position
+//! popping and pushing moves on the Rules Authority, so the Displayed Position
 //! is always one the engine itself produced.
 
 use crate::board::Position;
 use crate::rules::{LegalMove, Outcome, Rules, Winner, PROMOTION_ROLES};
 
 /// One move as a Game Record keeps it: what was played, and how it reads.
+///
+/// The number and the side come from the engine's own count of the position the
+/// move was played in, not from this move's place in the list.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PlayedMove {
     pub uci: String,
     pub san: String,
+    pub number: u32,
+    pub side: &'static str,
 }
 
 /// Where a navigation request wants to go.
@@ -22,7 +27,7 @@ pub enum Destination {
     Backward,
     Forward,
     Start,
-    /// The live position, where play continues.
+    /// The Latest Position, where play continues.
     End,
 }
 
@@ -41,12 +46,12 @@ impl Destination {
 /// Why a move was not played.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MoveRejected {
-    /// The rules authority does not allow it in this position.
+    /// The Rules Authority does not allow it in this position.
     Illegal,
     /// The game already has a result.
     GameOver,
     /// The player is looking at an earlier position; play continues at the
-    /// live one.
+    /// Latest Position.
     Reviewing,
 }
 
@@ -65,12 +70,12 @@ pub struct MoveOffer {
 }
 
 pub struct Game {
-    /// The rules authority, positioned at the *displayed* position.
+    /// The Rules Authority, positioned at the Displayed Position.
     rules: Rules,
     moves: Vec<PlayedMove>,
-    /// How many moves have been applied to the displayed position.
+    /// How many moves have been applied to the Displayed Position.
     cursor: usize,
-    /// The result of the live position. Navigating does not change it: a
+    /// The result of the Latest Position. Navigating does not change it: a
     /// finished game stays finished while its moves are being reviewed.
     outcome: Outcome,
 }
@@ -87,19 +92,19 @@ impl Game {
     pub fn position(&mut self) -> Position {
         let fen = self.rules.fen();
         Position::from_fen(&fen)
-            .expect("the rules authority always describes a board the core can draw")
+            .expect("the Rules Authority always describes a board the core can draw")
     }
 
     pub fn fen(&mut self) -> String {
         self.rules.fen()
     }
 
-    /// Whether White is to move in the displayed position.
+    /// Whether White is to move in the Displayed Position.
     pub fn white_to_move(&mut self) -> bool {
         self.rules.white_to_move()
     }
 
-    /// Whether the side to move in the displayed position is in check.
+    /// Whether the side to move in the Displayed Position is in check.
     pub fn in_check(&mut self) -> bool {
         self.rules.in_check()
     }
@@ -112,7 +117,7 @@ impl Game {
         self.cursor
     }
 
-    /// Whether the player is looking at an earlier position than the live one.
+    /// Whether the player is looking at an earlier position than the latest.
     pub fn reviewing(&self) -> bool {
         self.cursor < self.moves.len()
     }
@@ -121,7 +126,7 @@ impl Game {
         self.outcome
     }
 
-    /// The move that produced the displayed position, if any.
+    /// The move that produced the Displayed Position, if any.
     pub fn last_move(&self) -> Option<&PlayedMove> {
         self.cursor.checked_sub(1).and_then(|index| self.moves.get(index))
     }
@@ -167,7 +172,7 @@ impl Game {
     /// Plays the move from `from` to `to`, promoting to `promotion` when the
     /// move is a promotion.
     ///
-    /// The rules authority decides whether the move exists; this only decides
+    /// The Rules Authority decides whether the move exists; this only decides
     /// whether the game is in a state to accept one.
     pub fn play(
         &mut self,
@@ -194,22 +199,25 @@ impl Game {
         }
         .uci();
 
-        // Ask for the SAN before playing: it names the move in the position it
-        // was played in, and it is the engine's legality answer too.
+        // Ask the engine about the move in the position it is played in: the
+        // SAN names it there, its number and side belong to that position, and
+        // a move with no SAN is the engine's way of saying it is not legal.
         let Some(san) = self.rules.san(&uci) else {
             return Err(MoveRejected::Illegal);
         };
+        let number = self.rules.move_number();
+        let side = if self.rules.white_to_move() { "white" } else { "black" };
         if !self.rules.push(&uci) {
             return Err(MoveRejected::Illegal);
         }
 
-        self.moves.push(PlayedMove { uci, san });
+        self.moves.push(PlayedMove { uci, san, number, side });
         self.cursor = self.moves.len();
         self.outcome = self.rules.outcome();
         Ok(())
     }
 
-    /// Moves the displayed position, and reports whether it changed.
+    /// Moves the Displayed Position, and reports whether it changed.
     pub fn navigate(&mut self, destination: Destination) -> bool {
         let wanted = match destination {
             Destination::Backward => self.cursor.saturating_sub(1),
@@ -220,7 +228,7 @@ impl Game {
         self.go_to(wanted)
     }
 
-    /// Replays or takes back moves until the displayed position is the one
+    /// Replays or takes back moves until the Displayed Position is the one
     /// after `wanted` moves.
     fn go_to(&mut self, wanted: usize) -> bool {
         if wanted == self.cursor {
@@ -306,15 +314,24 @@ mod tests {
     }
 
     #[test]
+    fn each_move_carries_the_number_and_side_the_engine_gave_it() {
+        let mut game = Game::standard();
+        play(&mut game, &["e2e4", "e7e5", "g1f3"]);
+        let numbered: Vec<(u32, &str)> =
+            game.moves().iter().map(|played| (played.number, played.side)).collect();
+        assert_eq!(numbered, [(1, "white"), (1, "black"), (2, "white")]);
+    }
+
+    #[test]
     fn navigating_backward_and_forward_changes_the_displayed_position() {
         let mut game = Game::standard();
         play(&mut game, &["e2e4", "e7e5"]);
-        let live = game.fen();
+        let latest = game.fen();
 
         assert!(game.navigate(Destination::Backward));
         assert!(game.reviewing());
         assert!(!game.white_to_move());
-        assert_ne!(game.fen(), live);
+        assert_ne!(game.fen(), latest);
         assert_eq!(game.last_move().unwrap().san, "e4");
 
         assert!(game.navigate(Destination::Start));
@@ -328,7 +345,7 @@ mod tests {
         assert_eq!(game.cursor(), 1);
 
         assert!(game.navigate(Destination::End));
-        assert_eq!(game.fen(), live);
+        assert_eq!(game.fen(), latest);
         assert!(!game.reviewing());
         assert!(!game.navigate(Destination::Forward));
     }

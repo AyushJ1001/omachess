@@ -97,7 +97,12 @@ class Screen:
         return self.labels.get("statusLabel", "")
 
     def moves(self) -> list[str]:
-        """The move list as it reads on screen, in playing order."""
+        """The move list as it reads on screen, in playing order.
+
+        Only the moves currently in view are reported, because only those are
+        on screen: a long game's move list scrolls, and a journey that needs to
+        read a move has to have it in view first.
+        """
         numbered = sorted(
             (int(name.removeprefix("move:")), text)
             for name, text in self.labels.items()

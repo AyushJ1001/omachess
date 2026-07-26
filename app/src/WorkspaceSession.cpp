@@ -101,10 +101,14 @@ QString WorkspaceSession::pieceOn(const QString &square) const
     return {};
 }
 
+QJsonArray WorkspaceSession::movesOffered() const
+{
+    return m_state.value(QStringLiteral("moves")).toArray();
+}
+
 bool WorkspaceSession::canPickUp(const QString &square) const
 {
-    const QJsonArray moves = m_state.value(QStringLiteral("moves")).toArray();
-    for (const QJsonValue &value : moves) {
+    for (const QJsonValue &value : movesOffered()) {
         if (value.toObject().value(QStringLiteral("from")).toString() == square)
             return true;
     }
@@ -114,8 +118,7 @@ bool WorkspaceSession::canPickUp(const QString &square) const
 QStringList WorkspaceSession::destinationsFrom(const QString &from) const
 {
     QStringList destinations;
-    const QJsonArray moves = m_state.value(QStringLiteral("moves")).toArray();
-    for (const QJsonValue &value : moves) {
+    for (const QJsonValue &value : movesOffered()) {
         const QJsonObject move = value.toObject();
         if (move.value(QStringLiteral("from")).toString() != from)
             continue;
@@ -128,8 +131,7 @@ QStringList WorkspaceSession::destinationsFrom(const QString &from) const
 
 QStringList WorkspaceSession::promotionsFor(const QString &from, const QString &to) const
 {
-    const QJsonArray moves = m_state.value(QStringLiteral("moves")).toArray();
-    for (const QJsonValue &value : moves) {
+    for (const QJsonValue &value : movesOffered()) {
         const QJsonObject move = value.toObject();
         if (move.value(QStringLiteral("from")).toString() != from
             || move.value(QStringLiteral("to")).toString() != to) {

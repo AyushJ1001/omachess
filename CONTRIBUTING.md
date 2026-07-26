@@ -70,9 +70,9 @@ OMACHESS_BINARY=build/app/omachess OMACHESS_TEST_QPA=wayland \
 ## How the pieces fit together
 
 ```
-vendor/          Fairy-Stockfish, the single rules authority
+vendor/          Fairy-Stockfish, the Rules Authority
 core/            the Rust core: owns all chess state
-  rules/         the C bridge to the rules authority
+  rules/         the C bridge to the Rules Authority
   include/       the command-and-event C ABI header
 app/src/         the workspace: C++ glue around the ABI
 app/qml/         the workspace: how a game looks
@@ -80,7 +80,7 @@ app/qml/         the workspace: how a game looks
 tests/journey/   launch-drive-assert tests against the real application
 ```
 
-## The rules authority
+## The Rules Authority
 
 Every legal move, every SAN string, every FEN, and every game result comes from
 vendored Fairy-Stockfish, through `core/rules/omachess_rules.h`. Nothing above

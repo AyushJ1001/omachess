@@ -1,9 +1,9 @@
-/* The rules-authority bridge: vendored Fairy-Stockfish behind a C API.
+/* The Rules Authority: vendored Fairy-Stockfish behind a C API.
  *
  * This file is the only place in Omachess that knows how to ask
  * Fairy-Stockfish a question. It adds no chess knowledge of its own — every
  * answer here is the engine's answer, translated into the C shapes described
- * in omachess_rules.h. Because it is the single rules authority, nothing
+ * in omachess_rules.h. Because it is the Rules Authority, nothing
  * above it can drift from it.
  *
  * It is modelled on the engine's own library bindings (src/ffishjs.cpp),

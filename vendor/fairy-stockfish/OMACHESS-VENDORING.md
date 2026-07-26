@@ -1,7 +1,7 @@
 # Vendored Fairy-Stockfish
 
-Fairy-Stockfish is the single rules authority for Omachess: legal move
-generation, SAN, FEN, and game results all come from here, so no second rules
+Fairy-Stockfish is the Rules Authority for Omachess: legal move generation,
+SAN, FEN, and game results all come from here, so no second rules
 implementation can drift from it.
 
 - Upstream: <https://github.com/fairy-stockfish/Fairy-Stockfish>

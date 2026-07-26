@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QQmlEngine>
@@ -31,11 +32,11 @@ class WorkspaceSession : public QObject
 
     // The played moves, as {number, side, san} entries in playing order.
     Q_PROPERTY(QVariantList moveList READ moveList NOTIFY boardChanged)
-    // How many of those moves the displayed position includes.
+    // How many of those moves the Displayed Position includes.
     Q_PROPERTY(int cursor READ cursor NOTIFY boardChanged)
     Q_PROPERTY(bool reviewing READ reviewing NOTIFY boardChanged)
 
-    // The squares of the move that produced the displayed position, or empty
+    // The squares of the move that produced the Displayed Position, or empty
     // strings when the position is the start of the game.
     Q_PROPERTY(QString lastMoveFrom READ lastMoveFrom NOTIFY boardChanged)
     Q_PROPERTY(QString lastMoveTo READ lastMoveTo NOTIFY boardChanged)
@@ -115,6 +116,9 @@ private:
     // Submits a command and applies every event it produced.
     void submit(const QByteArray &commandJson);
     void applyEvent(const QByteArray &eventJson);
+
+    // The moves the last event said a player may make.
+    QJsonArray movesOffered() const;
 
     QString field(const QString &name) const;
     QString result(const QString &name) const;

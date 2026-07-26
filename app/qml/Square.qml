@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import Omachess
 
 // One square, whatever piece the core placed on it, and the marks that tell a
 // player what they may do with it.
@@ -56,7 +57,7 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: square.size * 0.02
         visible: square.piece !== "" && !square.inHand
-        source: square.piece === "" ? "" : "pieces/cburnett/" + square.piece + ".svg"
+        source: PieceSet.artwork(square.piece)
         // Vector artwork, rasterised at the size it is actually drawn, so it
         // stays crisp at every board size and under fractional scaling.
         sourceSize.width: Math.max(1, Math.round(square.size * Screen.devicePixelRatio))
