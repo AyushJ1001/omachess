@@ -2,6 +2,10 @@
 //!
 //! The workspace never derives squares itself: the core resolves the position
 //! and the board orientation into the exact sequence of squares to draw.
+//!
+//! A position here is only ever read out of a FEN that the rules authority
+//! produced (see [`crate::rules`]). Reading the engine's own answer is not a
+//! second rules implementation: nothing in this module decides what may move.
 
 /// Which side is at the bottom of the board as the player sees it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,6 +66,21 @@ pub struct Piece {
 }
 
 impl Piece {
+    /// The piece a FEN placement character stands for.
+    fn from_fen_char(character: char) -> Option<Self> {
+        let role = match character.to_ascii_lowercase() {
+            'k' => Role::King,
+            'q' => Role::Queen,
+            'r' => Role::Rook,
+            'b' => Role::Bishop,
+            'n' => Role::Knight,
+            'p' => Role::Pawn,
+            _ => return None,
+        };
+        let color = if character.is_ascii_uppercase() { Color::White } else { Color::Black };
+        Some(Piece { color, role })
+    }
+
     /// The stable identifier the workspace maps to Piece Set artwork.
     pub fn id(self) -> String {
         let color = match self.color {
@@ -88,26 +107,45 @@ pub struct Position {
 }
 
 impl Position {
-    /// The starting position of standard chess.
-    pub fn standard_start() -> Self {
+    /// Reads the piece placement out of a FEN produced by the rules authority.
+    ///
+    /// Returns `None` when the placement field does not describe an 8x8 board
+    /// of pieces this build can draw.
+    pub fn from_fen(fen: &str) -> Option<Self> {
+        let placement = fen.split_whitespace().next()?;
         let mut squares = [None; 64];
-        let back_rank = [
-            Role::Rook,
-            Role::Knight,
-            Role::Bishop,
-            Role::Queen,
-            Role::King,
-            Role::Bishop,
-            Role::Knight,
-            Role::Rook,
-        ];
-        for (file, role) in back_rank.iter().enumerate() {
-            squares[file] = Some(Piece { color: Color::White, role: *role });
-            squares[8 + file] = Some(Piece { color: Color::White, role: Role::Pawn });
-            squares[48 + file] = Some(Piece { color: Color::Black, role: Role::Pawn });
-            squares[56 + file] = Some(Piece { color: Color::Black, role: *role });
+        let mut rank = 7usize;
+        let mut file = 0usize;
+
+        for character in placement.chars() {
+            match character {
+                '/' => {
+                    if file != 8 {
+                        return None;
+                    }
+                    rank = rank.checked_sub(1)?;
+                    file = 0;
+                }
+                '1'..='9' => {
+                    file += character.to_digit(10)? as usize;
+                    if file > 8 {
+                        return None;
+                    }
+                }
+                _ => {
+                    if file >= 8 {
+                        return None;
+                    }
+                    squares[rank * 8 + file] = Some(Piece::from_fen_char(character)?);
+                    file += 1;
+                }
+            }
         }
-        Position { squares }
+
+        if rank != 0 || file != 8 {
+            return None;
+        }
+        Some(Position { squares })
     }
 
     /// The 64 squares in reading order for `orientation`: the top-left square
@@ -136,9 +174,15 @@ impl Position {
 mod tests {
     use super::*;
 
+    const START: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    fn start() -> Position {
+        Position::from_fen(START).unwrap()
+    }
+
     #[test]
     fn white_bottom_starts_at_a8_and_ends_at_h1() {
-        let rendered = Position::standard_start().rendered(Orientation::WhiteBottom);
+        let rendered = start().rendered(Orientation::WhiteBottom);
         assert_eq!(rendered.len(), 64);
         assert_eq!(rendered[0].name, "a8");
         assert_eq!(rendered[63].name, "h1");
@@ -146,21 +190,51 @@ mod tests {
 
     #[test]
     fn flipping_puts_black_at_the_bottom() {
-        let rendered = Position::standard_start().rendered(Orientation::BlackBottom);
+        let rendered = start().rendered(Orientation::BlackBottom);
         assert_eq!(rendered[0].name, "h1");
         assert_eq!(rendered[63].name, "a8");
     }
 
     #[test]
     fn a8_holds_a_black_rook_and_is_light() {
-        let rendered = Position::standard_start().rendered(Orientation::WhiteBottom);
+        let rendered = start().rendered(Orientation::WhiteBottom);
         assert_eq!(rendered[0].piece.unwrap().id(), "black_rook");
         assert!(rendered[0].light);
     }
 
     #[test]
     fn the_middle_four_ranks_are_empty() {
-        let rendered = Position::standard_start().rendered(Orientation::WhiteBottom);
+        let rendered = start().rendered(Orientation::WhiteBottom);
         assert!(rendered[16..48].iter().all(|square| square.piece.is_none()));
+    }
+
+    #[test]
+    fn a_played_move_shows_up_where_the_fen_puts_it() {
+        let position =
+            Position::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+                .unwrap();
+        let squares: Vec<_> = position.rendered(Orientation::WhiteBottom);
+        let named = |name: &str| {
+            squares.iter().find(|square| square.name == name).unwrap().piece.map(Piece::id)
+        };
+        assert_eq!(named("e4").as_deref(), Some("white_pawn"));
+        assert_eq!(named("e2"), None);
+    }
+
+    #[test]
+    fn a_promoted_piece_is_drawn_as_that_piece() {
+        let position = Position::from_fen("4Q3/8/8/8/8/8/6k1/4K3 b - - 0 2").unwrap();
+        let rendered = position.rendered(Orientation::WhiteBottom);
+        assert_eq!(rendered[4].name, "e8");
+        assert_eq!(rendered[4].piece.unwrap().id(), "white_queen");
+    }
+
+    #[test]
+    fn placements_that_are_not_a_drawable_board_are_refused() {
+        // Too few ranks, too many files, and a piece this build cannot draw.
+        assert!(Position::from_fen("8/8/8/8 w - - 0 1").is_none());
+        assert!(Position::from_fen("ppppppppp/8/8/8/8/8/8/8 w - - 0 1").is_none());
+        assert!(Position::from_fen("xnbqkbnr/8/8/8/8/8/8/8 w - - 0 1").is_none());
+        assert!(Position::from_fen("").is_none());
     }
 }
