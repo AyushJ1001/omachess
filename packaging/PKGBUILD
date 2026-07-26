@@ -33,11 +33,10 @@ makedepends=(
 )
 
 # The release tarball is signed; makepkg verifies the detached signature
-# against the key below before anything is built.
+# against this key before anything is built.
 #
-# TODO(release): replace this placeholder with the real release-signing key
-# fingerprint. Until then makepkg fails closed on signature verification.
-validpgpkeys=('0000000000000000000000000000000000000000')
+# Ayush Juvekar <ayushjuvekar@gmail.com>, the Omachess release-signing key.
+validpgpkeys=('9F20651D9E6414773BBDEFD327F405346508E367')
 
 source=(
   "$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz"
