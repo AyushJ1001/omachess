@@ -13,19 +13,14 @@ import shutil
 import subprocess
 import unittest
 
-from installed import (
+from installed import (  # noqa: F401  (also puts the journey harness on the path)
     DESKTOP_ID,
     Workspace,
     installed_files,
     installed_prefix,
     read_desktop_entry,
 )
-
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).resolve().parent.parent / "journey"))
-from test_board_journey import STARTING_POSITION, board_is_drawn  # noqa: E402
+from test_board_journey import STARTING_POSITION, board_is_drawn
 
 
 class InstalledDesktopEntry(unittest.TestCase):

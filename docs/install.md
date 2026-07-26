@@ -33,7 +33,7 @@ Wayland window under dwindle and scrolling layouts.
 | Icon name | `com.omachess.Omachess` |
 | Command | `omachess` |
 
-These three are deliberately the same string, which is what lets the
+The entry ID, app ID, and icon name are deliberately one string, which is what lets the
 compositor, the launcher, and desktop notifications recognise a running
 Omachess as the installed application. **This identity is fixed permanently for
 v0.1 and will not change**, so any window rule, keybinding, or script you write
@@ -66,12 +66,13 @@ Restore by extracting that archive back over the same location.
 
 ## Export
 
-For a backup you can move between machines and Omachess versions, export a
-Library Portability Package from within Omachess instead. It is the versioned,
-documented export of your library — Game Records, durable annotations, Source
-Snapshots, Record Graph relationships, Studies, Variant Definitions, and the
-portable preferences subset. Prefer it over a raw directory copy when
-migrating, and keep an export alongside your file backups.
+A file backup is a copy of one Omachess version's Live Store. For moving your
+library between machines and across Omachess versions, Omachess will export a
+Library Portability Package: a versioned, documented export of your Game
+Records, durable annotations, Source Snapshots, Record Graph relationships,
+Studies, Variant Definitions, and portable preferences. That export is not in
+this release yet, so until it lands, back up the directory above — and take an
+export as well once it is available.
 
 ## Uninstall
 

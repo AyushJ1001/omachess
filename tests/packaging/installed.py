@@ -62,5 +62,3 @@ def read_desktop_entry(path: Path) -> dict[str, str]:
     return entry
 
 
-def read_pkgbuild() -> str:
-    return (REPOSITORY_ROOT / "packaging" / "PKGBUILD").read_text(encoding="utf-8")

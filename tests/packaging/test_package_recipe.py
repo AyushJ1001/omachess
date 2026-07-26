@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import unittest
 
-from installed import REPOSITORY_ROOT, read_pkgbuild
+from installed import REPOSITORY_ROOT
 
 PKGBUILD = REPOSITORY_ROOT / "packaging" / "PKGBUILD"
 
@@ -46,13 +46,26 @@ def recipe() -> dict:
     return json.loads(result.stdout)
 
 
+def printsrcinfo(check: bool = True) -> subprocess.CompletedProcess[str]:
+    """What makepkg makes of the recipe, or a skip if makepkg is absent."""
+    if shutil.which("makepkg") is None:
+        raise unittest.SkipTest("makepkg is not installed")
+    return subprocess.run(
+        ["makepkg", "--printsrcinfo", "-p", str(PKGBUILD)],
+        cwd=PKGBUILD.parent,
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
 class PackageRecipe(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if not PKGBUILD.is_file():
             raise unittest.SkipTest(f"no PKGBUILD at {PKGBUILD}")
         cls.recipe = recipe()
-        cls.text = read_pkgbuild()
+        cls.text = PKGBUILD.read_text(encoding="utf-8")
 
     def test_one_package_named_omachess_builds_from_this_repository(self) -> None:
         self.assertEqual(self.recipe["pkgname"], "omachess")
@@ -83,41 +96,22 @@ class PackageRecipe(unittest.TestCase):
         self.assertNotIn("optdepends", self.text.split("package()")[0].split("depends=")[0])
 
     def test_the_package_carries_no_install_scriptlet(self) -> None:
-        """No Omarchy hooks or launcher refresh for ordinary operation."""
+        """No Omarchy hooks or launcher refresh for ordinary operation.
+
+        What the package actually puts on disk is asserted by the installed
+        footprint journey; this only rules out the scriptlet makepkg would run.
+        """
         self.assertEqual(self.recipe["install"], "")
-        instructions = [
-            line for line in self.text.lower().splitlines() if not line.strip().startswith("#")
-        ]
-        for word in ("hypr", "omarchy-", "hook"):
-            self.assertFalse(
-                [line for line in instructions if word in line],
-                f"the recipe acts on {word!r}",
-            )
 
     def test_the_recipe_passes_makepkg_parsing(self) -> None:
-        if shutil.which("makepkg") is None:
-            self.skipTest("makepkg is not installed")
-        result = subprocess.run(
-            ["makepkg", "--printsrcinfo", "-p", str(PKGBUILD)],
-            cwd=PKGBUILD.parent,
-            capture_output=True,
-            text=True,
-        )
+        result = printsrcinfo(check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pkgname = omachess", result.stdout)
 
     def test_the_recipe_and_its_srcinfo_agree(self) -> None:
         srcinfo = PKGBUILD.parent / ".SRCINFO"
         self.assertTrue(srcinfo.is_file(), "the AUR package needs a committed .SRCINFO")
-        if shutil.which("makepkg") is None:
-            self.skipTest("makepkg is not installed")
-        result = subprocess.run(
-            ["makepkg", "--printsrcinfo", "-p", str(PKGBUILD)],
-            cwd=PKGBUILD.parent,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        result = printsrcinfo()
         self.assertEqual(
             srcinfo.read_text(encoding="utf-8").strip(),
             result.stdout.strip(),
