@@ -91,3 +91,9 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/omachess" \
        "${XDG_CONFIG_HOME:-$HOME/.config}/omachess" \
        "${XDG_STATE_HOME:-$HOME/.local/state}/omachess"
 ```
+
+## License
+
+Omachess is free software under the GNU General Public License, version 3 or
+later. The full text is in `LICENSE` in the source repository and, on an Arch
+system, at `/usr/share/licenses/common/GPL3/license.txt`.

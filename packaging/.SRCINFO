@@ -5,7 +5,7 @@ pkgbase = omachess
 	url = https://github.com/AyushJ1001/omachess
 	arch = x86_64
 	arch = aarch64
-	license = LicenseRef-Omachess
+	license = GPL-3.0-or-later
 	makedepends = cmake>=3.24
 	makedepends = ninja
 	makedepends = rust

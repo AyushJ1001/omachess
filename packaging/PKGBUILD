@@ -12,7 +12,9 @@ pkgrel=1
 pkgdesc='Local-first chess workspace for Omarchy: play, study, and create forms of chess'
 arch=('x86_64' 'aarch64')
 url='https://github.com/AyushJ1001/omachess'
-license=('LicenseRef-Omachess')
+# GPL-3.0-or-later is one of Arch's common licenses, so the package points at
+# /usr/share/licenses/common/GPL3 rather than shipping its own copy.
+license=('GPL-3.0-or-later')
 
 # Omarchy 4 (Quattro) is a hard dependency: Omachess reads the active Quattro
 # theme and targets its compositor, launcher, and notification surfaces.
