@@ -339,7 +339,7 @@ capturesToHand = ${on("drops")}`;
     const badge = opts.badge
       ? `<div class="board-badge">${opts.badge}</div>`
       : "";
-    return `<div class="board-wrap ${opts.size || ""}">
+    return `<div class="board-wrap ${opts.size || "fit"}">
       ${badge}
       <div class="board" style="--files:${files};--ranks:${p.ranks}">${cells}</div>
       <div class="board-foot">${esc(p.name)} · ${p.files}×${p.ranks}${opts.footNote ? " · " + opts.footNote : ""}</div>
@@ -729,7 +729,7 @@ capturesToHand = ${on("drops")}`;
     const bodies = {
       board: `${presetGridHTML()}<div class="step-preview">${boardHTML({ size: "sm" })}</div>`,
       pieces: `<div class="two-col">${pieceListHTML()}<div class="step-preview">${boardHTML({ size: "sm" })}</div></div>`,
-      position: `<div class="two-col">${boardHTML({ editable: true })}${positionHTML()}</div>`,
+      position: `<div class="two-col">${boardHTML({ editable: true, size: "md" })}${positionHTML()}</div>`,
       rules: rulesHTML(),
       validate: `${sc === "gate" ? snapshotNoteHTML() : ""}<div class="two-col">${pipelineHTML()}<div class="issues">${blockerListHTML()}</div></div>`,
     }[cur.id];
@@ -969,7 +969,35 @@ capturesToHand = ${on("drops")}`;
     document.getElementById("app").innerHTML = scenarioStripHTML() + body;
     document.getElementById("modal-root").innerHTML = modalHTML();
     document.getElementById("prototype-bar").innerHTML = prototypeBarHTML();
+    fitBoards();
   }
+
+  // A board with a definite container fills it: square size comes from the
+  // space the layout actually gives the stage, not a fixed pixel constant.
+  const MIN_SQ = 18;
+  const MAX_SQ = 140;
+
+  function fitBoards() {
+    document.querySelectorAll(".board-wrap.fit").forEach((wrap) => {
+      const board = wrap.querySelector(".board");
+      if (!board) return;
+      const files = +board.style.getPropertyValue("--files");
+      const ranks = +board.style.getPropertyValue("--ranks");
+      wrap.style.setProperty("--sq", "0px");
+      const foot = wrap.querySelector(".board-foot");
+      const availW = wrap.clientWidth;
+      const availH = wrap.clientHeight - (foot ? foot.offsetHeight : 0);
+      const sq = Math.floor(Math.min(availW / files, availH / ranks));
+      wrap.style.setProperty("--sq", `${Math.max(MIN_SQ, Math.min(MAX_SQ, sq))}px`);
+    });
+  }
+
+  let fitPending = false;
+  window.addEventListener("resize", () => {
+    if (fitPending) return;
+    fitPending = true;
+    requestAnimationFrame(() => { fitPending = false; fitBoards(); });
+  });
 
   // ── Actions ──────────────────────────────────────────────────
   function runValidation() {

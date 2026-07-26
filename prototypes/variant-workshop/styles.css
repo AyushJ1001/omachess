@@ -139,6 +139,12 @@ kbd {
   border: 1px solid var(--muted); border-radius: 4px; overflow: hidden;
 }
 .board-wrap.sm { --sq: 24px; }
+.board-wrap.md { --sq: 34px; }
+/* a fitted board takes whatever height the stage has left and squares off from it */
+.board-wrap.fit {
+  display: flex; flex-direction: column; align-items: center;
+  flex: 1 1 auto; min-height: 0; width: 100%;
+}
 .sq {
   display: flex; align-items: center; justify-content: center;
   font-size: calc(var(--sq) * 0.72); line-height: 1; user-select: none;
@@ -343,8 +349,14 @@ kbd {
 .dot { width: 7px; height: 7px; border-radius: 50%; align-self: center; }
 .dot.ok { background: var(--green); }
 .dot.draft { background: var(--yellow); }
-.center { overflow: auto; padding: 26px 20px 20px; background: var(--bg-darker); }
-.stage-col { display: flex; flex-direction: column; align-items: flex-start; }
+.center {
+  overflow: hidden; padding: 26px 20px 16px; background: var(--bg-darker);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.stage-col {
+  display: flex; flex-direction: column; align-items: flex-start;
+  flex: 1; min-height: 0; width: 100%; gap: 4px;
+}
 
 .acc { border-bottom: 1px solid var(--muted); }
 .acc-head {
@@ -411,7 +423,7 @@ kbd {
   font-size: 12px; display: flex; gap: 10px; align-items: center;
 }
 .play-cols { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
-.play-cols .stage-col { padding: 26px 20px; overflow: auto; }
+.play-cols .stage-col { padding: 26px 20px 16px; overflow: hidden; }
 
 /* ── Variant C ──────────────────────────────────────────────── */
 .wsC { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -449,7 +461,10 @@ kbd {
 .doc-caret { color: var(--fg-dim); }
 .doc-body { padding: 6px 10px 12px; }
 .preview { display: grid; grid-template-rows: 1fr 260px; min-height: 0; }
-.preview-board { padding: 26px 20px; overflow: auto; background: var(--bg-darker); }
+.preview-board {
+  padding: 26px 20px 12px; overflow: hidden; background: var(--bg-darker);
+  display: flex; flex-direction: column; min-height: 0;
+}
 .console { border-top: 1px solid var(--muted); background: var(--bg-dark); display: flex; flex-direction: column; min-height: 0; }
 .con-tabs { display: flex; gap: 4px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--muted); }
 .con-tab { background: transparent; border-color: transparent; font-size: 11px; padding: 3px 8px; }
