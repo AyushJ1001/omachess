@@ -1,0 +1,24 @@
+pkgbase = omachess
+	pkgdesc = Local-first chess workspace for Omarchy: play, study, and create forms of chess
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/AyushJ1001/omachess
+	arch = x86_64
+	arch = aarch64
+	license = LicenseRef-Omachess
+	makedepends = cmake>=3.24
+	makedepends = ninja
+	makedepends = rust
+	makedepends = cargo
+	makedepends = python>=3.11
+	depends = omarchy>=4.0.0
+	depends = qt6-base
+	depends = qt6-declarative
+	depends = hicolor-icon-theme
+	source = omachess-0.1.0.tar.gz::https://github.com/AyushJ1001/omachess/releases/download/v0.1.0/omachess-0.1.0.tar.gz
+	source = omachess-0.1.0.tar.gz.sig::https://github.com/AyushJ1001/omachess/releases/download/v0.1.0/omachess-0.1.0.tar.gz.sig
+	validpgpkeys = 0000000000000000000000000000000000000000
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = omachess
