@@ -6,4 +6,5 @@
 pub mod board;
 pub mod ffi;
 mod json;
+pub mod rules;
 pub mod session;
