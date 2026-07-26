@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Omachess
+GenericName=Chess Workspace
+Comment=Play, study, and create forms of chess, locally
+Exec=omachess
+Icon=com.omachess.Omachess
+Terminal=false
+Categories=Game;BoardGame;
+Keywords=chess;board game;analysis;engine;
+StartupNotify=true
+StartupWMClass=com.omachess.Omachess
