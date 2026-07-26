@@ -150,6 +150,14 @@ _Avoid_: Default palette
 The most recently accepted Quattro Palette, retained when a later palette is structurally incompatible.
 _Avoid_: Cached palette
 
+**Board Theme**:
+The contrasting square colors and board overlay colors in use, selected by default from the active Quattro Palette and pinnable by the player to an Omachess-owned set independent of the desktop theme.
+_Avoid_: Board skin, board colors
+
+**Piece Set**:
+The artwork used to draw pieces. A player chooses it independently of any palette; its light and dark identities belong to the artwork rather than being derived from a theme.
+_Avoid_: Piece theme, piece colors
+
 **Background Job**:
 Long-running Omachess work owned by an Omachess background worker—not by the shell—so it can continue after the workspace closes and across `omarchy-shell` restarts. v0.1 exposes every such long task through a general job list (for example Computer Analysis and other lengthy library or engine work), each advertising only the controls it supports.
 _Avoid_: Shell job, background task, engine job
