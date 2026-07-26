@@ -137,6 +137,7 @@ kbd {
   grid-template-columns: repeat(var(--files), var(--sq));
   grid-auto-rows: var(--sq);
   border: 1px solid var(--muted); border-radius: 4px; overflow: hidden;
+  flex: 0 0 auto;
 }
 .board-wrap.sm { --sq: 24px; }
 .board-wrap.md { --sq: 34px; }

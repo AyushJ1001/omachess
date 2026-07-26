@@ -132,16 +132,27 @@
     "RNBSQKSBNR",
   ];
 
-  const MID_ROWS_10x8 = [
-    "rnbsqksb.r",
-    "ppppp.pppp",
-    "........n.",
-    ".....p....",
-    ".....P....",
-    "........N.",
-    "PPPPP.PPPP",
-    "RNBSQKSB.R",
-  ];
+  // A few moves off the current starting position, whatever geometry it has —
+  // a hardcoded mid-game board silently mismatches every non-default preset.
+  function midPosition() {
+    const grid = state.def.rows.map((r) => r.split(""));
+    const ranks = grid.length;
+    const files = grid[0] ? grid[0].length : 0;
+    const last = [];
+    const move = (r1, f1, r2, f2) => {
+      if (!grid[r1] || !grid[r2]) return;
+      if (!grid[r1][f1] || grid[r1][f1] === "." || grid[r2][f2] !== ".") return;
+      grid[r2][f2] = grid[r1][f1];
+      grid[r1][f1] = ".";
+      last.push(`${r2}-${f2}`);
+    };
+    const mid = Math.floor(files / 2);
+    move(ranks - 2, mid, ranks - 4, mid);
+    move(1, mid, 3, mid);
+    move(ranks - 1, files - 2, ranks - 3, files - 3);
+    move(0, files - 2, 2, files - 3);
+    return { rows: grid.map((r) => r.join("")), last };
+  }
 
   const MOVES = [
     { n: 1, w: "f4", b: "f5" },
@@ -575,10 +586,11 @@ capturesToHand = ${on("drops")}`;
 
   function recordStageHTML(mode) {
     const analysis = mode === "analysis";
+    const mid = midPosition();
     return `<div class="stage-col">
       ${boardHTML({
-        rows: MID_ROWS_10x8,
-        last: ["5-8", "2-8"],
+        rows: mid.rows,
+        last: mid.last,
         badge: `<span class="pill ok">${analysis ? "Analysis Record" : "Played Game"} · Snapshot v${state.def.version}</span>`,
       })}
       ${pocketHTML()}
@@ -888,7 +900,7 @@ capturesToHand = ${on("drops")}`;
         <section class="preview">
           <div class="preview-board">
             ${inPlay
-              ? boardHTML({ rows: MID_ROWS_10x8, last: ["5-8", "2-8"], badge: `<span class="pill ok">Snapshot v3</span>` })
+              ? boardHTML({ ...midPosition(), badge: `<span class="pill ok">Snapshot v${d.version}</span>` })
               : boardHTML({ editable: sc === "position" })}
             ${pocketHTML()}
           </div>
@@ -1314,11 +1326,25 @@ capturesToHand = ${on("drops")}`;
     render();
   }
 
+  // Changing preset keeps both home ranks anchored to their own edge and widens
+  // around the centre, so the position stays recognisable across geometries.
   function resizeRows(rows, p) {
+    const fitRow = (s) => {
+      if (s.length === p.files) return s;
+      const diff = Math.abs(s.length - p.files);
+      const left = Math.floor(diff / 2);
+      return s.length < p.files
+        ? ".".repeat(left) + s + ".".repeat(diff - left)
+        : s.slice(left, left + p.files);
+    };
+    const empty = ".".repeat(p.files);
+    const home = Math.min(2, Math.floor(p.ranks / 2));
     const out = [];
     for (let r = 0; r < p.ranks; r += 1) {
-      const src = rows[r] || "";
-      out.push((src + ".".repeat(p.files)).slice(0, p.files));
+      if (r < home && rows[r] !== undefined) out.push(fitRow(rows[r]));
+      else if (r >= p.ranks - home && rows[rows.length - (p.ranks - r)] !== undefined)
+        out.push(fitRow(rows[rows.length - (p.ranks - r)]));
+      else out.push(empty);
     }
     return out;
   }
