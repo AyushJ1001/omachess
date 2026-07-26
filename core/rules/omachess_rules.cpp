@@ -91,12 +91,27 @@ public:
     explicit Borrowed(const OmachessRules *rules)
         : lock(engine_mutex())
     {
-        UCI::init_variant(rules->variant);
+        select_variant(rules->variant);
+    }
+
+    // Points the engine's global piece and notation tables at `variant`.
+    // Rebuilding them is expensive, so a game that is already the one in the
+    // engine costs nothing — which is every call in a single-game workspace.
+    static void select_variant(const Variant *variant)
+    {
+        if (current == variant)
+            return;
+        UCI::init_variant(variant);
+        current = variant;
     }
 
 private:
+    static const Variant *current;
+
     std::lock_guard<std::mutex> lock;
 };
+
+const Variant *Borrowed::current = nullptr;
 
 } // namespace
 
@@ -108,7 +123,7 @@ OmachessRules *omachess_rules_new(const char *variant_name, const char *start_fe
     const Variant *variant = find_variant(variant_name ? variant_name : "");
     if (!variant)
         return nullptr;
-    UCI::init_variant(variant);
+    Borrowed::select_variant(variant);
 
     const std::string fen = start_fen && *start_fen ? std::string(start_fen) : variant->startFen;
     // The engine validates the position; a FEN it cannot use is not a game.

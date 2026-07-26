@@ -8,14 +8,17 @@ It needs no account, no hosted backend, and no network access to build or run.
 On Omarchy (Arch), everything is in the official repositories:
 
 ```bash
-sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative python
+sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative \
+  qt6-svg python
 ```
 
 | Tool | Why |
 | --- | --- |
 | CMake ≥ 3.24, Ninja | builds the workspace and drives cargo |
 | Rust (cargo) | builds the core |
+| A C++ toolchain | builds vendored Fairy-Stockfish, which the core links |
 | Qt 6.5+ Quick and Quick Controls | the workspace window |
+| Qt 6 SVG | draws the vector Piece Set artwork |
 | Python 3.11+ | runs the journey tests |
 
 ## Build and run
@@ -29,6 +32,11 @@ cmake --build build
 The one CMake build covers everything: it invokes `cargo` for the Rust core,
 links it into the workspace binary as a static library, and builds the QML
 module. There is no separate cargo step to remember.
+
+The core's own `build.rs` compiles vendored Fairy-Stockfish and the rules
+bridge, so the first build spends a minute or two on the engine and then reuses
+it. Nothing is downloaded: the engine source is in the repository and the core
+has no crate dependencies.
 
 For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
 (`cmake --install build`) puts `omachess` on the path and installs
@@ -62,12 +70,26 @@ OMACHESS_BINARY=build/app/omachess OMACHESS_TEST_QPA=wayland \
 ## How the pieces fit together
 
 ```
+vendor/          Fairy-Stockfish, the single rules authority
 core/            the Rust core: owns all chess state
+  rules/         the C bridge to the rules authority
   include/       the command-and-event C ABI header
 app/src/         the workspace: C++ glue around the ABI
-app/qml/         the workspace: how the board looks
+app/qml/         the workspace: how a game looks
+  pieces/        Piece Set artwork
 tests/journey/   launch-drive-assert tests against the real application
 ```
+
+## The rules authority
+
+Every legal move, every SAN string, every FEN, and every game result comes from
+vendored Fairy-Stockfish, through `core/rules/omachess_rules.h`. Nothing above
+that bridge decides a chess question — not the Rust core, not the C++ glue, not
+QML. A second implementation of any rule, however small, can only drift from
+the engine, so there is not one anywhere.
+
+`vendor/fairy-stockfish/OMACHESS-VENDORING.md` records the pinned commit, what
+was removed, and how to update it.
 
 The workspace holds no chess state. It submits **commands** describing player
 intent (`{"type":"flip_board"}`) and applies the **events** the core answers

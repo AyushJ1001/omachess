@@ -15,7 +15,7 @@ class QQuickWindow;
 // the running application rather than its QML structure.
 //
 // The protocol is newline-delimited JSON in both directions:
-//   {"command":"snapshot"}                    -> window geometry and squares
+//   {"command":"snapshot"}                    -> window geometry, squares, labels
 //   {"command":"key","key":"f"}               -> synthesised key press/release
 //   {"command":"click","target":"flipButton"} -> click the centre of an item
 //   {"command":"resize","width":W,"height":H} -> resize the window
@@ -35,6 +35,9 @@ private:
     void acceptConnection();
     void readCommands(QLocalSocket *socket);
     QJsonObject handle(const QJsonObject &command);
+
+    // Produces a frame, so a command acts on a fully arranged window.
+    void settle();
 
     QJsonObject snapshot() const;
     bool sendKey(const QString &key);

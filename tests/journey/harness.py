@@ -35,6 +35,15 @@ class SquareOnScreen:
     name: str
     piece: str
     light: bool
+    # The marks a player can see: the square a piece was picked up from, a
+    # square it may be dropped on, and the squares of the move just played.
+    selected: bool
+    target: bool
+    last_move: bool
+    # Whether this square's piece is drawn from loaded Piece Set artwork, and
+    # the file it was drawn from.
+    artwork_ready: bool
+    artwork_source: str
     x: float
     y: float
     size: float
@@ -53,6 +62,8 @@ class Screen:
     device_pixel_ratio: float
     platform: str
     squares: tuple[SquareOnScreen, ...]
+    # The text of every named item that shows any, by item name.
+    labels: dict[str, str]
 
     def square(self, name: str) -> SquareOnScreen:
         for square in self.squares:
@@ -69,6 +80,38 @@ class Screen:
     def pieces(self) -> dict[str, str]:
         """Occupied squares, by coordinate."""
         return {square.name: square.piece for square in self.squares if square.piece}
+
+    def targets(self) -> set[str]:
+        """The squares currently marked as somewhere a piece may be dropped."""
+        return {square.name for square in self.squares if square.target}
+
+    def selected(self) -> str | None:
+        """The square a piece has been picked up from, if any."""
+        for square in self.squares:
+            if square.selected:
+                return square.name
+        return None
+
+    def status(self) -> str:
+        """The status line: whose turn it is, or the game's result."""
+        return self.labels.get("statusLabel", "")
+
+    def moves(self) -> list[str]:
+        """The move list as it reads on screen, in playing order."""
+        numbered = sorted(
+            (int(name.removeprefix("move:")), text)
+            for name, text in self.labels.items()
+            if name.startswith("move:")
+        )
+        return [text for _, text in numbered]
+
+    def promotion_choices(self) -> set[str]:
+        """The pieces a promoting pawn is currently being offered."""
+        return {
+            name.removeprefix("promote:")
+            for name in self.labels
+            if name.startswith("promote:")
+        }
 
 
 class Workspace:
@@ -162,6 +205,32 @@ class Workspace:
     def click(self, target: str) -> None:
         self._request({"command": "click", "target": target})
 
+    def click_square(self, square: str) -> None:
+        """Press and release the middle of a board square."""
+        self.click(f"square:{square}")
+
+    def play(self, move: str, *, promotion: str | None = None) -> None:
+        """Play `move`, given as the two squares it joins ("e2e4").
+
+        This is the pointer journey a player takes: pick the piece up, put it
+        down on the destination, and answer the promotion offer when one
+        appears.
+        """
+        self.click_square(move[:2])
+        self.click_square(move[2:4])
+        if promotion is not None:
+            self.click(f"promote:{promotion}")
+
+    def play_all(self, moves: str) -> None:
+        """Play a whole scripted game, given as space-separated moves.
+
+        A move that promotes carries the piece as a fifth character, the way
+        the engine writes it: "g7g8q".
+        """
+        for move in moves.split():
+            promotions = {"q": "queen", "r": "rook", "b": "bishop", "n": "knight"}
+            self.play(move, promotion=promotions.get(move[4:5]))
+
     def resize(self, width: int, height: int) -> None:
         self._request({"command": "resize", "width": width, "height": height})
 
@@ -177,11 +246,17 @@ class Workspace:
             height=raw["height"],
             device_pixel_ratio=raw["devicePixelRatio"],
             platform=raw["platform"],
+            labels=dict(raw["labels"]),
             squares=tuple(
                 SquareOnScreen(
                     name=square["name"],
                     piece=square["piece"],
                     light=square["light"],
+                    selected=square["selected"],
+                    target=square["target"],
+                    last_move=square["lastMove"],
+                    artwork_ready=square["artworkReady"],
+                    artwork_source=square["artworkSource"],
                     x=square["x"],
                     y=square["y"],
                     size=square["size"],

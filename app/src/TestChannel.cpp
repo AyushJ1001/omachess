@@ -118,21 +118,32 @@ void TestChannel::readCommands(QLocalSocket *socket)
     }
 }
 
+void TestChannel::settle()
+{
+    // Layout and item creation are finished during a frame, not when the event
+    // that caused them is delivered. Producing one frame therefore makes every
+    // command act on the window a player would be looking at, rather than on a
+    // half-arranged one.
+    QCoreApplication::processEvents();
+    m_window->grabWindow();
+    QCoreApplication::processEvents();
+}
+
 QJsonObject TestChannel::handle(const QJsonObject &command)
 {
     const QString name = command.value(QStringLiteral("command")).toString();
 
     if (name == QStringLiteral("snapshot")) {
-        // Let pending layout and input work settle so the reply describes what
-        // a player would now see.
-        QCoreApplication::processEvents();
+        settle();
         return QJsonObject{{"ok", true}, {"snapshot", snapshot()}};
     }
     if (name == QStringLiteral("key")) {
+        settle();
         const QString key = command.value(QStringLiteral("key")).toString();
         return QJsonObject{{"ok", sendKey(key)}};
     }
     if (name == QStringLiteral("click")) {
+        settle();
         const QString target = command.value(QStringLiteral("target")).toString();
         return QJsonObject{{"ok", clickTarget(target)}};
     }
@@ -165,11 +176,31 @@ QJsonObject TestChannel::snapshot() const
             {"name", item->objectName().mid(squarePrefix.size())},
             {"piece", item->property("piece").toString()},
             {"light", item->property("light").toBool()},
+            // The marks a player can see on the square: where a picked-up
+            // piece came from, where it may go, and the move just played.
+            {"selected", item->property("selected").toBool()},
+            {"target", item->property("target").toBool()},
+            {"lastMove", item->property("lastMove").toBool()},
+            // Whether the Piece Set artwork is loaded, and which file drew it.
+            {"artworkReady", item->property("artworkReady").toBool()},
+            {"artworkSource", item->property("artworkSource").toString()},
             {"x", topLeft.x()},
             {"y", topLeft.y()},
             {"size", item->width()},
             {"visible", item->isVisible()},
         });
+    }
+
+    // The text of every named item that shows any, so a journey can read the
+    // status line and the move list the way a player reads them.
+    QJsonObject labels;
+    for (QQuickItem *item : items) {
+        const QString name = item->objectName();
+        if (name.isEmpty() || name.startsWith(squarePrefix))
+            continue;
+        const QVariant text = item->property("text");
+        if (text.isValid() && text.canConvert<QString>() && item->isVisible())
+            labels.insert(name, text.toString());
     }
 
     return QJsonObject{
@@ -181,6 +212,7 @@ QJsonObject TestChannel::snapshot() const
         {"devicePixelRatio", m_window->devicePixelRatio()},
         {"platform", QGuiApplication::platformName()},
         {"squares", squares},
+        {"labels", labels},
     };
 }
 

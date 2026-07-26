@@ -1,4 +1,4 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -17,6 +17,19 @@ qt_add_qml_module(omachess
     qml/Main.qml
     qml/Board.qml
     qml/Square.qml
+  RESOURCES
+    qml/pieces/cburnett/white_king.svg
+    qml/pieces/cburnett/white_queen.svg
+    qml/pieces/cburnett/white_rook.svg
+    qml/pieces/cburnett/white_bishop.svg
+    qml/pieces/cburnett/white_knight.svg
+    qml/pieces/cburnett/white_pawn.svg
+    qml/pieces/cburnett/black_king.svg
+    qml/pieces/cburnett/black_queen.svg
+    qml/pieces/cburnett/black_rook.svg
+    qml/pieces/cburnett/black_bishop.svg
+    qml/pieces/cburnett/black_knight.svg
+    qml/pieces/cburnett/black_pawn.svg
   SOURCES
     src/WorkspaceSession.h
     src/WorkspaceSession.cpp
@@ -29,6 +42,8 @@ target_link_libraries(omachess PRIVATE
   Qt6::Quick
   Qt6::QuickControls2
   Qt6::Network
+  # Piece Set artwork is vector, so the workspace needs the SVG image handler.
+  Qt6::Svg
   omachess::core
 )
 
