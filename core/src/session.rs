@@ -13,8 +13,8 @@
 //! residue so a later session can offer restore.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
@@ -40,6 +40,36 @@ pub struct Session {
     clock: Option<GameClock>,
     metadata: GameMetadata,
     setup: Option<PositionSetup>,
+    workshop: Option<VariantDefinition>,
+}
+
+#[derive(Clone, Debug)]
+struct VariantDefinition {
+    preset: String,
+    files: u8,
+    ranks: u8,
+    pieces: String,
+    custom_name: String,
+    custom_letter: String,
+    custom_betza: String,
+    error: String,
+    step: u8,
+}
+
+impl Default for VariantDefinition {
+    fn default() -> Self {
+        Self {
+            preset: "standard-8x8".into(),
+            files: 8,
+            ranks: 8,
+            pieces: "KQRBNP".into(),
+            custom_name: String::new(),
+            custom_letter: String::new(),
+            custom_betza: String::new(),
+            error: String::new(),
+            step: 1,
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -117,6 +147,7 @@ impl Session {
             clock: None,
             metadata: GameMetadata::default(),
             setup: None,
+            workshop: None,
         }
     }
 
@@ -160,6 +191,12 @@ impl Session {
             _ => None,
         };
 
+        let workshop = store
+            .workspace()
+            .residue("variant_definition_draft")
+            .ok()
+            .flatten()
+            .and_then(|value| decode_variant_definition(&value));
         let mut session = Session {
             game: Game::standard(),
             orientation: Orientation::WhiteBottom,
@@ -171,6 +208,7 @@ impl Session {
             clock: None,
             metadata: GameMetadata::default(),
             setup: None,
+            workshop,
         };
         // Remembered open tabs restore their active board on open. Clocks and
         // engines stay idle — that remains a later ticket's job.
@@ -205,6 +243,11 @@ impl Session {
             "place_setup_piece" => self.place_setup_piece(command)?,
             "relocate_setup_piece" => self.relocate_setup_piece(command)?,
             "start_setup_game" => self.start_setup_game()?,
+            "new_variant_definition" => self.new_variant_definition()?,
+            "select_board_preset" => self.select_board_preset(command)?,
+            "set_workshop_step" => self.set_workshop_step(command)?,
+            "toggle_builtin_piece" => self.toggle_builtin_piece(command)?,
+            "set_custom_piece" => self.set_custom_piece(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -218,7 +261,116 @@ impl Session {
                 self.events.push(restore_available_event(offer));
             }
         }
+        if self.workshop.is_some() {
+            self.events.push(self.workshop_changed_event());
+            self.events.push(String::from(
+                "{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"kind\":\"variant\",\"title\":\"Untitled Variant\"}",
+            ));
+        }
         Ok(())
+    }
+
+    fn persist_variant_definition(&self) -> Result<(), CommandError> {
+        let (Some(store), Some(definition)) = (&self.store, &self.workshop) else {
+            return Ok(());
+        };
+        store
+            .workspace()
+            .set_residue(
+                "variant_definition_draft",
+                &encode_variant_definition(definition),
+            )
+            .map_err(|_| CommandError::Store)
+    }
+
+    fn new_variant_definition(&mut self) -> Result<(), CommandError> {
+        self.workshop = Some(VariantDefinition::default());
+        self.persist_variant_definition()
+    }
+
+    fn select_board_preset(&mut self, command: &str) -> Result<(), CommandError> {
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        let (files, ranks) = preset_geometry(&id).ok_or(CommandError::MalformedCommand)?;
+        let (max_files, max_ranks) = engine_geometry();
+        if files > max_files || ranks > max_ranks {
+            return Err(CommandError::RejectedMove);
+        }
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.preset = id;
+        definition.files = files;
+        definition.ranks = ranks;
+        self.persist_variant_definition()
+    }
+
+    fn set_workshop_step(&mut self, command: &str) -> Result<(), CommandError> {
+        let step = json::read_string_field(command, "step")
+            .and_then(|value| value.parse::<u8>().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        self.workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?
+            .step = step.clamp(1, 2);
+        Ok(())
+    }
+
+    fn toggle_builtin_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let code =
+            json::read_string_field(command, "code").ok_or(CommandError::MalformedCommand)?;
+        if matches!(code.as_str(), "K" | "P") {
+            return Ok(());
+        }
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        if definition.pieces.contains(&code) {
+            definition.pieces = definition.pieces.replace(&code, "");
+        } else {
+            definition.pieces.push_str(&code);
+        }
+        self.persist_variant_definition()
+    }
+
+    fn set_custom_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let name = json::read_string_field(command, "name").unwrap_or_default();
+        let letter = json::read_string_field(command, "letter").unwrap_or_default();
+        let betza = json::read_string_field(command, "betza").unwrap_or_default();
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.error.clear();
+        if let Some(offending) = betza.chars().find(|c| {
+            !(if c.is_ascii_uppercase() {
+                "WFDNACZGBRQKHX".contains(*c)
+            } else {
+                "fblrmcipgshe0123456789".contains(*c)
+            })
+        }) {
+            definition.error = format!("Unsupported Betza atom: {offending}");
+            return Ok(());
+        }
+        if name.is_empty()
+            || letter.len() != 1
+            || betza.is_empty()
+            || !betza.chars().any(|c| c.is_ascii_uppercase())
+        {
+            definition.error =
+                "Custom piece needs a name, one letter, and a Betza movement atom.".into();
+            return Ok(());
+        }
+        let letter = letter.to_ascii_uppercase();
+        if definition.pieces.contains(&letter) {
+            definition.error = format!("Piece letter {letter} is already in use.");
+            return Ok(());
+        }
+        definition.custom_name = name;
+        definition.custom_letter = letter;
+        definition.custom_betza = betza;
+        self.persist_variant_definition()
     }
 
     /// Removes and returns the oldest queued event, if any.
@@ -306,7 +458,11 @@ impl Session {
         };
         *remaining = remaining.saturating_sub(elapsed);
         if *remaining == 0 {
-            let loser = if white_to_move { Side::White } else { Side::Black };
+            let loser = if white_to_move {
+                Side::White
+            } else {
+                Side::Black
+            };
             self.game.complete_on_time(loser);
             clock.history.push((clock.white_ms, clock.black_ms));
             clock.last_tick = None;
@@ -401,7 +557,10 @@ impl Session {
         self.setup = Some(PositionSetup {
             position,
             fen: fen.clone(),
-            fen_suffix: fen.split_once(' ').map_or("w - - 0 1", |(_, suffix)| suffix).into(),
+            fen_suffix: fen
+                .split_once(' ')
+                .map_or("w - - 0 1", |(_, suffix)| suffix)
+                .into(),
             rule_valid: true,
             error: String::new(),
         });
@@ -424,8 +583,7 @@ impl Session {
             return Ok(());
         }
         if fields[2] != "-"
-            && (fields[2].chars().any(|c| !"KQkq".contains(c))
-                || fields[2].chars().count() > 4)
+            && (fields[2].chars().any(|c| !"KQkq".contains(c)) || fields[2].chars().count() > 4)
         {
             setup.error = "FEN castling rights must use K, Q, k, q, or “-”.".into();
             return Ok(());
@@ -435,11 +593,16 @@ impl Session {
                 && matches!(fields[3].as_bytes()[0], b'a'..=b'h')
                 && matches!(fields[3].as_bytes()[1], b'3' | b'6'))
         {
-            setup.error = "FEN en-passant target must be a third- or sixth-rank square, or “-”.".into();
+            setup.error =
+                "FEN en-passant target must be a third- or sixth-rank square, or “-”.".into();
             return Ok(());
         }
         if fields[4].parse::<u32>().is_err()
-            || fields[5].parse::<u32>().ok().filter(|number| *number > 0).is_none()
+            || fields[5]
+                .parse::<u32>()
+                .ok()
+                .filter(|number| *number > 0)
+                .is_none()
         {
             setup.error =
                 "FEN move counters must be a non-negative halfmove and positive fullmove number."
@@ -582,12 +745,23 @@ impl Session {
                 },
             })
             .collect();
-        self.game = Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
-        if stored_result.as_ref().is_some_and(|result| result.termination == "time_forfeit") {
-            let loser = if stored_clock.as_ref().is_some_and(|clock| clock.white_ms == 0) {
+        self.game =
+            Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        if stored_result
+            .as_ref()
+            .is_some_and(|result| result.termination == "time_forfeit")
+        {
+            let loser = if stored_clock
+                .as_ref()
+                .is_some_and(|clock| clock.white_ms == 0)
+            {
                 Side::White
-            } else if stored_clock.as_ref().is_some_and(|clock| clock.black_ms == 0)
-                || stored_result.as_ref().is_some_and(|result| result.score == "1-0")
+            } else if stored_clock
+                .as_ref()
+                .is_some_and(|clock| clock.black_ms == 0)
+                || stored_result
+                    .as_ref()
+                    .is_some_and(|result| result.score == "1-0")
             {
                 Side::Black
             } else {
@@ -616,10 +790,7 @@ impl Session {
             return Ok(());
         };
         let now = timestamp_now();
-        let id = self
-            .record_id
-            .clone()
-            .unwrap_or_else(new_record_id);
+        let id = self.record_id.clone().unwrap_or_else(new_record_id);
         let outcome = self.game.outcome();
         let result = if outcome.is_over() {
             Some(RecordResult {
@@ -693,7 +864,10 @@ impl Session {
         record.title = (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone());
         record.payload.participation = Some(encode_metadata(&self.metadata));
         record.updated_at = timestamp_now();
-        store.workspace().upsert_game_record(&record).map_err(|_| CommandError::Store)?;
+        store
+            .workspace()
+            .upsert_game_record(&record)
+            .map_err(|_| CommandError::Store)?;
         self.emit_library_changed();
         self.emit_tabs_changed();
         Ok(())
@@ -763,6 +937,28 @@ impl Session {
         json::write_string(&mut out, self.orientation.name());
 
         out.push_str(",\"squares\":[");
+        if let Some(definition) = &self.workshop {
+            let mut index = 0;
+            for rank in (1..=definition.ranks).rev() {
+                for file in 0..definition.files {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    index += 1;
+                    out.push_str("{\"name\":");
+                    json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
+                    out.push_str(",\"light\":");
+                    out.push_str(if (rank + file) % 2 == 1 {
+                        "true"
+                    } else {
+                        "false"
+                    });
+                    out.push_str(",\"piece\":null}");
+                }
+            }
+            out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
+            return out;
+        }
         let position = self.setup.as_ref().map(|setup| &setup.position);
         let game_position;
         let position = match position {
@@ -949,6 +1145,100 @@ impl Session {
         out.push_str("}}");
         out
     }
+
+    fn workshop_changed_event(&self) -> String {
+        let definition = self
+            .workshop
+            .as_ref()
+            .expect("workshop event needs a definition");
+        let (max_files, max_ranks) = engine_geometry();
+        let mut out = String::from("{\"type\":\"workshop_changed\",\"active\":true,\"step\":");
+        out.push_str(&definition.step.to_string());
+        out.push_str(",\"files\":");
+        out.push_str(&definition.files.to_string());
+        out.push_str(",\"ranks\":");
+        out.push_str(&definition.ranks.to_string());
+        out.push_str(",\"selectedPieces\":");
+        json::write_string(&mut out, &definition.pieces);
+        for (key, value) in [
+            ("customName", &definition.custom_name),
+            ("customLetter", &definition.custom_letter),
+            ("customBetza", &definition.custom_betza),
+            ("error", &definition.error),
+        ] {
+            out.push(',');
+            json::write_string(&mut out, key);
+            out.push(':');
+            json::write_string(&mut out, value);
+        }
+        out.push_str(",\"presets\":[");
+        for (index, (id, name, files, ranks)) in [
+            ("standard-8x8", "Standard 8×8", 8, 8),
+            ("grand-10x8", "Grand 10×8", 10, 8),
+            ("wide-10x10", "Wide 10×10", 10, 10),
+            ("max-12x10", "Max 12×10", 12, 10),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            let available = *files <= max_files && *ranks <= max_ranks;
+            out.push_str("{\"id\":");
+            json::write_string(&mut out, id);
+            out.push_str(",\"name\":");
+            json::write_string(&mut out, name);
+            out.push_str(",\"available\":");
+            out.push_str(if available { "true" } else { "false" });
+            out.push_str(",\"reason\":");
+            json::write_string(
+                &mut out,
+                if available {
+                    ""
+                } else if max_files == 0 {
+                    "No Fairy-Stockfish build detected"
+                } else {
+                    "Detected build supports boards up to 8×8"
+                },
+            );
+            out.push('}');
+        }
+        out.push_str("]}");
+        out.pop();
+        out.push_str(",\"pieces\":[");
+        for (index, (code, name, betza)) in [
+            ("K", "King", "K"),
+            ("Q", "Queen", "Q"),
+            ("R", "Rook", "R"),
+            ("B", "Bishop", "B"),
+            ("N", "Knight", "N"),
+            ("P", "Pawn", "fmWfceF"),
+            ("A", "Archbishop", "BN"),
+            ("C", "Chancellor", "RN"),
+            ("M", "Amazon", "QN"),
+            ("F", "Ferz", "F"),
+            ("W", "Wazir", "W"),
+            ("G", "Grasshopper", "gQ"),
+            ("O", "Cannon", "mRcpR"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"code\":");
+            json::write_string(&mut out, code);
+            out.push_str(",\"name\":");
+            json::write_string(&mut out, name);
+            out.push_str(",\"betza\":");
+            json::write_string(&mut out, betza);
+            out.push('}');
+        }
+        out.push_str("]}");
+        out
+    }
 }
 
 fn encode_metadata(metadata: &GameMetadata) -> String {
@@ -984,7 +1274,10 @@ fn encode_clock(clock: &GameClock) -> String {
         .map(|(white, black)| format!("{white}:{black}"))
         .collect::<Vec<_>>()
         .join(",");
-    format!("{};{};{};{}", clock.initial_ms, clock.white_ms, clock.black_ms, history)
+    format!(
+        "{};{};{};{}",
+        clock.initial_ms, clock.white_ms, clock.black_ms, history
+    )
 }
 
 fn decode_clock(encoded: &str) -> Option<GameClock> {
@@ -1030,6 +1323,63 @@ fn restore_available_event(offer: &RestoreOffer) -> String {
     json::write_string(&mut out, "Restore previous game");
     out.push('}');
     out
+}
+
+fn preset_geometry(id: &str) -> Option<(u8, u8)> {
+    match id {
+        "standard-8x8" => Some((8, 8)),
+        "grand-10x8" => Some((10, 8)),
+        "wide-10x10" => Some((10, 10)),
+        "max-12x10" => Some((12, 10)),
+        _ => None,
+    }
+}
+
+fn engine_geometry() -> (u8, u8) {
+    match std::env::var("OMACHESS_FAIRY_STOCKFISH_CAPABILITIES").as_deref() {
+        Ok("largeboards") => (12, 10),
+        Ok("none") => (0, 0),
+        _ => (8, 8),
+    }
+}
+
+fn encode_variant_definition(definition: &VariantDefinition) -> String {
+    let mut out = String::from("{\"schemaVersion\":\"1\"");
+    let files = definition.files.to_string();
+    let ranks = definition.ranks.to_string();
+    for (key, value) in [
+        ("preset", definition.preset.as_str()),
+        ("files", files.as_str()),
+        ("ranks", ranks.as_str()),
+        ("pieces", definition.pieces.as_str()),
+        ("customName", definition.custom_name.as_str()),
+        ("customLetter", definition.custom_letter.as_str()),
+        ("customBetza", definition.custom_betza.as_str()),
+    ] {
+        out.push(',');
+        json::write_string(&mut out, key);
+        out.push(':');
+        json::write_string(&mut out, value);
+    }
+    out.push('}');
+    out
+}
+
+fn decode_variant_definition(value: &str) -> Option<VariantDefinition> {
+    if json::read_string_field(value, "schemaVersion").as_deref() != Some("1") {
+        return None;
+    }
+    Some(VariantDefinition {
+        preset: json::read_string_field(value, "preset")?,
+        files: json::read_string_field(value, "files")?.parse().ok()?,
+        ranks: json::read_string_field(value, "ranks")?.parse().ok()?,
+        pieces: json::read_string_field(value, "pieces")?,
+        custom_name: json::read_string_field(value, "customName")?,
+        custom_letter: json::read_string_field(value, "customLetter")?,
+        custom_betza: json::read_string_field(value, "customBetza")?,
+        error: String::new(),
+        step: 1,
+    })
 }
 
 fn library_changed_event(records: &[GameRecordSummary]) -> String {

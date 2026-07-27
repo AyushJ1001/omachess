@@ -43,6 +43,35 @@ WorkspaceSession::~WorkspaceSession()
         omachess_session_free(m_session);
 }
 
+void WorkspaceSession::newVariantDefinition()
+{
+    submit(command(QStringLiteral("new_variant_definition")));
+}
+
+void WorkspaceSession::selectBoardPreset(const QString &id)
+{
+    submit(command(QStringLiteral("select_board_preset"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::setWorkshopStep(int step)
+{
+    submit(command(QStringLiteral("set_workshop_step"),
+                   {{QStringLiteral("step"), QString::number(step)}}));
+}
+
+void WorkspaceSession::toggleBuiltinPiece(const QString &code)
+{
+    submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
+}
+
+void WorkspaceSession::setCustomPiece(const QString &name, const QString &letter,
+                                      const QString &betza)
+{
+    submit(command(QStringLiteral("set_custom_piece"),
+                   {{QStringLiteral("name"), name}, {QStringLiteral("letter"), letter},
+                    {QStringLiteral("betza"), betza}}));
+}
+
 void WorkspaceSession::describeBoard()
 {
     submit(command(QStringLiteral("describe_board")));
@@ -314,6 +343,42 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
             m_libraryRecords.append(entry);
         }
         emit libraryChanged();
+        return;
+    }
+    if (type == QStringLiteral("variant_library_changed")) {
+        const QString id = event.value(QStringLiteral("id")).toString();
+        for (const QVariant &record : std::as_const(m_libraryRecords))
+            if (record.toMap().value(QStringLiteral("id")).toString() == id)
+                return;
+        m_libraryRecords.prepend(QVariantMap{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("kind"), event.value(QStringLiteral("kind")).toString()},
+            {QStringLiteral("title"), event.value(QStringLiteral("title")).toString()},
+            {QStringLiteral("resultScore"), QString()},
+            {QStringLiteral("plyCount"), 0},
+        });
+        emit libraryChanged();
+        return;
+    }
+    if (type == QStringLiteral("workshop_changed")) {
+        m_workshopActive = event.value(QStringLiteral("active")).toBool();
+        m_workshopStep = event.value(QStringLiteral("step")).toInt();
+        m_boardFiles = event.value(QStringLiteral("files")).toInt();
+        m_boardRanks = event.value(QStringLiteral("ranks")).toInt();
+        m_selectedPieces.clear();
+        for (QChar code : event.value(QStringLiteral("selectedPieces")).toString())
+            m_selectedPieces.append(code);
+        m_customPieceName = event.value(QStringLiteral("customName")).toString();
+        m_customPieceLetter = event.value(QStringLiteral("customLetter")).toString();
+        m_customPieceBetza = event.value(QStringLiteral("customBetza")).toString();
+        m_betzaError = event.value(QStringLiteral("error")).toString();
+        m_boardPresets.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("presets")).toArray())
+            m_boardPresets.append(value.toObject().toVariantMap());
+        m_pieceCatalogue.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("pieces")).toArray())
+            m_pieceCatalogue.append(value.toObject().toVariantMap());
+        emit workshopChanged();
         return;
     }
     if (type == QStringLiteral("tabs_changed")) {
