@@ -84,6 +84,7 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString customPieceLetter READ customPieceLetter NOTIFY workshopChanged)
     Q_PROPERTY(QString customPieceBetza READ customPieceBetza NOTIFY workshopChanged)
     Q_PROPERTY(QString betzaError READ betzaError NOTIFY workshopChanged)
+    Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
     explicit WorkspaceSession(QObject *parent = nullptr);
@@ -142,6 +143,7 @@ public:
     QString customPieceLetter() const { return m_customPieceLetter; }
     QString customPieceBetza() const { return m_customPieceBetza; }
     QString betzaError() const { return m_betzaError; }
+    QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
     // Asks the core to describe the board it owns. Called once at startup so
     // the first frame is drawn from core-owned state.
@@ -192,6 +194,8 @@ public:
     Q_INVOKABLE void toggleBuiltinPiece(const QString &code);
     Q_INVOKABLE void setCustomPiece(const QString &name, const QString &letter,
                                     const QString &betza);
+    Q_INVOKABLE void importPgn();
+    Q_INVOKABLE void exportPgn(const QStringList &recordIds);
 
     // --- What the core said a player may do -------------------------------
     //
@@ -223,6 +227,7 @@ signals:
     void tabsChanged();
     void restoreChanged();
     void workshopChanged();
+    void pgnImportResultsChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -263,5 +268,6 @@ private:
     QString m_customPieceLetter;
     QString m_customPieceBetza;
     QString m_betzaError;
-
+    QVariantList m_pgnImportResults;
+    QString m_exportPath;
 };

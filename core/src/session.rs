@@ -24,6 +24,7 @@ use omachess_store::{
 use crate::board::{Orientation, Piece, Position};
 use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
+use crate::pgn::{self, ImportEntry, ImportReport, PgnGame};
 use crate::rules::Winner;
 
 pub struct Session {
@@ -250,6 +251,8 @@ impl Session {
             "set_workshop_step" => self.set_workshop_step(command)?,
             "toggle_builtin_piece" => self.toggle_builtin_piece(command)?,
             "set_custom_piece" => self.set_custom_piece(command)?,
+            "import_pgn" => self.import_pgn(command)?,
+            "export_pgn" => self.export_pgn(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -373,6 +376,101 @@ impl Session {
         definition.custom_letter = letter;
         definition.custom_betza = betza;
         self.persist_variant_definition()
+    }
+
+    fn import_pgn(&mut self, command: &str) -> Result<(), CommandError> {
+        let text = json::read_string_field(command, "pgn").ok_or(CommandError::MalformedCommand)?;
+        let Some(store) = self.store.as_ref() else { return Err(CommandError::Store) };
+        let mut results = Vec::new();
+        for (index, entry) in pgn::import(&text).into_iter().enumerate() {
+            match entry {
+                ImportEntry::Imported(imported) => {
+                    let now = timestamp_now();
+                    let id = new_record_id();
+                    let title = pgn::tag_value_from(&imported.tags, "Event");
+                    let metadata = GameMetadata {
+                        white: pgn::tag_value_from(&imported.tags, "White"),
+                        black: pgn::tag_value_from(&imported.tags, "Black"),
+                        event: title.clone(),
+                        date: pgn::tag_value_from(&imported.tags, "Date"),
+                        title: title.clone(),
+                        tags: pgn::encode_tags(&imported.tags),
+                    };
+                    let result = Game::from_history(&imported.start_fen, imported.moves.clone())
+                        .and_then(|game| {
+                            let outcome = game.outcome();
+                            (outcome.is_over() && outcome.winner.score() == imported.result)
+                                .then(|| RecordResult {
+                                    status: status_name(outcome.winner).to_owned(),
+                                    termination: outcome.termination.name().to_owned(),
+                                    score: outcome.winner.score().to_owned(),
+                                })
+                        });
+                    let record = GameRecord {
+                        id: id.clone(), kind: GameRecordKind::Played,
+                        title: (!title.is_empty()).then_some(title.clone()),
+                        result_score: result.as_ref().map(|value| value.score.clone()),
+                        ply_count: imported.moves.len() as u32, archived: false,
+                        created_at: now.clone(), updated_at: now,
+                        payload: GameRecordPayload {
+                            variant: "standard".into(), start_fen: imported.start_fen,
+                            moves: imported.moves.into_iter().map(|played| MoveEntry {
+                                uci: played.uci, san: played.san, number: played.number,
+                                side: played.side.into(),
+                            }).collect(),
+                            result, participation: Some(encode_metadata(&metadata)), clock: None,
+                        },
+                    };
+                    store.workspace().upsert_game_record(&record).map_err(|_| CommandError::Store)?;
+                    results.push(ImportReport::Imported { entry: index + 1, title, id });
+                }
+                ImportEntry::Failed(failure) => {
+                    results.push(ImportReport::Failed(failure));
+                }
+            }
+        }
+        self.events.push(import_results_event(&results));
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn export_pgn(&mut self, command: &str) -> Result<(), CommandError> {
+        let ids = json::read_string_field(command, "ids").ok_or(CommandError::MalformedCommand)?;
+        let Some(store) = self.store.as_ref() else { return Err(CommandError::Store) };
+        let mut documents = Vec::new();
+        for id in ids.split(',').filter(|id| !id.is_empty()) {
+            let record = store.workspace().get_game_record(id)
+                .map_err(|_| CommandError::Store)?.ok_or(CommandError::Store)?;
+            if record.payload.variant != "standard" { continue; }
+            let metadata = decode_metadata(record.payload.participation.as_deref());
+            let mut tags = pgn::decode_tags(&metadata.tags);
+            let site = existing_tag_or(&tags, "Site", "?").to_owned();
+            let round = existing_tag_or(&tags, "Round", "?").to_owned();
+            set_pgn_tag(&mut tags, "Event", value_or_unknown(&metadata.event));
+            set_pgn_tag(&mut tags, "Site", &site);
+            set_pgn_tag(&mut tags, "Date", if metadata.date.is_empty() { "????.??.??" } else { &metadata.date });
+            set_pgn_tag(&mut tags, "Round", &round);
+            set_pgn_tag(&mut tags, "White", value_or_unknown(&metadata.white));
+            set_pgn_tag(&mut tags, "Black", value_or_unknown(&metadata.black));
+            let result = record.payload.result.as_ref().map(|value| value.score.as_str())
+                .or_else(|| tags.iter().find(|(name, _)| name == "Result").map(|(_, value)| value.as_str()))
+                .unwrap_or("*").to_owned();
+            set_pgn_tag(&mut tags, "Result", &result);
+            if record.payload.start_fen != GameRecordPayload::STANDARD_START {
+                set_pgn_tag(&mut tags, "SetUp", "1");
+                set_pgn_tag(&mut tags, "FEN", &record.payload.start_fen);
+            }
+            documents.push(pgn::export(&PgnGame {
+                tags, start_fen: record.payload.start_fen,
+                moves: record.payload.moves.into_iter().map(|entry| PlayedMove {
+                    uci: entry.uci, san: entry.san, number: entry.number,
+                    side: if entry.side == "black" { "black" } else { "white" },
+                }).collect(),
+                result,
+            }));
+        }
+        self.events.push(pgn_export_ready_event(&documents.join("\n")));
+        Ok(())
     }
 
     /// Removes and returns the oldest queued event, if any.
@@ -1461,6 +1559,59 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
     }
     out.push_str("]}");
     out
+}
+
+fn import_results_event(results: &[ImportReport]) -> String {
+    let mut out = String::from("{\"type\":\"pgn_import_results\",\"entries\":[");
+    for (index, result) in results.iter().enumerate() {
+        if index > 0 { out.push(','); }
+        let (entry, title, id, reason) = match result {
+            ImportReport::Imported { entry, title, id } =>
+                (*entry, title.as_str(), Some(id.as_str()), None),
+            ImportReport::Failed(failure) =>
+                (failure.entry, failure.title.as_str(), None, Some(failure.reason.as_str())),
+        };
+        out.push_str("{\"entry\":");
+        out.push_str(&entry.to_string());
+        out.push_str(",\"title\":");
+        json::write_string(&mut out, title);
+        out.push_str(",\"status\":");
+        json::write_string(&mut out, if id.is_some() { "imported" } else { "failed" });
+        if let Some(id) = id {
+            out.push_str(",\"id\":"); json::write_string(&mut out, id);
+        }
+        if let Some(reason) = reason {
+            out.push_str(",\"reason\":"); json::write_string(&mut out, reason);
+        }
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn pgn_export_ready_event(pgn: &str) -> String {
+    let mut out = String::from("{\"type\":\"pgn_export_ready\",\"pgn\":");
+    json::write_string(&mut out, pgn);
+    out.push('}');
+    out
+}
+
+fn set_pgn_tag(tags: &mut Vec<(String, String)>, name: &str, value: &str) {
+    if value.is_empty() { return; }
+    if let Some((_, existing)) = tags.iter_mut().find(|(key, _)| key == name) {
+        *existing = value.to_owned();
+    } else {
+        tags.push((name.to_owned(), value.to_owned()));
+    }
+}
+
+fn value_or_unknown(value: &str) -> &str {
+    if value.is_empty() { "?" } else { value }
+}
+
+fn existing_tag_or<'a>(tags: &'a [(String, String)], name: &str, fallback: &'a str) -> &'a str {
+    tags.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        .unwrap_or(fallback)
 }
 
 fn tabs_changed_event(open_tabs: &[String], active_id: Option<&str>, titles: &[String]) -> String {
