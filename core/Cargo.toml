@@ -11,6 +11,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 omachess-store = { path = "../store" }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -75,6 +75,9 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QVariantList analysisAnnotations READ analysisAnnotations NOTIFY analysisRecordChanged)
     Q_PROPERTY(QVariantList analysisSidelines READ analysisSidelines NOTIFY analysisRecordChanged)
     Q_PROPERTY(QVariantList pinnedEngineLines READ pinnedEngineLines NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QVariantList computerEvaluations READ computerEvaluations NOTIFY analysisRecordChanged)
+    Q_PROPERTY(bool computerAnalysisComplete READ computerAnalysisComplete NOTIFY analysisRecordChanged)
+    Q_PROPERTY(bool defaultAnalysis READ defaultAnalysis NOTIFY analysisRecordChanged)
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
@@ -167,6 +170,9 @@ public:
     QVariantList analysisAnnotations() const { return m_analysisAnnotations; }
     QVariantList analysisSidelines() const { return m_analysisSidelines; }
     QVariantList pinnedEngineLines() const { return m_pinnedEngineLines; }
+    QVariantList computerEvaluations() const { return m_computerEvaluations; }
+    bool computerAnalysisComplete() const { return m_computerAnalysisComplete; }
+    bool defaultAnalysis() const { return m_defaultAnalysis; }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList studies() const { return m_studies; }
@@ -269,6 +275,8 @@ public:
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();
+    Q_INVOKABLE void completeComputerAnalysis(const QString &evaluations);
+    Q_INVOKABLE void designateDefaultAnalysis();
     Q_INVOKABLE void addAnalysisAnnotation(int ply, const QString &text);
     Q_INVOKABLE void addAnalysisSideline(int afterPly, const QString &variation);
     Q_INVOKABLE void pinEngineLine(const QString &positionFen, const QString &evaluation,
@@ -371,4 +379,7 @@ private:
     QVariantList m_analysisAnnotations;
     QVariantList m_analysisSidelines;
     QVariantList m_pinnedEngineLines;
+    QVariantList m_computerEvaluations;
+    bool m_computerAnalysisComplete = false;
+    bool m_defaultAnalysis = false;
 };

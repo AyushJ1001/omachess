@@ -289,6 +289,17 @@ void WorkspaceSession::deriveAnalysisRecord()
     submit(command(QStringLiteral("derive_analysis_record")));
 }
 
+void WorkspaceSession::completeComputerAnalysis(const QString &evaluations)
+{
+    submit(command(QStringLiteral("complete_computer_analysis"),
+                   {{QStringLiteral("evaluations"), evaluations}}));
+}
+
+void WorkspaceSession::designateDefaultAnalysis()
+{
+    submit(command(QStringLiteral("designate_default_analysis")));
+}
+
 void WorkspaceSession::addAnalysisAnnotation(int ply, const QString &text)
 {
     if (!text.trimmed().isEmpty())
@@ -519,6 +530,12 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_pinnedEngineLines.clear();
         for (const QJsonValue &value : event.value(QStringLiteral("pinnedLines")).toArray())
             m_pinnedEngineLines.append(value.toObject().toVariantMap());
+        m_computerEvaluations.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("computerEvaluations")).toArray())
+            m_computerEvaluations.append(value.toObject().toVariantMap());
+        m_computerAnalysisComplete =
+            event.value(QStringLiteral("computerAnalysisComplete")).toBool();
+        m_defaultAnalysis = event.value(QStringLiteral("defaultAnalysis")).toBool();
         emit analysisRecordChanged();
         return;
     }

@@ -39,6 +39,60 @@ ApplicationWindow {
     title: qsTr("Omachess")
     color: Theme.background
     property var selectedLibraryIds: []
+    property bool computerAnalysisRunning: false
+    property string computerAnalysisRunState: ""
+    property int computerAnalysisTargetPly: 0
+    property int computerAnalysisTotal: 0
+    property var computerAnalysisResults: []
+
+    function requestComputerPosition() {
+        EngineManager.clearAnalysis()
+        EngineManager.analyzePosition(WorkspaceSession.displayedFen,
+                                      WorkspaceSession.displayedPositionRuleValid)
+    }
+
+    function startComputerAnalysis() {
+        computerAnalysisRunning = true
+        computerAnalysisRunState = "Running"
+        computerAnalysisTargetPly = 0
+        computerAnalysisTotal = WorkspaceSession.moveList.length + 1
+        computerAnalysisResults = []
+        WorkspaceSession.navigate("start")
+        Qt.callLater(requestComputerPosition)
+    }
+
+    function cancelComputerAnalysis() {
+        computerAnalysisRunning = false
+        computerAnalysisRunState = "Cancelled"
+        EngineManager.clearAnalysis()
+    }
+
+    function collectComputerPosition() {
+        if (!computerAnalysisRunning || !EngineManager.analysisReady
+                || WorkspaceSession.cursor !== computerAnalysisTargetPly)
+            return
+        const variations = EngineManager.analysisVariations
+        const best = variations.length > 0
+                   ? variations[0].replace(/^[0-9]+\. /, "") : ""
+        computerAnalysisResults.push({
+            ply: computerAnalysisTargetPly,
+            position_fen: WorkspaceSession.displayedFen,
+            evaluation: EngineManager.analysisEvaluation,
+            glyph: "",
+            better_line: best.length > 0 ? best : null
+        })
+        computerAnalysisResults = computerAnalysisResults.slice()
+        if (computerAnalysisResults.length === computerAnalysisTotal) {
+            computerAnalysisRunning = false
+            computerAnalysisRunState = "Complete"
+            const encoded = JSON.stringify(computerAnalysisResults)
+            WorkspaceSession.completeComputerAnalysis(encoded)
+            return
+        }
+        computerAnalysisTargetPly += 1
+        WorkspaceSession.navigate("forward")
+        Qt.callLater(requestComputerPosition)
+    }
 
     property string pendingCloseRecordId: ""
     property bool pendingWorkspaceClose: false
@@ -118,6 +172,10 @@ ApplicationWindow {
     Connections {
         target: WorkspaceSession
         function onPgnImportResultsChanged() { pgnImportResultsDialog.open() }
+    }
+    Connections {
+        target: EngineManager
+        function onAnalysisChanged() { workspace.collectComputerPosition() }
     }
 
     Dialog {
@@ -452,11 +510,49 @@ ApplicationWindow {
 
             Button {
                 objectName: "deriveAnalysisButton"
+                visible: (WorkspaceSession.activity === "played_game"
+                          || WorkspaceSession.activity === "analysis_record")
+                         && WorkspaceSession.activeRecordId.length > 0
+                         && (WorkspaceSession.gameOver
+                             || WorkspaceSession.activity === "analysis_record")
+                text: qsTr("Derive analysis")
+                onClicked: WorkspaceSession.deriveAnalysisRecord()
+            }
+
+            Button {
+                objectName: "computerAnalysisButton"
                 visible: WorkspaceSession.activity === "played_game"
                          && WorkspaceSession.activeRecordId.length > 0
                          && WorkspaceSession.gameOver
-                text: qsTr("Derive analysis")
-                onClicked: WorkspaceSession.deriveAnalysisRecord()
+                         && EngineManager.analysisReady
+                         && !workspace.computerAnalysisRunning
+                Layout.maximumWidth: 92
+                text: qsTr("Analyze")
+                onClicked: workspace.startComputerAnalysis()
+            }
+
+            Button {
+                objectName: "cancelComputerAnalysisButton"
+                visible: workspace.computerAnalysisRunning
+                Layout.maximumWidth: 92
+                text: qsTr("Cancel analysis")
+                onClicked: workspace.cancelComputerAnalysis()
+            }
+
+            Label {
+                objectName: "computerAnalysisStatus"
+                visible: workspace.computerAnalysisRunning
+                         || workspace.computerAnalysisResults.length > 0
+                Layout.maximumWidth: 92
+                text: qsTr("%1 / %2 positions")
+                      .arg(workspace.computerAnalysisResults.length)
+                      .arg(workspace.computerAnalysisTotal)
+            }
+
+            Label {
+                objectName: "computerAnalysisState"
+                visible: workspace.computerAnalysisRunState.length > 0
+                text: workspace.computerAnalysisRunState
             }
 
             Button {
@@ -1864,6 +1960,58 @@ ApplicationWindow {
                                   .arg(WorkspaceSession.analysisAnnotationCount)
                             wrapMode: Text.WordWrap
                             Layout.fillWidth: true
+                        }
+                        Label {
+                            objectName: "computerAnalysisState"
+                            visible: WorkspaceSession.computerAnalysisComplete
+                            text: qsTr("Complete")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "defaultAnalysis"
+                            visible: WorkspaceSession.defaultAnalysis
+                            text: qsTr("Default Analysis")
+                            color: Theme.accent
+                        }
+                        Button {
+                            objectName: "designateDefaultAnalysisButton"
+                            visible: WorkspaceSession.activity === "analysis_record"
+                                     && !WorkspaceSession.defaultAnalysis
+                            text: qsTr("Make Default Analysis")
+                            onClicked: WorkspaceSession.designateDefaultAnalysis()
+                        }
+                        Label {
+                            objectName: "computerEvaluationCount"
+                            visible: WorkspaceSession.computerAnalysisComplete
+                            text: qsTr("%1 positions").arg(
+                                WorkspaceSession.computerEvaluations.length)
+                        }
+                        Repeater {
+                            model: WorkspaceSession.computerEvaluations
+                            ColumnLayout {
+                                required property int index
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    objectName: "computerEvaluation:" + (index + 1)
+                                    text: qsTr("After ply %1 · %2")
+                                          .arg(modelData.ply).arg(modelData.evaluation)
+                                }
+                                Label {
+                                    objectName: "computerGlyph:" + (index + 1)
+                                    text: modelData.glyph
+                                    font.bold: true
+                                }
+                                Label {
+                                    objectName: "computerSideline:" + (index + 1)
+                                    visible: modelData.betterLine
+                                             && modelData.betterLine.length > 0
+                                    text: modelData.betterLine || ""
+                                    font.family: "monospace"
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+                            }
                         }
                         TextField {
                             id: annotationInput
