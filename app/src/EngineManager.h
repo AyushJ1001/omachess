@@ -13,6 +13,9 @@ class EngineManager : public QAbstractListModel
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
+    Q_PROPERTY(bool livePlayActive READ livePlayActive NOTIFY livePlayChanged)
+    Q_PROPERTY(QString livePlayEngineSide READ livePlayEngineSide NOTIFY livePlayChanged)
+    Q_PROPERTY(QString livePlayStatus READ livePlayStatus NOTIFY livePlayChanged)
 
 public:
     enum Role {
@@ -37,6 +40,22 @@ public:
 
     Q_INVOKABLE void grantConsent(const QString &key);
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
+    Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
+    Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
+    Q_INVOKABLE void setLivePlayClock(const QString &key, int milliseconds);
+    Q_INVOKABLE int livePlayClock(const QString &key) const;
+    Q_INVOKABLE void startLivePlay(const QString &key, const QString &humanSide);
+    Q_INVOKABLE void updateLivePosition(const QString &moves, const QString &sideToMove,
+                                        bool gameOver, int whiteMs, int blackMs);
+    Q_INVOKABLE void stopLivePlay();
+
+    bool livePlayActive() const { return m_livePlayActive; }
+    QString livePlayEngineSide() const { return m_livePlayEngineSide; }
+    QString livePlayStatus() const { return m_livePlayStatus; }
+
+signals:
+    void livePlayChanged();
+    void liveMove(const QString &from, const QString &to, const QString &promotion);
 
 private:
     struct Profile {
@@ -58,7 +77,18 @@ private:
         bool identityMismatch = false;
     };
 
-    enum class Stage { Idle, Starting, Uci, Ready, Search, Shutdown };
+    enum class Stage {
+        Idle,
+        Starting,
+        Uci,
+        Ready,
+        Search,
+        Shutdown,
+        LiveStarting,
+        LiveUci,
+        LiveReady,
+        LiveSearch
+    };
 
     void discover();
     QString discoverPath(const Profile &profile) const;
@@ -73,6 +103,8 @@ private:
     bool identityMatches(const Profile &profile) const;
     void stopProcess();
     int deadline(int productionMs) const;
+    void failLivePlay(const QString &reason);
+    void requestLiveMove();
 
     QList<Profile> m_profiles;
     QProcess m_process;
@@ -82,4 +114,12 @@ private:
     int m_active = -1;
     bool m_registrationRequired = false;
     bool m_sawMalformedHandshake = false;
+    bool m_livePlayActive = false;
+    QString m_livePlayEngineSide;
+    QString m_livePlayStatus;
+    QString m_liveMoves;
+    QString m_liveSideToMove;
+    int m_liveWhiteMs = 0;
+    int m_liveBlackMs = 0;
+    int m_liveSearchTimeMs = 250;
 };

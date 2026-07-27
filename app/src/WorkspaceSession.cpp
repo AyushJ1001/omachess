@@ -167,6 +167,14 @@ QVariantList WorkspaceSession::moveList() const
     return moves;
 }
 
+QString WorkspaceSession::uciMoves() const
+{
+    QStringList moves;
+    for (const QJsonValue &value : m_state.value(QStringLiteral("moveList")).toArray())
+        moves.append(value.toObject().value(QStringLiteral("uci")).toString());
+    return moves.join(QLatin1Char(' '));
+}
+
 bool WorkspaceSession::gameOver() const
 {
     return m_state.value(QStringLiteral("result"))

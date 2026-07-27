@@ -186,10 +186,25 @@ ApplicationWindow {
 
     Connections {
         target: WorkspaceSession
-        function onBoardChanged() { actionSource.rebuild() }
+        function onBoardChanged() {
+            actionSource.rebuild()
+            EngineManager.updateLivePosition(
+                WorkspaceSession.uciMoves,
+                WorkspaceSession.sideToMove,
+                WorkspaceSession.gameOver,
+                WorkspaceSession.whiteClockMs,
+                WorkspaceSession.blackClockMs)
+        }
         function onLibraryChanged() { actionSource.rebuild() }
         function onTabsChanged() { actionSource.rebuild() }
         function onRestoreChanged() { actionSource.rebuild() }
+    }
+
+    Connections {
+        target: EngineManager
+        function onLiveMove(from, to, promotion) {
+            WorkspaceSession.playMove(from, to, promotion)
+        }
     }
 
     Repeater {
@@ -644,6 +659,9 @@ ApplicationWindow {
 
                             Board {
                                 id: board
+                                inputEnabled: !EngineManager.livePlayActive
+                                              || WorkspaceSession.sideToMove
+                                                 !== EngineManager.livePlayEngineSide
                                 anchors.centerIn: parent
                                 side: Math.max(0, Math.min(boardArea.width, boardArea.height))
 
@@ -784,6 +802,9 @@ ApplicationWindow {
                             required property string artworkProvenance
                             required property bool found
                             required property bool consentRequired
+                            property bool showLivePlaySettings: false
+                            property int liveSearchTime: EngineManager.livePlaySearchTime(key)
+                            property int liveClock: EngineManager.livePlayClock(key)
 
                             width: engines.width
                             padding: 6
@@ -851,8 +872,109 @@ ApplicationWindow {
                                     text: qsTr("Allow and probe")
                                     onClicked: EngineManager.grantConsent(key)
                                 }
+                                RowLayout {
+                                    visible: readinessState.indexOf("Ready") === 0
+                                             && !EngineManager.livePlayActive
+                                    Layout.fillWidth: true
+                                    Button {
+                                        objectName: "playWhite:" + key
+                                        text: qsTr("Play as White")
+                                        onClicked: {
+                                            WorkspaceSession.newGame()
+                                            WorkspaceSession.configureClock(liveClock)
+                                            EngineManager.startLivePlay(key, "white")
+                                        }
+                                    }
+                                    Button {
+                                        objectName: "playBlack:" + key
+                                        text: qsTr("Play as Black")
+                                        onClicked: {
+                                            WorkspaceSession.newGame()
+                                            WorkspaceSession.configureClock(liveClock)
+                                            EngineManager.startLivePlay(key, "black")
+                                            EngineManager.updateLivePosition(
+                                                WorkspaceSession.uciMoves,
+                                                WorkspaceSession.sideToMove,
+                                                WorkspaceSession.gameOver,
+                                                WorkspaceSession.whiteClockMs,
+                                                WorkspaceSession.blackClockMs)
+                                        }
+                                    }
+                                }
+                                Button {
+                                    objectName: "livePlaySettings:" + key
+                                    visible: readinessState.indexOf("Ready") === 0
+                                    text: qsTr("Live-play settings")
+                                    checkable: true
+                                    checked: showLivePlaySettings
+                                    onClicked: showLivePlaySettings = checked
+                                }
+                                ColumnLayout {
+                                    visible: showLivePlaySettings
+                                    Layout.fillWidth: true
+
+                                    Label {
+                                        objectName: "livePlaySetting:" + key
+                                        text: qsTr("Live play · %1 ms per move").arg(
+                                            liveSearchTime)
+                                        color: Theme.muted
+                                    }
+                                    ComboBox {
+                                        objectName: "livePlaySearchTime:" + key
+                                        Layout.fillWidth: true
+                                        model: [
+                                            { text: qsTr("50 ms per move"), value: 50 },
+                                            { text: qsTr("100 ms per move"), value: 100 },
+                                            { text: qsTr("250 ms per move"), value: 250 },
+                                            { text: qsTr("1 second per move"), value: 1000 }
+                                        ]
+                                        textRole: "text"
+                                        currentIndex: {
+                                            const current = liveSearchTime
+                                            for (let index = 0; index < model.length; ++index)
+                                                if (model[index].value === current)
+                                                    return index
+                                            return 2
+                                        }
+                                        onActivated: {
+                                            EngineManager.setLivePlaySearchTime(
+                                                key, model[currentIndex].value)
+                                            liveSearchTime = model[currentIndex].value
+                                        }
+                                    }
+                                    ComboBox {
+                                        objectName: "livePlayClock:" + key
+                                        Layout.fillWidth: true
+                                        model: [
+                                            { text: qsTr("No clock"), value: 0 },
+                                            { text: qsTr("1 second"), value: 1000 },
+                                            { text: qsTr("1 minute"), value: 60000 },
+                                            { text: qsTr("3 minutes"), value: 180000 }
+                                        ]
+                                        textRole: "text"
+                                        currentIndex: {
+                                            for (let index = 0; index < model.length; ++index)
+                                                if (model[index].value === liveClock)
+                                                    return index
+                                            return 0
+                                        }
+                                        onActivated: {
+                                            liveClock = model[currentIndex].value
+                                            EngineManager.setLivePlayClock(key, liveClock)
+                                        }
+                                    }
+                                }
                             }
                         }
+                    }
+
+                    Label {
+                        objectName: "livePlayStatus"
+                        Layout.fillWidth: true
+                        visible: EngineManager.livePlayStatus.length > 0
+                        text: EngineManager.livePlayStatus
+                        wrapMode: Text.WordWrap
+                        color: Theme.muted
                     }
 
                     Rectangle {

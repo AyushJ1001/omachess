@@ -18,6 +18,7 @@ Item {
 
     // The width and height of the whole board.
     property real side: 640
+    property bool inputEnabled: true
 
     // The square a piece has been picked up from, or "" when the player is
     // holding nothing.
@@ -140,6 +141,7 @@ Item {
 
     MouseArea {
         anchors.fill: parent
+        enabled: board.inputEnabled
         acceptedButtons: Qt.LeftButton
 
         onPressed: function (mouse) {
