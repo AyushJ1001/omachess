@@ -43,6 +43,7 @@ class SquareOnScreen:
     selected: bool
     target: bool
     last_move: bool
+    footprint: str
     # Whether this square's piece is drawn from loaded Piece Set artwork, and
     # the file it was drawn from.
     artwork_ready: bool
@@ -500,6 +501,7 @@ class Workspace:
                     selected=square["selected"],
                     target=square["target"],
                     last_move=square["lastMove"],
+                    footprint=square["footprint"],
                     artwork_ready=square["artworkReady"],
                     artwork_source=square["artworkSource"],
                     x=square["x"],

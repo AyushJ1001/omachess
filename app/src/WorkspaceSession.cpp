@@ -62,6 +62,18 @@ void WorkspaceSession::setWorkshopStep(int step)
                    {{QStringLiteral("step"), QString::number(step)}}));
 }
 
+void WorkspaceSession::placeWorkshopPiece(const QString &square, const QString &piece)
+{
+    submit(command(QStringLiteral("place_workshop_piece"),
+                   {{QStringLiteral("square"), square}, {QStringLiteral("piece"), piece}}));
+}
+
+void WorkspaceSession::toggleVariantRule(const QString &rule)
+{
+    submit(command(QStringLiteral("toggle_variant_rule"),
+                   {{QStringLiteral("rule"), rule}}));
+}
+
 void WorkspaceSession::toggleBuiltinPiece(const QString &code)
 {
     submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
@@ -434,6 +446,10 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_customPieceLetter = event.value(QStringLiteral("customLetter")).toString();
         m_customPieceBetza = event.value(QStringLiteral("customBetza")).toString();
         m_betzaError = event.value(QStringLiteral("error")).toString();
+        m_variantFen = event.value(QStringLiteral("fen")).toString();
+        m_workshopPositionRuleValid = event.value(QStringLiteral("ruleValid")).toBool();
+        m_variantRules = event.value(QStringLiteral("rules")).toObject().toVariantMap();
+        m_ruleConflict = event.value(QStringLiteral("ruleConflict")).toString();
         m_boardPresets.clear();
         for (const QJsonValue &value : event.value(QStringLiteral("presets")).toArray())
             m_boardPresets.append(value.toObject().toVariantMap());

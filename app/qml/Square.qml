@@ -28,6 +28,7 @@ Rectangle {
     property bool target: false
     // This square belongs to the move that produced the position on screen.
     property bool lastMove: false
+    property string footprint: ""
 
     // Whether the Piece Set artwork for this square's piece is loaded and
     // drawn, and which file it came from. An empty square has no artwork.
@@ -52,6 +53,16 @@ Rectangle {
         opacity: square.selected ? 0.45 : 0
     }
 
+    Rectangle {
+        anchors.fill: parent
+        visible: square.footprint !== ""
+        color: square.footprint === "promotion" ? Theme.accent
+             : square.footprint === "castling" ? Theme.warning : Theme.success
+        opacity: 0.28
+        border.color: color
+        border.width: Math.max(2, square.size * 0.05)
+    }
+
     Image {
         id: artwork
         anchors.fill: parent
@@ -64,6 +75,15 @@ Rectangle {
         sourceSize.height: sourceSize.width
         fillMode: Image.PreserveAspectFit
         mipmap: true
+    }
+
+    Text {
+        anchors.centerIn: parent
+        visible: square.piece.indexOf("_fairy_") >= 0
+        text: square.piece.slice(square.piece.lastIndexOf("_") + 1)
+        color: square.piece.indexOf("white_") === 0 ? "white" : "black"
+        font.bold: true
+        font.pixelSize: square.size * 0.52
     }
 
     // Where the picked-up piece may be dropped: a dot on an empty square, a

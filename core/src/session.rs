@@ -12,6 +12,7 @@
 //! Game Record's Saved Snapshot, and closing the session records workspace
 //! residue so a later session can offer restore.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,7 +26,7 @@ use crate::board::{Orientation, Piece, Position};
 use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
 use crate::pgn::{self, ImportEntry, ImportReport, PgnGame};
-use crate::rules::Winner;
+use crate::rules::{Rules, Winner};
 
 pub struct Session {
     game: Game,
@@ -72,6 +73,14 @@ struct VariantDefinition {
     custom_name: String,
     custom_letter: String,
     custom_betza: String,
+    placement: BTreeMap<String, String>,
+    promotion: bool,
+    castling: bool,
+    double_step: bool,
+    extinction: bool,
+    goal: bool,
+    mandatory_capture: bool,
+    drops: bool,
     error: String,
     step: u8,
 }
@@ -86,6 +95,14 @@ impl Default for VariantDefinition {
             custom_name: String::new(),
             custom_letter: String::new(),
             custom_betza: String::new(),
+            placement: BTreeMap::new(),
+            promotion: true,
+            castling: true,
+            double_step: true,
+            extinction: false,
+            goal: false,
+            mandatory_capture: false,
+            drops: false,
             error: String::new(),
             step: 1,
         }
@@ -279,6 +296,8 @@ impl Session {
             "set_workshop_step" => self.set_workshop_step(command)?,
             "toggle_builtin_piece" => self.toggle_builtin_piece(command)?,
             "set_custom_piece" => self.set_custom_piece(command)?,
+            "place_workshop_piece" => self.place_workshop_piece(command)?,
+            "toggle_variant_rule" => self.toggle_variant_rule(command)?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
             _ => return Err(CommandError::UnknownCommand),
@@ -335,6 +354,7 @@ impl Session {
         definition.preset = id;
         definition.files = files;
         definition.ranks = ranks;
+        definition.placement.clear();
         self.persist_variant_definition()
     }
 
@@ -345,8 +365,51 @@ impl Session {
         self.workshop
             .as_mut()
             .ok_or(CommandError::MalformedCommand)?
-            .step = step.clamp(1, 2);
+            .step = step.clamp(1, 4);
         Ok(())
+    }
+
+    fn place_workshop_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let square =
+            json::read_string_field(command, "square").ok_or(CommandError::MalformedCommand)?;
+        let piece =
+            json::read_string_field(command, "piece").ok_or(CommandError::MalformedCommand)?;
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        if !square_in_geometry(&square, definition.files, definition.ranks) {
+            return Err(CommandError::MalformedCommand);
+        }
+        if piece.is_empty() {
+            definition.placement.remove(&square);
+        } else if workshop_piece_id(definition, &piece).is_some() {
+            definition.placement.insert(square, piece);
+        } else {
+            return Err(CommandError::MalformedCommand);
+        }
+        self.persist_variant_definition()
+    }
+
+    fn toggle_variant_rule(&mut self, command: &str) -> Result<(), CommandError> {
+        let rule =
+            json::read_string_field(command, "rule").ok_or(CommandError::MalformedCommand)?;
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        let selected = match rule.as_str() {
+            "promotion" => &mut definition.promotion,
+            "castling" => &mut definition.castling,
+            "doubleStep" => &mut definition.double_step,
+            "extinction" => &mut definition.extinction,
+            "goal" => &mut definition.goal,
+            "mandatoryCapture" => &mut definition.mandatory_capture,
+            "drops" => &mut definition.drops,
+            _ => return Err(CommandError::MalformedCommand),
+        };
+        *selected = !*selected;
+        self.persist_variant_definition()
     }
 
     fn toggle_builtin_piece(&mut self, command: &str) -> Result<(), CommandError> {
@@ -1248,7 +1311,19 @@ impl Session {
                     } else {
                         "false"
                     });
-                    out.push_str(",\"piece\":null}");
+                    out.push_str(",\"piece\":");
+                    let square = format!("{}{}", (b'a' + file) as char, rank);
+                    match definition
+                        .placement
+                        .get(&square)
+                        .and_then(|piece| workshop_piece_id(definition, piece))
+                    {
+                        Some(piece) => json::write_string(&mut out, &piece),
+                        None => out.push_str("null"),
+                    }
+                    out.push_str(",\"footprint\":");
+                    json::write_string(&mut out, rule_footprint(definition, &square));
+                    out.push('}');
                 }
             }
             out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
@@ -1483,6 +1558,44 @@ impl Session {
         out.push_str(&definition.ranks.to_string());
         out.push_str(",\"selectedPieces\":");
         json::write_string(&mut out, &definition.pieces);
+        out.push_str(",\"fen\":");
+        json::write_string(&mut out, &workshop_fen(definition));
+        out.push_str(",\"ruleValid\":");
+        out.push_str(if workshop_position_rule_valid(definition) {
+            "true"
+        } else {
+            "false"
+        });
+        out.push_str(",\"rules\":{");
+        for (index, (name, selected)) in [
+            ("royal", true),
+            ("promotion", definition.promotion),
+            ("castling", definition.castling),
+            ("doubleStep", definition.double_step),
+            ("extinction", definition.extinction),
+            ("goal", definition.goal),
+            ("mandatoryCapture", definition.mandatory_capture),
+            ("drops", definition.drops),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            json::write_string(&mut out, name);
+            out.push(':');
+            out.push_str(if *selected { "true" } else { "false" });
+        }
+        out.push_str("},\"ruleConflict\":");
+        json::write_string(
+            &mut out,
+            if definition.extinction {
+                "Royal checkmate and Extinction both decide how the game ends. Choose one win condition."
+            } else {
+                ""
+            },
+        );
         for (key, value) in [
             ("customName", &definition.custom_name),
             ("customLetter", &definition.custom_letter),
@@ -1675,6 +1788,7 @@ fn encode_variant_definition(definition: &VariantDefinition) -> String {
     let mut out = String::from("{\"schemaVersion\":\"1\"");
     let files = definition.files.to_string();
     let ranks = definition.ranks.to_string();
+    let placement = encode_placement(&definition.placement);
     for (key, value) in [
         ("preset", definition.preset.as_str()),
         ("files", files.as_str()),
@@ -1683,6 +1797,14 @@ fn encode_variant_definition(definition: &VariantDefinition) -> String {
         ("customName", definition.custom_name.as_str()),
         ("customLetter", definition.custom_letter.as_str()),
         ("customBetza", definition.custom_betza.as_str()),
+        ("placement", placement.as_str()),
+        ("promotion", bool_name(definition.promotion)),
+        ("castling", bool_name(definition.castling)),
+        ("doubleStep", bool_name(definition.double_step)),
+        ("extinction", bool_name(definition.extinction)),
+        ("goal", bool_name(definition.goal)),
+        ("mandatoryCapture", bool_name(definition.mandatory_capture)),
+        ("drops", bool_name(definition.drops)),
     ] {
         out.push(',');
         json::write_string(&mut out, key);
@@ -1691,6 +1813,145 @@ fn encode_variant_definition(definition: &VariantDefinition) -> String {
     }
     out.push('}');
     out
+}
+
+fn bool_name(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn read_bool(value: &str, key: &str, fallback: bool) -> bool {
+    json::read_string_field(value, key)
+        .map(|selected| selected == "true")
+        .unwrap_or(fallback)
+}
+
+fn encode_placement(placement: &BTreeMap<String, String>) -> String {
+    placement
+        .iter()
+        .map(|(square, piece)| format!("{square}:{piece}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_placement(encoded: &str) -> BTreeMap<String, String> {
+    encoded
+        .split(',')
+        .filter_map(|entry| entry.split_once(':'))
+        .map(|(square, piece)| (square.to_owned(), piece.to_owned()))
+        .collect()
+}
+
+fn square_in_geometry(square: &str, files: u8, ranks: u8) -> bool {
+    let bytes = square.as_bytes();
+    if bytes.len() < 2 || !(b'a'..b'a' + files).contains(&bytes[0]) {
+        return false;
+    }
+    square[1..]
+        .parse::<u8>()
+        .is_ok_and(|rank| (1..=ranks).contains(&rank))
+}
+
+fn workshop_piece_id(definition: &VariantDefinition, code: &str) -> Option<String> {
+    let role = match code.to_ascii_uppercase().as_str() {
+        "K" => "king",
+        "Q" => "queen",
+        "R" => "rook",
+        "B" => "bishop",
+        "N" => "knight",
+        "P" => "pawn",
+        selected if definition.pieces.contains(selected)
+            || definition.custom_letter.eq_ignore_ascii_case(selected) =>
+        {
+            return Some(format!(
+                "{}_fairy_{selected}",
+                if code.chars().all(char::is_uppercase) {
+                    "white"
+                } else {
+                    "black"
+                }
+            ));
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{}_{role}",
+        if code.chars().all(char::is_uppercase) {
+            "white"
+        } else {
+            "black"
+        }
+    ))
+}
+
+fn workshop_position_rule_valid(definition: &VariantDefinition) -> bool {
+    definition.files == 8
+        && definition.ranks == 8
+        && Rules::new("standard", Some(&draft_variant_fen(definition))).is_some()
+}
+
+fn rule_footprint(definition: &VariantDefinition, square: &str) -> &'static str {
+    if square.len() < 2 {
+        return "";
+    }
+    let file = square.as_bytes()[0];
+    let rank = square[1..].parse::<u8>().unwrap_or_default();
+    if definition.castling
+        && matches!(file, b'c' | b'g')
+        && (rank == 1 || rank == definition.ranks)
+    {
+        "castling"
+    } else if definition.promotion && (rank == 1 || rank == definition.ranks) {
+        "promotion"
+    } else if definition.goal
+        && matches!(file, b'd' | b'e')
+        && matches!(rank, 4 | 5)
+    {
+        "goal"
+    } else {
+        ""
+    }
+}
+
+fn workshop_fen(definition: &VariantDefinition) -> String {
+    let draft = draft_variant_fen(definition);
+    if definition.files == 8 && definition.ranks == 8 {
+        if let Some(mut rules) = Rules::new("standard", Some(&draft)) {
+            return rules.fen();
+        }
+    }
+    draft
+}
+
+// An incomplete Draft Variant Definition cannot be loaded by the Rules
+// Authority yet. This serialization is only its live editor text; once the
+// authority accepts it, `workshop_fen` replaces it with the authority's FEN.
+fn draft_variant_fen(definition: &VariantDefinition) -> String {
+    let mut rows = Vec::with_capacity(definition.ranks as usize);
+    for rank in (1..=definition.ranks).rev() {
+        let mut row = String::new();
+        let mut empty = 0;
+        for file in 0..definition.files {
+            let square = format!("{}{}", (b'a' + file) as char, rank);
+            if let Some(piece) = definition.placement.get(&square) {
+                if empty > 0 {
+                    row.push_str(&empty.to_string());
+                    empty = 0;
+                }
+                row.push_str(piece);
+            } else {
+                empty += 1;
+            }
+        }
+        if empty > 0 {
+            row.push_str(&empty.to_string());
+        }
+        rows.push(row);
+    }
+    format!("{} w - - 0 1", rows.join("/"))
 }
 
 fn decode_variant_definition(value: &str) -> Option<VariantDefinition> {
@@ -1705,6 +1966,16 @@ fn decode_variant_definition(value: &str) -> Option<VariantDefinition> {
         custom_name: json::read_string_field(value, "customName")?,
         custom_letter: json::read_string_field(value, "customLetter")?,
         custom_betza: json::read_string_field(value, "customBetza")?,
+        placement: decode_placement(
+            &json::read_string_field(value, "placement").unwrap_or_default(),
+        ),
+        promotion: read_bool(value, "promotion", true),
+        castling: read_bool(value, "castling", true),
+        double_step: read_bool(value, "doubleStep", true),
+        extinction: read_bool(value, "extinction", false),
+        goal: read_bool(value, "goal", false),
+        mandatory_capture: read_bool(value, "mandatoryCapture", false),
+        drops: read_bool(value, "drops", false),
         error: String::new(),
         step: 1,
     })

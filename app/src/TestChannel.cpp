@@ -223,6 +223,7 @@ QJsonObject TestChannel::snapshot() const
             {"selected", item->property("selected").toBool()},
             {"target", item->property("target").toBool()},
             {"lastMove", item->property("lastMove").toBool()},
+            {"footprint", item->property("footprint").toString()},
             // Whether the Piece Set artwork is loaded, and which file drew it.
             {"artworkReady", item->property("artworkReady").toBool()},
             {"artworkSource", item->property("artworkSource").toString()},
