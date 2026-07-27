@@ -90,6 +90,10 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString customPieceLetter READ customPieceLetter NOTIFY workshopChanged)
     Q_PROPERTY(QString customPieceBetza READ customPieceBetza NOTIFY workshopChanged)
     Q_PROPERTY(QString betzaError READ betzaError NOTIFY workshopChanged)
+    Q_PROPERTY(QString variantFen READ variantFen NOTIFY workshopChanged)
+    Q_PROPERTY(bool workshopPositionRuleValid READ workshopPositionRuleValid NOTIFY workshopChanged)
+    Q_PROPERTY(QVariantMap variantRules READ variantRules NOTIFY workshopChanged)
+    Q_PROPERTY(QString ruleConflict READ ruleConflict NOTIFY workshopChanged)
     Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
@@ -161,6 +165,10 @@ public:
     QString customPieceLetter() const { return m_customPieceLetter; }
     QString customPieceBetza() const { return m_customPieceBetza; }
     QString betzaError() const { return m_betzaError; }
+    QString variantFen() const { return m_variantFen; }
+    bool workshopPositionRuleValid() const { return m_workshopPositionRuleValid; }
+    QVariantMap variantRules() const { return m_variantRules; }
+    QString ruleConflict() const { return m_ruleConflict; }
     QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
     // Asks the core to describe the board it owns. Called once at startup so
@@ -215,6 +223,8 @@ public:
     Q_INVOKABLE void toggleBuiltinPiece(const QString &code);
     Q_INVOKABLE void setCustomPiece(const QString &name, const QString &letter,
                                     const QString &betza);
+    Q_INVOKABLE void placeWorkshopPiece(const QString &square, const QString &piece);
+    Q_INVOKABLE void toggleVariantRule(const QString &rule);
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
 
@@ -289,6 +299,10 @@ private:
     QString m_customPieceLetter;
     QString m_customPieceBetza;
     QString m_betzaError;
+    QString m_variantFen;
+    bool m_workshopPositionRuleValid = false;
+    QVariantMap m_variantRules;
+    QString m_ruleConflict;
     QVariantList m_pgnImportResults;
     QString m_exportPath;
 };

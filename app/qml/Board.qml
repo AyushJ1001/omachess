@@ -122,6 +122,7 @@ Item {
                 inHand: board.dragging && board.selected === model.squareName
                 lastMove: model.squareName === WorkspaceSession.lastMoveFrom
                           || model.squareName === WorkspaceSession.lastMoveTo
+                footprint: WorkspaceSession.workshopStep === 4 ? model.footprint : ""
             }
         }
     }
@@ -163,6 +164,14 @@ Item {
                     WorkspaceSession.placeSetupPiece(
                         square, board.setupPiece === "__remove" ? "" : board.setupPiece)
                 }
+                return
+            }
+            if (WorkspaceSession.workshopActive
+                    && WorkspaceSession.workshopStep === 3) {
+                if (square !== "")
+                    WorkspaceSession.placeWorkshopPiece(
+                                square,
+                                board.setupPiece === "__remove" ? "" : board.setupPiece)
                 return
             }
             if (square === "") {

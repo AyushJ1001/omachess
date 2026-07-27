@@ -16,6 +16,7 @@ public:
         SquareNameRole = Qt::UserRole + 1,
         LightRole,
         PieceRole,
+        FootprintRole,
     };
 
     explicit BoardModel(QObject *parent = nullptr);
@@ -32,6 +33,7 @@ private:
         QString name;
         bool light = false;
         QString piece; // empty when the square is empty
+        QString footprint;
     };
 
     QList<Square> m_squares;

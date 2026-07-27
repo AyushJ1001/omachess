@@ -11,6 +11,7 @@ QtObject {
     // The artwork for one of the core's piece identifiers, for example
     // "white_king". An empty identifier has no artwork.
     function artwork(piece) {
-        return piece === "" ? "" : Theme.pieceSetPath + piece + ".svg"
+        return piece === "" || piece.indexOf("_fairy_") >= 0
+             ? "" : Theme.pieceSetPath + piece + ".svg"
     }
 }

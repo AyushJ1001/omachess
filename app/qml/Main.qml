@@ -925,6 +925,65 @@ ApplicationWindow {
                         }
 
                         Frame {
+                            visible: WorkspaceSession.workshopActive
+                                     && WorkspaceSession.workshopStep === 3
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent
+                                Label { text: qsTr("Piece tray") }
+                                GridLayout {
+                                    columns: 7
+                                    Repeater {
+                                        model: {
+                                            const pieces = []
+                                            const selected = WorkspaceSession.selectedPieces.join("")
+                                                    + WorkspaceSession.customPieceLetter
+                                            for (let index = 0; index < selected.length; ++index) {
+                                                const code = selected.charAt(index).toUpperCase()
+                                                if (pieces.indexOf(code) < 0) {
+                                                    pieces.push(code)
+                                                    pieces.push(code.toLowerCase())
+                                                }
+                                            }
+                                            return pieces
+                                        }
+                                        Button {
+                                            required property string modelData
+                                            objectName: "workshopTray:" + modelData
+                                            text: modelData === modelData.toUpperCase()
+                                                  ? "White " + modelData
+                                                  : "Black " + modelData.toUpperCase()
+                                            onClicked: board.setupPiece = modelData
+                                        }
+                                    }
+                                    Button {
+                                        objectName: "workshopTray:remove"
+                                        text: qsTr("Remove")
+                                        onClicked: board.setupPiece = "__remove"
+                                    }
+                                }
+                            }
+                        }
+
+                        Frame {
+                            visible: WorkspaceSession.workshopActive
+                                     && WorkspaceSession.variantRules.drops
+                            Layout.fillWidth: true
+                            RowLayout {
+                                anchors.fill: parent
+                                Label {
+                                    objectName: "pocket:white"
+                                    text: qsTr("White pocket · empty")
+                                }
+                                Item { Layout.fillWidth: true }
+                                Label {
+                                    objectName: "pocket:black"
+                                    text: qsTr("Black pocket · empty")
+                                }
+                            }
+                        }
+
+                        Frame {
                             visible: WorkspaceSession.positionSetup
                             Layout.fillWidth: true
 
@@ -1405,7 +1464,12 @@ ApplicationWindow {
                         Label {
                             objectName: "workshopStepHeading"
                             text: WorkspaceSession.workshopStep === 1
-                                  ? qsTr("1. Board") : qsTr("2. Pieces")
+                                  ? qsTr("1. Board")
+                                  : WorkspaceSession.workshopStep === 2
+                                    ? qsTr("2. Pieces")
+                                    : WorkspaceSession.workshopStep === 3
+                                      ? qsTr("3. Starting position")
+                                      : qsTr("4. Rules")
                             font.bold: true
                         }
                         ColumnLayout {
@@ -1483,6 +1547,78 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        ColumnLayout {
+                            visible: WorkspaceSession.workshopStep === 3
+                            Layout.fillWidth: true
+                            Label {
+                                objectName: "workshopPositionValidity"
+                                text: WorkspaceSession.workshopPositionRuleValid
+                                      ? qsTr("Rule-valid") : qsTr("Not Rule-valid")
+                                color: WorkspaceSession.workshopPositionRuleValid
+                                       ? Theme.success : Theme.danger
+                                font.bold: true
+                            }
+                            Label {
+                                objectName: "variantFen"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WrapAnywhere
+                                text: WorkspaceSession.variantFen
+                            }
+                            Label {
+                                text: qsTr("Choose a piece in the tray beneath the board, then choose a square.")
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+                        Flickable {
+                            visible: WorkspaceSession.workshopStep === 4
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentHeight: ruleControls.implicitHeight
+                            clip: true
+                            ColumnLayout {
+                                id: ruleControls
+                                width: parent.width
+                                Label {
+                                    text: qsTr("Curated rule families")
+                                    font.bold: true
+                                }
+                                Repeater {
+                                    model: [
+                                        { id: "drops", label: qsTr("Capture-to-hand drops") },
+                                        { id: "promotion", label: qsTr("Promotion") },
+                                        { id: "castling", label: qsTr("Castling") },
+                                        { id: "doubleStep", label: qsTr("Double step & en passant") },
+                                        { id: "extinction", label: qsTr("Extinction win") },
+                                        { id: "goal", label: qsTr("Goal squares") },
+                                        { id: "mandatoryCapture", label: qsTr("Mandatory capture") }
+                                    ]
+                                    CheckBox {
+                                        required property var modelData
+                                        objectName: "rule:" + modelData.id
+                                        text: modelData.label
+                                        checked: !!WorkspaceSession.variantRules[modelData.id]
+                                        onClicked: WorkspaceSession.toggleVariantRule(modelData.id)
+                                    }
+                                }
+                                Label {
+                                    objectName: "ruleConflict"
+                                    visible: WorkspaceSession.ruleConflict.length > 0
+                                    text: WorkspaceSession.ruleConflict
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                    color: Theme.danger
+                                }
+                                Label { objectName: "promotion"; text: qsTr("Board footprint · promotion ranks") }
+                                Label { objectName: "castling"; text: qsTr("Board footprint · castling target files") }
+                                Label { objectName: "goalSquares"; text: qsTr("Board footprint · goal squares") }
+                                Label { text: qsTr("Out of scope for v0.1"); font.bold: true }
+                                Label { objectName: "outOfScope:walling"; text: qsTr("Unavailable · Walling") }
+                                Label { objectName: "outOfScope:atomic"; text: qsTr("Unavailable · Atomic blast") }
+                                Label { objectName: "outOfScope:petrification"; text: qsTr("Unavailable · Petrification") }
+                                Label { objectName: "outOfScope:gating"; text: qsTr("Unavailable · Gating and multi-board rules") }
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             Button {
@@ -1496,7 +1632,7 @@ ApplicationWindow {
                                 objectName: "workshopContinue"
                                 Layout.fillWidth: true
                                 text: qsTr("Continue")
-                                enabled: WorkspaceSession.workshopStep < 2
+                                enabled: WorkspaceSession.workshopStep < 4
                                 onClicked: WorkspaceSession.setWorkshopStep(
                                                WorkspaceSession.workshopStep + 1)
                             }

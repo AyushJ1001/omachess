@@ -25,6 +25,8 @@ QVariant BoardModel::data(const QModelIndex &index, int role) const
         return square.light;
     case PieceRole:
         return square.piece;
+    case FootprintRole:
+        return square.footprint;
     default:
         return {};
     }
@@ -36,6 +38,7 @@ QHash<int, QByteArray> BoardModel::roleNames() const
         {SquareNameRole, "squareName"},
         {LightRole, "light"},
         {PieceRole, "piece"},
+        {FootprintRole, "footprint"},
     };
 }
 
@@ -50,6 +53,7 @@ void BoardModel::applySquares(const QJsonArray &squares)
             object.value(QStringLiteral("name")).toString(),
             object.value(QStringLiteral("light")).toBool(),
             object.value(QStringLiteral("piece")).toString(),
+            object.value(QStringLiteral("footprint")).toString(),
         });
     }
     endResetModel();
