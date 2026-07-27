@@ -14,6 +14,7 @@ pkgbase = omachess
 	depends = omarchy>=4.0.0
 	depends = qt6-base
 	depends = qt6-declarative
+	depends = qt6-svg
 	depends = hicolor-icon-theme
 	source = omachess-0.1.0.tar.gz::https://github.com/AyushJ1001/omachess/releases/download/v0.1.0/omachess-0.1.0.tar.gz
 	source = omachess-0.1.0.tar.gz.sig::https://github.com/AyushJ1001/omachess/releases/download/v0.1.0/omachess-0.1.0.tar.gz.sig

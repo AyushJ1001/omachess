@@ -22,6 +22,8 @@ depends=(
   'omarchy>=4.0.0'
   'qt6-base'
   'qt6-declarative'
+  # The Piece Set artwork is vector, so the workspace needs the SVG handler.
+  'qt6-svg'
   'hicolor-icon-theme'
 )
 makedepends=(
