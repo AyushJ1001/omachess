@@ -145,14 +145,50 @@ ApplicationWindow {
     }
 
     function requestWorkspaceClose() {
+        if (computerAnalysisRunning) {
+            backgroundCloseConsent.open()
+            return
+        }
         if (!askBeforeAbandoning("workspace", ""))
             workspace.close()
     }
 
     onClosing: function(close) {
+        if (computerAnalysisRunning) {
+            close.accepted = false
+            backgroundCloseConsent.open()
+            return
+        }
         if (WorkspaceSession.needsUnsavedDecision && !pendingWorkspaceClose) {
             close.accepted = false
             requestWorkspaceClose()
+        }
+    }
+
+    Dialog {
+        id: backgroundCloseConsent
+        objectName: "backgroundCloseConsent"
+        modal: true
+        title: qsTr("Continue Computer Analysis?")
+        standardButtons: Dialog.NoButton
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Computer Analysis can continue after this workspace closes. Continue it in the background?")
+            }
+            RowLayout {
+                Button {
+                    objectName: "backgroundConsentContinue"
+                    text: qsTr("Continue")
+                    onClicked: { backgroundCloseConsent.close(); workspace.close() }
+                }
+                Button {
+                    objectName: "backgroundConsentStop"
+                    text: qsTr("Stop")
+                    onClicked: { workspace.cancelComputerAnalysis(); backgroundCloseConsent.close(); workspace.close() }
+                }
+            }
         }
     }
 

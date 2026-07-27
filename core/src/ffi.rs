@@ -44,6 +44,14 @@ pub unsafe extern "C" fn omachess_background_job_checkpoint(id: *const c_char, c
         .is_ok_and(|result| result.is_ok()) as i32
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_checkpoint_value(id: *const c_char) -> u32 {
+    if id.is_null() { return u32::MAX; }
+    let Ok(id) = CStr::from_ptr(id).to_str() else { return u32::MAX; };
+    LiveStore::open_default().ok().and_then(|store| store.worker().job(id).ok().flatten())
+        .map_or(u32::MAX, |job| job.checkpoint)
+}
+
 /// An opaque handle to a workspace session.
 pub struct OmachessSession {
     inner: Session,

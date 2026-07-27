@@ -106,6 +106,26 @@ class AnalysisRecordsJourney(unittest.TestCase):
         )
         self.assertEqual(library_ids(cancelled), ids)
 
+    def test_closing_a_running_analysis_requires_an_explicit_choice(self) -> None:
+        root = tempfile.TemporaryDirectory(prefix="omachess-background-consent-")
+        self.addCleanup(root.cleanup)
+        data_home = Path(root.name)
+        engine = data_home / "xdg_data_home" / "omachess" / "engines" / "stockfish" / "stockfish"
+        fake_engine(engine, "ready", data_home / "engine-executed")
+        with Workspace(executable_under_test(), data_home=data_home,
+                       environment={"OMACHESS_TEST_ENGINE_DEADLINE_MS": "150"}) as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(lambda screen: screen.labels.get("engineState:stockfish") == "Ready")
+            workspace.play_all(CHECKMATE)
+            workspace.screen_when(lambda screen: "computerAnalysisButton" in screen.labels)
+            workspace.click("computerAnalysisButton")
+            workspace.close_window()
+            prompt = workspace.screen_when(lambda screen: "backgroundConsentContinue" in screen.labels)
+            self.assertIn("backgroundConsentStop", prompt.labels)
+            workspace.click("backgroundConsentStop")
+            workspace.wait_until_closed()
+
     def test_derive_diverge_and_derive_again_keeps_every_record_independent(self) -> None:
         with Workspace(executable_under_test()) as workspace:
             workspace.play_all(CHECKMATE)

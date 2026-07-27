@@ -273,6 +273,7 @@ pub enum BackgroundJobState {
     Complete,
     Cancelled,
     Failed,
+    Dismissed,
 }
 
 impl BackgroundJobState {
@@ -280,19 +281,27 @@ impl BackgroundJobState {
         match self {
             Self::Queued => "queued", Self::Running => "running", Self::Paused => "paused",
             Self::Interrupted => "interrupted", Self::Complete => "complete",
-            Self::Cancelled => "cancelled", Self::Failed => "failed",
+            Self::Cancelled => "cancelled", Self::Failed => "failed", Self::Dismissed => "dismissed",
         }
     }
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "queued" => Self::Queued, "running" => Self::Running, "paused" => Self::Paused,
             "interrupted" => Self::Interrupted, "complete" => Self::Complete,
-            "cancelled" => Self::Cancelled, "failed" => Self::Failed, _ => return None,
+            "cancelled" => Self::Cancelled, "failed" => Self::Failed, "dismissed" => Self::Dismissed, _ => return None,
         })
     }
 
     /// Parse the stable D-Bus / C-ABI spelling of a lifecycle state.
     pub fn parse_public(value: &str) -> Option<Self> { Self::parse(value) }
+
+    fn can_transition_to(self, next: Self) -> bool {
+        matches!((self, next),
+            (Self::Queued, Self::Running)
+            | (Self::Running, Self::Paused | Self::Interrupted | Self::Complete | Self::Cancelled | Self::Failed)
+            | (Self::Paused, Self::Running | Self::Cancelled)
+            | (Self::Interrupted, Self::Running | Self::Cancelled | Self::Dismissed))
+    }
 }
 
 /// Worker-owned durable facts. `checkpoint` is a completed move boundary.
@@ -795,6 +804,11 @@ impl<'a> WorkerWriter<'a> {
 
     /// Atomically records a completed move boundary and its lifecycle state.
     pub fn checkpoint(&self, id: &str, checkpoint: u32, state: BackgroundJobState, updated_at: &str) -> Result<(), StoreError> {
+        let current = self.job(id)?.ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
+        if checkpoint > current.total || checkpoint < current.checkpoint
+            || !current.state.can_transition_to(state) && current.state != state {
+            return Err(StoreError::Message("invalid Background Job lifecycle transition".into()));
+        }
         let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, updated_at = ?4 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), updated_at])?;
         if changed == 0 { return Err(StoreError::Message("Background Job checkpoint was not accepted".into())); }
         Ok(())
@@ -1595,6 +1609,10 @@ mod tests {
         assert_eq!(job.checkpoint, 3);
         assert_eq!(job.state, BackgroundJobState::Interrupted);
         assert_eq!(job.controls, vec!["pause", "cancel", "open"]);
+        assert!(worker.checkpoint("job-1", 3, BackgroundJobState::Running, "resume").is_ok());
+        assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Complete, "complete").is_ok());
+        assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Running, "bad").is_err());
+        assert!(worker.checkpoint("job-1", 6, BackgroundJobState::Complete, "bad").is_err());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 #include <QDBusConnection>
 #include <QTimer>
 #include <QUuid>
+#include <memory>
 
 extern "C" {
 #include "omachess_core.h"
@@ -33,13 +34,33 @@ public slots:
         timer->start();
         return id;
     }
-    bool Resume(const QString &id, uint checkpoint)
+    bool Pause(const QString &id)
     {
-        return omachess_background_job_checkpoint(id.toUtf8().constData(), checkpoint, "running");
+        const QByteArray job = id.toUtf8();
+        const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());
+        return checkpoint != UINT_MAX
+            && omachess_background_job_checkpoint(job.constData(), checkpoint, "paused");
     }
-    bool Cancel(const QString &id, uint checkpoint)
+    bool Resume(const QString &id)
     {
-        return omachess_background_job_checkpoint(id.toUtf8().constData(), checkpoint, "cancelled");
+        const QByteArray job = id.toUtf8();
+        const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());
+        return checkpoint != UINT_MAX
+            && omachess_background_job_checkpoint(job.constData(), checkpoint, "running");
+    }
+    bool Cancel(const QString &id)
+    {
+        const QByteArray job = id.toUtf8();
+        const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());
+        return checkpoint != UINT_MAX
+            && omachess_background_job_checkpoint(job.constData(), checkpoint, "cancelled");
+    }
+    bool Dismiss(const QString &id)
+    {
+        const QByteArray job = id.toUtf8();
+        const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());
+        return checkpoint != UINT_MAX
+            && omachess_background_job_checkpoint(job.constData(), checkpoint, "dismissed");
     }
 };
 
