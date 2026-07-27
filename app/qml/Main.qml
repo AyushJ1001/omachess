@@ -18,6 +18,23 @@ ApplicationWindow {
     minimumWidth: 640
     minimumHeight: 480
     visible: true
+
+    function requestLivePositionAnalysis() {
+        if (analysisToggle.checked)
+            EngineManager.analyzePosition(WorkspaceSession.displayedFen,
+                                          WorkspaceSession.displayedPositionRuleValid)
+    }
+
+    function closeRecord(id) {
+        if (id === WorkspaceSession.activeRecordId)
+            EngineManager.clearAnalysis()
+        WorkspaceSession.closeTab(id)
+    }
+
+    Connections {
+        target: WorkspaceSession
+        function onBoardChanged() { workspace.requestLivePositionAnalysis() }
+    }
     title: qsTr("Omachess")
     color: Theme.background
 
@@ -164,7 +181,7 @@ ApplicationWindow {
                 const active = id === WorkspaceSession.activeRecordId
                 actions.push(action("close-" + id, qsTr("Close %1").arg(tab.title),
                                     active ? "Ctrl+W" : "Alt+Right · Tab · Enter",
-                                    function() { WorkspaceSession.closeTab(id) },
+                                    function() { workspace.closeRecord(id) },
                                     true, active ? "Ctrl+W" : ""))
             }
             if (WorkspaceSession.restoreAvailable) {
@@ -572,7 +589,7 @@ ApplicationWindow {
                                         Layout.preferredHeight: 22
                                         flat: true
                                         text: "×"
-                                        onClicked: WorkspaceSession.closeTab(modelData.id)
+                                        onClicked: workspace.closeRecord(modelData.id)
                                     }
                                 }
 
@@ -860,6 +877,54 @@ ApplicationWindow {
                         height: 1
                         color: Theme.muted
                         opacity: 0.4
+                    }
+
+                    Button {
+                        id: analysisToggle
+                        objectName: "analysisToggle"
+                        Layout.fillWidth: true
+                        text: checked ? qsTr("Hide live analysis") : qsTr("Show live analysis")
+                        checkable: true
+                        checked: true
+                        onToggled: {
+                            if (checked)
+                                workspace.requestLivePositionAnalysis()
+                            else
+                                EngineManager.clearAnalysis()
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: analysisToggle.checked
+                        spacing: 4
+
+                        Label {
+                            objectName: "analysisStatus"
+                            Layout.fillWidth: true
+                            text: EngineManager.analysisMessage
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "analysisEvaluation"
+                            visible: EngineManager.analysisReady
+                            text: EngineManager.analysisEvaluation
+                            font.bold: true
+                            font.pixelSize: 22
+                        }
+                        Repeater {
+                            model: EngineManager.analysisVariations
+                            Label {
+                                required property int index
+                                required property string modelData
+                                objectName: "analysisLine:" + (index + 1)
+                                Layout.fillWidth: true
+                                text: modelData
+                                wrapMode: Text.WordWrap
+                                font.family: "monospace"
+                            }
+                        }
                     }
 
                     Label {

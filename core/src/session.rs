@@ -800,7 +800,6 @@ impl Session {
         out.push_str("{\"type\":\"board_changed\",\"variant\":\"standard\",\"orientation\":");
         json::write_string(&mut out, self.orientation.name());
 
-        out.push_str(",\"squares\":[");
         let position = self.setup.as_ref().map(|setup| &setup.position);
         let game_position;
         let position = match position {
@@ -810,6 +809,7 @@ impl Session {
                 &game_position
             }
         };
+        out.push_str(",\"squares\":[");
         for (index, square) in position.rendered(self.orientation).iter().enumerate() {
             if index > 0 {
                 out.push(',');
@@ -826,6 +826,16 @@ impl Session {
             out.push('}');
         }
         out.push(']');
+        out.push_str(",\"displayedFen\":");
+        json::write_string(&mut out, &position.setup_fen());
+        out.push_str(",\"displayedPositionRuleValid\":");
+        out.push_str(
+            if self.setup.as_ref().is_none_or(|setup| setup.rule_valid) {
+                "true"
+            } else {
+                "false"
+            },
+        );
 
         if let Some(setup) = &self.setup {
             out.push_str(",\"activity\":\"position_setup\",\"positionClass\":");

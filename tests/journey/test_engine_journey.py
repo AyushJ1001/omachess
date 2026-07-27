@@ -19,6 +19,7 @@ def fake_engine(path: Path, behavior: str, execution_log: Path) -> None:
             import pathlib, sys, time
             pathlib.Path({str(execution_log)!r}).write_text("executed")
             behavior = {behavior!r}
+            position = "startpos"
             for raw in sys.stdin:
                 command = raw.strip()
                 if command == "uci":
@@ -40,10 +41,17 @@ def fake_engine(path: Path, behavior: str, execution_log: Path) -> None:
                 elif command == "isready":
                     if behavior != "readiness-timeout":
                         print("readyok", flush=True)
+                elif command.startswith("position "):
+                    position = command
                 elif command.startswith("go "):
                     if behavior == "search-timeout":
                         time.sleep(5)
                     else:
+                        if "4P3" in position:
+                            print("info depth 8 multipv 1 score cp 31 pv c7c5 g1f3", flush=True)
+                            print("info depth 8 multipv 2 score cp 18 pv e7e5 g1f3", flush=True)
+                        else:
+                            print("info depth 8 multipv 1 score cp 22 pv e2e4 e7e5", flush=True)
                         move = "garbage" if behavior == "malformed" else "e2e4"
                         print("bestmove " + move, flush=True)
                 elif command == "quit":
@@ -98,6 +106,96 @@ class EngineJourney(unittest.TestCase):
             self.assertTrue(self.log.exists())
             self.assertEqual(screen.labels["engineIdentity:stockfish"], "Stockfish 18")
             self.assertEqual(screen.labels["engineOptions:stockfish"], "2 UCI options")
+
+    def test_ready_engine_analyzes_the_displayed_position_and_follows_navigation(self) -> None:
+        with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish") == "Ready"
+            )
+            screen = workspace.screen_when(
+                lambda value: bool(value.labels.get("analysisEvaluation"))
+                and "analysisLine:1" in value.labels
+            )
+            starting_evaluation = screen.labels["analysisEvaluation"]
+            starting_line = screen.labels["analysisLine:1"]
+
+            workspace.play("e2e4")
+            screen = workspace.screen_when(
+                lambda value: bool(value.labels.get("analysisEvaluation"))
+                and value.labels.get("analysisLine:1") != starting_line
+            )
+            moved_evaluation = screen.labels["analysisEvaluation"]
+            self.assertNotEqual(moved_evaluation, starting_evaluation)
+            self.assertIn("analysisLine:2", screen.labels)
+
+            workspace.click("backwardButton")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("analysisLine:1") == starting_line
+            )
+            self.assertEqual(screen.labels.get("analysisEvaluation"), starting_evaluation)
+
+    def test_rule_valid_setup_is_analyzed_but_freeform_setup_is_not_promised(self) -> None:
+        with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish") == "Ready"
+            )
+            workspace.click("positionSetupButton")
+            workspace.enter_text(
+                "fenInput", "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+            )
+            workspace.click("applyFenButton")
+            self.assertEqual(
+                workspace.screen_when(
+                    lambda value: "analysisEvaluation" in value.labels
+                ).labels.get("analysisStatus"),
+                "Live Position Analysis",
+            )
+
+            workspace.click("removePieceTool")
+            workspace.click_square("e1")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("analysisStatus")
+                == "Engine analysis is not guaranteed for a Freeform Position."
+            )
+            self.assertNotIn("analysisEvaluation", screen.labels)
+
+    def test_engine_output_does_not_move_focus_and_closing_analysis_clears_it(self) -> None:
+        with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish") == "Ready"
+            )
+            workspace.click("metadata:white")
+            focused = workspace.screen().active_focus
+            workspace.play("e2e4")
+            workspace.screen_when(
+                lambda value: "analysisLine:2" in value.labels
+            )
+            self.assertEqual(workspace.screen().active_focus, focused)
+
+            workspace.click("analysisToggle")
+            screen = workspace.screen_when(
+                lambda value: "analysisEvaluation" not in value.labels
+            )
+            self.assertNotIn("analysisLine:1", screen.labels)
+
+    def test_live_analysis_leaves_no_residue_after_the_workspace_closes(self) -> None:
+        with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(
+                lambda value: bool(value.labels.get("analysisEvaluation"))
+            )
+
+        with self.run_workspace() as workspace:
+            screen = workspace.screen()
+            self.assertNotIn("analysisEvaluation", screen.labels)
+            self.assertNotIn("analysisLine:1", screen.labels)
 
     def test_identity_mismatch_downgrades_the_known_profile(self) -> None:
         with self.run_workspace("identity-mismatch") as workspace:
