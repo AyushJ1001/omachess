@@ -13,20 +13,16 @@
  *                              bishop|knight" for a promotion
  *   {"type":"navigate","to":"backward|forward|start|end"}
  *                              move which position of the game is displayed
+ *   {"type":"restore_record"}  reload the Game Record offered after restart
+ *   {"type":"dismiss_restore"} decline the restore offer
  *
  * Events:
- *   {"type":"board_changed","variant":"standard","orientation":"white|black",
- *    "squares":[{"name":"a8","light":true,"piece":"black_rook"|null}, ...],
- *    "sideToMove":"white|black", "inCheck":false,
- *    "moves":[{"from":"e2","to":"e4","promotions":["queen", ...]}, ...],
- *    "moveList":[{"number":1,"side":"white","san":"e4"}, ...],
- *    "cursor":0, "reviewing":false,
- *    "lastMove":{"from":"e2","to":"e4"}|null,
- *    "result":{"status":"playing|white_wins|black_wins|draw",
- *              "termination":"checkmate|stalemate|insufficient_material|
- *                             fifty_move_rule|threefold_repetition|
- *                             variant_rule|playing",
- *              "score":"*|1-0|0-1|1/2-1/2","label":"...","over":false}}
+ *   {"type":"board_changed",...}
+ *   {"type":"restore_available","recordId":"...","plyCount":N,
+ *    "label":"Restore previous game"}
+ *                              offered after describe_board when workspace
+ *                              residue points at a prior Game Record
+ *   {"type":"restore_cleared"} the restore offer is gone
  *
  *   The 64 squares are in reading order for the current orientation: the
  *   top-left drawn square first, the bottom-right last.
@@ -59,10 +55,17 @@ typedef struct OmachessSession OmachessSession;
 #define OMACHESS_ERR_NULL_ARGUMENT 3
 #define OMACHESS_ERR_INVALID_UTF8 4
 #define OMACHESS_ERR_REJECTED_MOVE 5
+#define OMACHESS_ERR_STORE 6
 
-/* Creates a session holding the standard-chess starting position. The caller
- * owns the handle and must release it with omachess_session_free. */
+/* Creates a session against the Live Store at the fixed XDG location. Returns
+ * NULL when the store cannot be opened (fail-closed migration, I/O error).
+ * Call omachess_last_error for the reason. The caller owns a non-NULL handle
+ * and must release it with omachess_session_free. */
 OmachessSession *omachess_session_new(void);
+
+/* The most recent omachess_session_new failure message, or NULL. Valid until
+ * the next failing omachess_session_new call. Do not free. */
+const char *omachess_last_error(void);
 
 /* Releases a session. Passing NULL is a no-op. */
 void omachess_session_free(OmachessSession *session);

@@ -122,14 +122,32 @@ class Screen:
 class Workspace:
     """A running Omachess application under test."""
 
-    def __init__(self, executable: Path, *, platform: str | None = None) -> None:
+    def __init__(
+        self,
+        executable: Path,
+        *,
+        platform: str | None = None,
+        data_home: Path | None = None,
+    ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
-        self._directory = tempfile.TemporaryDirectory(prefix="omachess-journey-")
-        self._socket_path = str(Path(self._directory.name) / "control")
+        self._owned_directory = data_home is None
+        if data_home is None:
+            self._directory = tempfile.TemporaryDirectory(prefix="omachess-journey-")
+            self._root = Path(self._directory.name)
+        else:
+            self._directory = None
+            self._root = data_home
+            self._root.mkdir(parents=True, exist_ok=True)
+        self._socket_path = str(self._root / "control")
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
+
+    @property
+    def data_home(self) -> Path:
+        """The isolated XDG data home this run uses for the Live Store."""
+        return self._root / "xdg_data_home"
 
     def __enter__(self) -> "Workspace":
         self.start()
@@ -144,9 +162,15 @@ class Workspace:
         environment["QT_QPA_PLATFORM"] = self._platform
         # Isolate the run from the developer's own configuration and state.
         for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
-            directory = Path(self._directory.name) / variable.lower()
+            directory = self._root / variable.lower()
             directory.mkdir(parents=True, exist_ok=True)
             environment[variable] = str(directory)
+
+        # A prior run may have left a stale control socket in a reused data dir.
+        try:
+            os.unlink(self._socket_path)
+        except FileNotFoundError:
+            pass
 
         self._process = subprocess.Popen(
             [str(self._executable)],
@@ -155,6 +179,33 @@ class Workspace:
             stderr=subprocess.STDOUT,
         )
         self._connection = self._connect()
+
+    def restart(self) -> None:
+        """Quit and relaunch against the same XDG homes, keeping the Live Store."""
+        self.stop(cleanup=False)
+        self._buffer = b""
+        self.start()
+
+    def stop(self, *, cleanup: bool = True) -> None:
+        if self._connection is not None:
+            try:
+                self._request({"command": "quit"})
+            except (JourneyError, OSError, json.JSONDecodeError):
+                pass
+            self._connection.close()
+            self._connection = None
+        if self._process is not None:
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=10)
+            if self._process.stdout is not None:
+                self._process.stdout.close()
+            self._process = None
+        if cleanup and self._owned_directory and self._directory is not None:
+            self._directory.cleanup()
+            self._directory = None
 
     def _connect(self) -> socket.socket:
         deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
@@ -311,25 +362,6 @@ class Workspace:
                 if len(fields) > 9 and fields[9] in inodes:
                     found.append(f"{table} {fields[1]} -> {fields[2]}")
         return found
-
-    def stop(self) -> None:
-        if self._connection is not None:
-            try:
-                self._request({"command": "quit"})
-            except (JourneyError, OSError, json.JSONDecodeError):
-                pass
-            self._connection.close()
-            self._connection = None
-        if self._process is not None:
-            try:
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=10)
-            if self._process.stdout is not None:
-                self._process.stdout.close()
-            self._process = None
-        self._directory.cleanup()
 
 
 def executable_under_test() -> Path:
