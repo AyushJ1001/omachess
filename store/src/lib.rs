@@ -14,7 +14,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 /// Schema version this build of Omachess understands and writes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Why the Live Store could not be opened for use.
 #[derive(Debug)]
@@ -153,9 +153,6 @@ pub struct RecordResult {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GameRecordPayload {
     pub variant: String,
-    /// The immutable Variant Definition and compiled Rules Authority adapter
-    /// captured when this record began. Standard chess has no snapshot.
-    pub variant_snapshot: Option<VariantSnapshot>,
     pub start_fen: String,
     pub moves: Vec<MoveEntry>,
     pub result: Option<RecordResult>,
@@ -173,7 +170,6 @@ impl GameRecordPayload {
     pub fn empty_standard() -> Self {
         GameRecordPayload {
             variant: "standard".into(),
-            variant_snapshot: None,
             start_fen: Self::STANDARD_START.to_owned(),
             moves: Vec::new(),
             result: None,
@@ -181,13 +177,6 @@ impl GameRecordPayload {
             clock: None,
         }
     }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct VariantSnapshot {
-    pub definition_id: String,
-    pub definition: String,
-    pub adapter: String,
 }
 
 /// A Game Record as the Live Store holds it.
@@ -247,6 +236,13 @@ pub struct AnalysisRecordData {
     pub sidelines: Vec<AnalysisSideline>,
     pub annotations: Vec<AnalysisAnnotation>,
     pub pinned_lines: Vec<PinnedEngineLine>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Study {
+    pub id: String,
+    pub name: String,
+    pub record_ids: Vec<String>,
 }
 
 /// Workspace write partition: Game Records, residue, and other library tables.
@@ -447,28 +443,119 @@ impl<'a> WorkspaceWriter<'a> {
         Ok(())
     }
 
-    /// Permanently purges a library Variant Definition only when no immutable
-    /// Variant Snapshot still identifies it.
-    pub fn purge_variant_definition(&self, id: &str) -> Result<(), StoreError> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT payload FROM game_records")?;
-        let payloads = statement.query_map([], |row| row.get::<_, String>(0))?;
-        for payload in payloads {
-            if decode_payload(&payload?)?
-                .variant_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.definition_id == id)
-            {
-                return Err(StoreError::Message(format!(
-                    "Variant Definition {id} is bound into an existing Variant Snapshot"
-                )));
-            }
+    /// Purges the library Variant Definition only when no Game Record still
+    /// carries an immutable snapshot compiled from it.
+    pub fn purge_variant_definition(&self) -> Result<(), StoreError> {
+        let bound: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM game_records
+                WHERE json_extract(payload, '$.variant') LIKE 'omachess:v1:%'
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if bound {
+            return Err(StoreError::Message(
+                "the Variant Definition is bound into an existing Variant Snapshot".into(),
+            ));
         }
-        if id == "variant-draft" {
-            self.clear_residue("variant_definition_draft")?;
+        self.clear_residue("variant_definition_draft")
+    }
+
+    pub fn create_study(&self, id: &str, name: &str, created_at: &str) -> Result<(), StoreError> {
+        if name.trim().is_empty() {
+            return Err(StoreError::Message("a Study needs a name".into()));
         }
+        self.conn.execute(
+            "INSERT INTO studies (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            rusqlite::params![id, name.trim(), created_at],
+        )?;
         Ok(())
+    }
+
+    pub fn add_study_record(&self, study_id: &str, record_id: &str) -> Result<(), StoreError> {
+        let eligible: bool = self.conn.query_row(
+            "SELECT kind = 'analysis' OR result_score IS NOT NULL FROM game_records WHERE id = ?1",
+            [record_id],
+            |row| row.get(0),
+        ).map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows =>
+                StoreError::Message("Game Record is unavailable".into()),
+            other => other.into(),
+        })?;
+        if !eligible {
+            return Err(StoreError::Message(
+                "unfinished Played Games cannot belong to a Study".into(),
+            ));
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO study_records (study_id, record_id, position)
+             VALUES (?1, ?2, COALESCE((SELECT MAX(position) + 1 FROM study_records WHERE study_id = ?1), 0))",
+            rusqlite::params![study_id, record_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn reorder_study_record(
+        &self,
+        study_id: &str,
+        record_id: &str,
+        position: usize,
+    ) -> Result<(), StoreError> {
+        let ids = self.study(study_id)?.ok_or_else(|| StoreError::Message("Study is unavailable".into()))?.record_ids;
+        let Some(from) = ids.iter().position(|id| id == record_id) else {
+            return Err(StoreError::Message("Game Record is not in the Study".into()));
+        };
+        let mut reordered = ids;
+        let id = reordered.remove(from);
+        reordered.insert(position.min(reordered.len()), id);
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE study_records SET position = -position - 1 WHERE study_id = ?1",
+            [study_id],
+        )?;
+        for (index, id) in reordered.iter().enumerate() {
+            transaction.execute(
+                "UPDATE study_records SET position = ?3 WHERE study_id = ?1 AND record_id = ?2",
+                rusqlite::params![study_id, id, index as i64],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_study_record(&self, study_id: &str, record_id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM study_records WHERE study_id = ?1 AND record_id = ?2",
+            rusqlite::params![study_id, record_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn study(&self, id: &str) -> Result<Option<Study>, StoreError> {
+        let name = match self.conn.query_row(
+            "SELECT name FROM studies WHERE id = ?1", [id], |row| row.get::<_, String>(0)
+        ) {
+            Ok(name) => name,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT record_id FROM study_records WHERE study_id = ?1 ORDER BY position, record_id"
+        )?;
+        let record_ids = statement.query_map([id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(Study { id: id.into(), name, record_ids }))
+    }
+
+    pub fn list_studies(&self) -> Result<Vec<Study>, StoreError> {
+        let mut statement = self.conn.prepare("SELECT id FROM studies ORDER BY created_at, id")?;
+        let study_ids = statement.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        study_ids
+            .iter()
+            .map(|id| self.study(id).map(Option::unwrap))
+            .collect()
     }
 
     pub fn set_residue(&self, key: &str, value: &str) -> Result<(), StoreError> {
@@ -611,11 +698,6 @@ fn encode_payload(payload: &GameRecordPayload) -> Result<String, StoreError> {
     push_json_string(&mut out, &payload.variant);
     out.push_str(",\"start_fen\":");
     push_json_string(&mut out, &payload.start_fen);
-    out.push_str(",\"variant_snapshot\":");
-    match &payload.variant_snapshot {
-        Some(snapshot) => out.push_str(&serde_json::to_string(snapshot).map_err(json_error)?),
-        None => out.push_str("null"),
-    }
     out.push_str(",\"moves\":[");
     for (index, played) in payload.moves.iter().enumerate() {
         if index > 0 {
@@ -661,17 +743,12 @@ fn encode_payload(payload: &GameRecordPayload) -> Result<String, StoreError> {
 fn decode_payload(text: &str) -> Result<GameRecordPayload, StoreError> {
     let variant = required_string(text, "variant")?;
     let start_fen = required_string(text, "start_fen")?;
-    let variant_snapshot = extract_object(text, "variant_snapshot")
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(json_error)?;
     let moves = decode_moves(text)?;
     let result = decode_optional_result(text)?;
     let participation = optional_string(text, "participation")?;
     let clock = optional_string(text, "clock")?;
     Ok(GameRecordPayload {
         variant,
-        variant_snapshot,
         start_fen,
         moves,
         result,
@@ -1072,8 +1149,17 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 .map_err(|_| format!("unreadable schema version: {version}"))?;
             if parsed == SCHEMA_VERSION {
                 Ok(())
-            } else if parsed == 1 && SCHEMA_VERSION == 2 {
+            } else if parsed == 1 {
                 create_analysis_schema(conn)?;
+                create_studies_schema(conn)?;
+                conn.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    [SCHEMA_VERSION.to_string()],
+                )
+                .map_err(|error| format!("could not record schema version: {error}"))?;
+                Ok(())
+            } else if parsed == 2 {
+                create_studies_schema(conn)?;
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     [SCHEMA_VERSION.to_string()],
@@ -1125,7 +1211,8 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("could not create base schema tables: {error}"))?;
-    create_analysis_schema(conn)
+    create_analysis_schema(conn)?;
+    create_studies_schema(conn)
 }
 
 fn create_analysis_schema(conn: &Connection) -> Result<(), String> {
@@ -1147,6 +1234,28 @@ fn create_analysis_schema(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("could not migrate Analysis Record tables: {error}"))
+}
+
+fn create_studies_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE studies (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE study_records (
+            study_id TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+            record_id TEXT NOT NULL REFERENCES game_records(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (study_id, record_id),
+            UNIQUE (study_id, position)
+        );
+        CREATE INDEX study_records_by_record ON study_records(record_id);
+        ",
+    )
+    .map_err(|error| format!("could not migrate Study tables: {error}"))
 }
 
 #[cfg(test)]
@@ -1214,6 +1323,42 @@ mod tests {
     }
 
     #[test]
+    fn studies_keep_order_many_to_many_and_only_accept_eligible_records() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            let writer = store.workspace();
+            writer.upsert_game_record(&completed_record("completed", "Completed")).unwrap();
+            writer.derive_analysis_record("completed", "analysis-1", "now").unwrap();
+            writer.derive_analysis_record("completed", "analysis-2", "later").unwrap();
+            let mut unfinished = completed_record("unfinished", "Unfinished");
+            unfinished.payload.result = None;
+            unfinished.result_score = None;
+            writer.upsert_game_record(&unfinished).unwrap();
+            writer.create_study("study-1", "Ideas", "now").unwrap();
+            writer.create_study("study-2", "Openings", "now").unwrap();
+            writer.add_study_record("study-1", "completed").unwrap();
+            writer.add_study_record("study-1", "analysis-1").unwrap();
+            writer.add_study_record("study-1", "analysis-2").unwrap();
+            writer.add_study_record("study-2", "analysis-1").unwrap();
+            assert!(writer.add_study_record("study-1", "unfinished").is_err());
+            writer.reorder_study_record("study-1", "analysis-2", 0).unwrap();
+            writer.remove_study_record("study-1", "analysis-1").unwrap();
+            assert!(writer.get_game_record("analysis-1").unwrap().is_some());
+        }
+        let store = LiveStore::open(&path).unwrap();
+        assert_eq!(
+            store.workspace().study("study-1").unwrap().unwrap().record_ids,
+            vec!["analysis-2", "completed"]
+        );
+        assert_eq!(
+            store.workspace().study("study-2").unwrap().unwrap().record_ids,
+            vec!["analysis-1"]
+        );
+    }
+
+    #[test]
     fn source_snapshot_and_pinned_engine_line_survive_source_purge_and_restart() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
@@ -1255,42 +1400,6 @@ mod tests {
     }
 
     #[test]
-    fn a_variant_definition_bound_into_a_game_record_cannot_be_purged() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("live-store.sqlite");
-        let store = LiveStore::open(&path).unwrap();
-        let mut payload = GameRecordPayload::empty_standard();
-        payload.variant = "omachess".into();
-        payload.variant_snapshot = Some(VariantSnapshot {
-            definition_id: "variant-draft".into(),
-            definition: r#"{"schemaVersion":"1"}"#.into(),
-            adapter: "[omachess:chess]\n".into(),
-        });
-        store
-            .workspace()
-            .upsert_game_record(&GameRecord {
-                id: "variant-game".into(),
-                kind: GameRecordKind::Played,
-                title: None,
-                result_score: None,
-                ply_count: 0,
-                archived: false,
-                created_at: "2026-07-27T00:00:00Z".into(),
-                updated_at: "2026-07-27T00:00:00Z".into(),
-                payload,
-            })
-            .unwrap();
-
-        let error = store
-            .workspace()
-            .purge_variant_definition("variant-draft")
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("bound into an existing Variant Snapshot"));
-    }
-
-    #[test]
     fn opening_a_new_live_store_records_current_schema_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
@@ -1315,7 +1424,6 @@ mod tests {
                 updated_at: "2026-07-27T00:00:00Z".into(),
                 payload: GameRecordPayload {
                     variant: "standard".into(),
-                    variant_snapshot: None,
                     start_fen: GameRecordPayload::STANDARD_START.to_owned(),
                     moves: vec![MoveEntry {
                         uci: "e2e4".into(),

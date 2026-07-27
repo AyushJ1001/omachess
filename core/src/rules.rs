@@ -22,6 +22,7 @@ extern "C" {
     fn omachess_rules_san(rules: *mut OmachessRules, uci_move: *const c_char) -> *const c_char;
     fn omachess_rules_push(rules: *mut OmachessRules, uci_move: *const c_char) -> c_int;
     fn omachess_rules_bounded_search(rules: *mut OmachessRules, depth: c_int) -> c_int;
+    fn omachess_rules_analysis(rules: *mut OmachessRules, depth: c_int) -> *const c_char;
     fn omachess_rules_pop(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_side_to_move(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_in_check(rules: *mut OmachessRules) -> c_int;
@@ -247,6 +248,15 @@ impl Rules {
 
     pub fn bounded_search(&mut self, depth: i32) -> bool {
         unsafe { omachess_rules_bounded_search(self.handle, depth) == 1 }
+    }
+
+    pub fn analysis(&mut self, depth: i32) -> Option<(String, String)> {
+        let value = unsafe { CStr::from_ptr(omachess_rules_analysis(self.handle, depth)) }
+            .to_str()
+            .ok()?;
+        let (score, variation) = value.split_once('|')?;
+        (!score.is_empty() && !variation.is_empty())
+            .then(|| (score.to_owned(), variation.to_owned()))
     }
 
     /// Takes back the last move, or reports that the game is at its start.

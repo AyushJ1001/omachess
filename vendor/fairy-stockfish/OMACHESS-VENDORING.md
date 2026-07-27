@@ -30,8 +30,9 @@ pin a copy rather than a merge.
 `core/build.rs` compiles these sources plus the bridge into a static library
 and links it into the Rust core. It configures the engine with `LARGEBOARDS`,
 `PRECOMPUTED_MAGICS`, and `ALLVARS`, which is the build the Variant Workshop
-needs, and with `NNUE_EMBEDDING_OFF`, because Omachess asks the engine for
-rules and never for an evaluation — no neural network ships with the app.
+needs, and with `NNUE_EMBEDDING_OFF`. Player-made variants use this pinned
+build's generic handcrafted evaluator for disclosed, bounded Live Position
+Analysis; no neural network ships with the app.
 
 ## Updating the pin
 

@@ -105,17 +105,7 @@ impl Game {
 
     /// Rebuilds a Game Record from its starting position and played moves.
     pub fn from_history(start_fen: &str, moves: Vec<PlayedMove>) -> Option<Self> {
-        Self::from_variant_history("standard", start_fen, moves)
-    }
-
-    /// Rebuilds a Game Record under the Rules Authority variant named by its
-    /// immutable Variant Snapshot.
-    pub fn from_variant_history(
-        variant: &str,
-        start_fen: &str,
-        moves: Vec<PlayedMove>,
-    ) -> Option<Self> {
-        let mut rules = Rules::new(variant, Some(start_fen))?;
+        let mut rules = Rules::new("standard", Some(start_fen))?;
         for played in &moves {
             if !rules.push(&played.uci) {
                 return None;
@@ -136,8 +126,29 @@ impl Game {
         Self::from_history(fen, Vec::new())
     }
 
-    pub fn from_variant(variant: &str, start_fen: &str) -> Option<Self> {
-        Self::from_variant_history(variant, start_fen, Vec::new())
+    pub fn variant(variant: &str, fen: &str) -> Option<Self> {
+        Self::variant_from_history(variant, fen, Vec::new())
+    }
+
+    pub fn variant_from_history(
+        variant: &str,
+        start_fen: &str,
+        moves: Vec<PlayedMove>,
+    ) -> Option<Self> {
+        let mut rules = Rules::new(variant, Some(start_fen))?;
+        for played in &moves {
+            if !rules.push(&played.uci) {
+                return None;
+            }
+        }
+        let outcome = rules.outcome();
+        Some(Game {
+            rules,
+            start_fen: start_fen.to_owned(),
+            cursor: moves.len(),
+            moves,
+            outcome,
+        })
     }
 
     pub fn start_fen(&self) -> &str {
@@ -153,6 +164,10 @@ impl Game {
 
     pub fn fen(&mut self) -> String {
         self.rules.fen()
+    }
+
+    pub fn analysis(&mut self) -> Option<(String, String)> {
+        self.rules.analysis(2)
     }
 
     /// Whether White is to move in the Displayed Position.
@@ -269,7 +284,7 @@ impl Game {
         }
 
         if let Some(role) = promotion {
-            if !PROMOTION_ROLES.contains(&role) && !role.starts_with("fairy_") {
+            if !PROMOTION_ROLES.contains(&role) {
                 return Err(MoveRejected::Illegal);
             }
         }
