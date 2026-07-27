@@ -173,6 +173,13 @@ ApplicationWindow {
                 actions.push(action("dismiss-restore", qsTr("Dismiss restore offer"), "Escape",
                                     function() { WorkspaceSession.dismissRestore() }))
             }
+            if (WorkspaceSession.gameSuspended) {
+                actions.push(action("resume-game", qsTr("Resume Played Game"), "Ctrl+Shift+R",
+                                    function() { WorkspaceSession.resumeGame() }))
+            } else if (WorkspaceSession.canSuspendGame) {
+                actions.push(action("suspend-game", qsTr("Suspend Played Game"), "Ctrl+Shift+S",
+                                    function() { WorkspaceSession.suspendGame() }))
+            }
             ActionRegistry.replace("cockpit", actions)
         }
     }
@@ -257,6 +264,18 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            Button {
+                objectName: WorkspaceSession.gameSuspended ? "resumeGameButton"
+                                                           : "suspendGameButton"
+                visible: WorkspaceSession.gameSuspended
+                         || WorkspaceSession.canSuspendGame
+                text: WorkspaceSession.gameSuspended ? qsTr("Resume play")
+                                                     : qsTr("Suspend")
+                onClicked: WorkspaceSession.gameSuspended
+                           ? WorkspaceSession.resumeGame()
+                           : WorkspaceSession.suspendGame()
             }
 
             ComboBox {
