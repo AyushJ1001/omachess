@@ -7,6 +7,7 @@
 //! See `include/omachess_core.h` for the header the workspace compiles against.
 
 use std::ffi::{c_char, CStr, CString};
+use std::cell::RefCell;
 
 use crate::session::{CommandError, Session};
 
@@ -21,14 +22,46 @@ pub const OMACHESS_ERR_MALFORMED_COMMAND: i32 = 2;
 pub const OMACHESS_ERR_NULL_ARGUMENT: i32 = 3;
 pub const OMACHESS_ERR_INVALID_UTF8: i32 = 4;
 pub const OMACHESS_ERR_REJECTED_MOVE: i32 = 5;
+pub const OMACHESS_ERR_STORE: i32 = 6;
 
-/// Creates a session holding the standard-chess starting position.
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+}
+
+fn set_last_error(message: impl Into<String>) {
+    let message = CString::new(message.into()).unwrap_or_else(|_| {
+        CString::new("Live Store error").expect("literal has no interior NUL")
+    });
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
+}
+
+/// Creates a session against the Live Store at the fixed XDG location.
 ///
-/// The caller owns the returned handle and must release it with
+/// Returns null when the Live Store cannot be opened (for example a failed
+/// fail-closed migration). Call `omachess_last_error` for the reason. The
+/// caller owns a non-null handle and must release it with
 /// `omachess_session_free`.
 #[no_mangle]
 pub extern "C" fn omachess_session_new() -> *mut OmachessSession {
-    Box::into_raw(Box::new(OmachessSession { inner: Session::new() }))
+    match Session::open_default() {
+        Ok(inner) => Box::into_raw(Box::new(OmachessSession { inner })),
+        Err(error) => {
+            set_last_error(error.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// The most recent open failure message, or null when none is recorded.
+///
+/// The returned pointer is valid until the next failing `omachess_session_new`
+/// call. It must not be freed by the caller.
+#[no_mangle]
+pub extern "C" fn omachess_last_error() -> *const c_char {
+    LAST_ERROR.with(|slot| match slot.borrow().as_ref() {
+        Some(message) => message.as_ptr(),
+        None => std::ptr::null(),
+    })
 }
 
 /// Releases a session. Passing null is a no-op.
@@ -67,6 +100,7 @@ pub unsafe extern "C" fn omachess_session_submit(
         Err(CommandError::UnknownCommand) => OMACHESS_ERR_UNKNOWN_COMMAND,
         Err(CommandError::MalformedCommand) => OMACHESS_ERR_MALFORMED_COMMAND,
         Err(CommandError::RejectedMove) => OMACHESS_ERR_REJECTED_MOVE,
+        Err(CommandError::Store) => OMACHESS_ERR_STORE,
     }
 }
 
@@ -109,6 +143,25 @@ pub unsafe extern "C" fn omachess_string_free(text: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // rusqlite/Open uses process-wide XDG; serialize and isolate these tests.
+    static XDG_LOCK: Mutex<()> = Mutex::new(());
+
+    struct IsolatedDataHome {
+        _dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn isolate_xdg() -> IsolatedDataHome {
+        let guard = XDG_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("XDG_DATA_HOME", dir.path());
+        IsolatedDataHome {
+            _dir: dir,
+            _guard: guard,
+        }
+    }
 
     unsafe fn drain(session: *mut OmachessSession) -> Vec<String> {
         let mut events = Vec::new();
@@ -124,8 +177,10 @@ mod tests {
 
     #[test]
     fn a_session_round_trips_a_command_into_an_event() {
+        let _xdg = isolate_xdg();
         unsafe {
             let session = omachess_session_new();
+            assert!(!session.is_null());
             let command = CString::new(r#"{"type":"describe_board"}"#).unwrap();
             assert_eq!(omachess_session_submit(session, command.as_ptr()), OMACHESS_OK);
             let events = drain(session);
@@ -137,8 +192,10 @@ mod tests {
 
     #[test]
     fn rejected_commands_report_a_code_and_produce_no_events() {
+        let _xdg = isolate_xdg();
         unsafe {
             let session = omachess_session_new();
+            assert!(!session.is_null());
             let command = CString::new(r#"{"type":"castle"}"#).unwrap();
             assert_eq!(
                 omachess_session_submit(session, command.as_ptr()),
@@ -151,6 +208,7 @@ mod tests {
 
     #[test]
     fn null_arguments_are_reported_rather_than_dereferenced() {
+        let _xdg = isolate_xdg();
         unsafe {
             let command = CString::new(r#"{"type":"flip_board"}"#).unwrap();
             assert_eq!(
@@ -158,6 +216,7 @@ mod tests {
                 OMACHESS_ERR_NULL_ARGUMENT
             );
             let session = omachess_session_new();
+            assert!(!session.is_null());
             assert_eq!(
                 omachess_session_submit(session, std::ptr::null()),
                 OMACHESS_ERR_NULL_ARGUMENT

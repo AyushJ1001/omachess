@@ -8,3 +8,9 @@ publish = false
 [lib]
 name = "omachess_core"
 crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+omachess-store = { path = "../store" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -158,6 +158,10 @@ _Avoid_: Installed engine, available engine
 
 ## Desktop integration
 
+**Desktop Identity**:
+The single reverse-DNS string `com.omachess.Omachess` that serves at once as Omachess's desktop entry ID, hicolor icon name, and Wayland app ID. It is fixed permanently for v0.1 so launcher entries, window rules, keybindings, and notifications keep resolving to the same application.
+_Avoid_: Window class, bundle ID, app name
+
 **Quattro Palette**:
 The semantic color set exposed by the active Omarchy 4 theme for Omachess to translate into its own visual roles.
 _Avoid_: Omarchy palette, shell theme

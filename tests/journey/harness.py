@@ -191,6 +191,7 @@ class Workspace:
         executable: Path,
         *,
         platform: str | None = None,
+        data_home: Path | None = None,
         omarchy_version: str | None = "4.0.0.alpha",
         palette: dict[str, str] | None = None,
         theme_name: str = "journey-a",
@@ -199,8 +200,14 @@ class Workspace:
     ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
-        self._directory = tempfile.TemporaryDirectory(prefix="omachess-journey-")
-        self._root = Path(self._directory.name)
+        self._owned_directory = data_home is None
+        if data_home is None:
+            self._directory = tempfile.TemporaryDirectory(prefix="omachess-journey-")
+            self._root = Path(self._directory.name)
+        else:
+            self._directory = None
+            self._root = data_home
+            self._root.mkdir(parents=True, exist_ok=True)
         self._socket_path = str(self._root / "control")
         self._omarchy_prefix = self._root / "omarchy-prefix"
         self._state_home = self._root / "xdg_state_home"
@@ -212,6 +219,11 @@ class Workspace:
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
+
+    @property
+    def data_home(self) -> Path:
+        """The isolated XDG data home this run uses for the Live Store."""
+        return self._root / "xdg_data_home"
 
     def __enter__(self) -> "Workspace":
         self.start()
@@ -225,12 +237,8 @@ class Workspace:
         environment["OMACHESS_TEST_CHANNEL"] = self._socket_path
         environment["QT_QPA_PLATFORM"] = self._platform
         # Isolate the run from the developer's own configuration and state.
-        for variable, folder in (
-            ("XDG_CONFIG_HOME", "xdg_config_home"),
-            ("XDG_DATA_HOME", "xdg_data_home"),
-            ("XDG_STATE_HOME", "xdg_state_home"),
-        ):
-            directory = self._root / folder
+        for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+            directory = self._root / variable.lower()
             directory.mkdir(parents=True, exist_ok=True)
             environment[variable] = str(directory)
 
@@ -250,6 +258,12 @@ class Workspace:
                 self._initial_palette or VALID_PALETTE_A,
                 name=self._theme_name,
             )
+
+        # A prior run may have left a stale control socket in a reused data dir.
+        try:
+            os.unlink(self._socket_path)
+        except FileNotFoundError:
+            pass
 
         self._process = subprocess.Popen(
             [str(self._executable)],
@@ -289,6 +303,33 @@ class Workspace:
             shutil.rmtree(target)
         staging.rename(target)
         (current / "theme.name").write_text(name + "\n", encoding="utf-8")
+
+    def restart(self) -> None:
+        """Quit and relaunch against the same XDG homes, keeping the Live Store."""
+        self.stop(cleanup=False)
+        self._buffer = b""
+        self.start()
+
+    def stop(self, *, cleanup: bool = True) -> None:
+        if self._connection is not None:
+            try:
+                self._request({"command": "quit"})
+            except (JourneyError, OSError, json.JSONDecodeError):
+                pass
+            self._connection.close()
+            self._connection = None
+        if self._process is not None:
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=10)
+            if self._process.stdout is not None:
+                self._process.stdout.close()
+            self._process = None
+        if cleanup and self._owned_directory and self._directory is not None:
+            self._directory.cleanup()
+            self._directory = None
 
     def _connect(self) -> socket.socket:
         deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
@@ -472,25 +513,6 @@ class Workspace:
                 if len(fields) > 9 and fields[9] in inodes:
                     found.append(f"{table} {fields[1]} -> {fields[2]}")
         return found
-
-    def stop(self) -> None:
-        if self._connection is not None:
-            try:
-                self._request({"command": "quit"})
-            except (JourneyError, OSError, json.JSONDecodeError):
-                pass
-            self._connection.close()
-            self._connection = None
-        if self._process is not None:
-            try:
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=10)
-            if self._process.stdout is not None:
-                self._process.stdout.close()
-            self._process = None
-        self._directory.cleanup()
 
 
 def executable_under_test() -> Path:

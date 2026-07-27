@@ -9,7 +9,7 @@ On Omarchy (Arch), everything is in the official repositories:
 
 ```bash
 sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative \
-  qt6-svg python
+  qt6-svg python sqlite
 ```
 
 | Tool | Why |
@@ -19,6 +19,7 @@ sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative \
 | A C++ toolchain | builds vendored Fairy-Stockfish, which the core links |
 | Qt 6.5+ Quick and Quick Controls | the workspace window |
 | Qt 6 SVG | draws the vector Piece Set artwork |
+| SQLite 3 | system library linked by the Live Store (`rusqlite`) |
 | Python 3.11+ | runs the journey tests |
 
 ## Build and run
@@ -35,12 +36,30 @@ module. There is no separate cargo step to remember.
 
 The core's own `build.rs` compiles vendored Fairy-Stockfish and the rules
 bridge, so the first build spends a minute or two on the engine and then reuses
-it. Nothing is downloaded: the engine source is in the repository and the core
-has no crate dependencies.
+it. Nothing is downloaded: the engine source is in the repository. The core
+depends on the Live Store crate, which links against system SQLite.
 
 For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
-(`cmake --install build`) puts `omachess` on the path and installs
-`com.omachess.Omachess.desktop`, which gives the window its stable app ID.
+(`cmake --install build`) puts `omachess` on the path and installs the launcher
+entry, the hicolor icon, and the installed documentation.
+
+## Packaging
+
+`packaging/PKGBUILD` is the AUR recipe: it builds Omachess from a signed source
+tarball, depends hard on Omarchy 4, and installs nothing but program files, the
+launcher entry, its icon, and `docs/install.md`. It has no install scriptlet,
+no Hyprland rules, and no Omarchy hooks. Regenerate `packaging/.SRCINFO` with
+`makepkg --printsrcinfo -p PKGBUILD > .SRCINFO` whenever the recipe changes;
+a packaging test fails if the two drift apart.
+
+`com.omachess.Omachess` is the desktop entry ID, the icon name, and the Wayland
+app ID, and it is **fixed permanently for v0.1**. Changing it breaks every
+player's window rules and keybindings, so it is not a refactor. `docs/install.md`
+is the player-facing install, backup, export, and removal guidance and ships
+inside the package.
+
+Backup paths for the Live Store and preferences are documented in
+[`docs/backup.md`](docs/backup.md).
 
 ## Tests
 
@@ -48,11 +67,15 @@ For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
 ctest --test-dir build --output-on-failure
 ```
 
-That runs two suites:
+That runs three suites:
 
 - **Core unit tests** (`cargo test`) cover the Rust core's own behaviour.
 - **Journey tests** launch the real `omachess` binary, drive it, and assert
   what ends up on screen.
+- **Packaging tests** stage an installation with `cmake --install`, then assert
+  what a player who installed the `omachess` package actually gets: the
+  launcher entry, the icon, the desktop identity, the installed footprint, and
+  the same workspace launching from the installed binary.
 
 Journey tests are the highest acceptance seam in this project: they assert
 externally observable behaviour of the running application, never QML
@@ -74,10 +97,14 @@ vendor/          Fairy-Stockfish, the Rules Authority
 core/            the Rust core: owns all chess state
   rules/         the C bridge to the Rules Authority
   include/       the command-and-event C ABI header
+store/           the Live Store: SQLite Personal Library persistence
 app/src/         the workspace: C++ glue around the ABI
 app/qml/         the workspace: how a game looks
   pieces/        Piece Set artwork
+packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
+tests/packaging/ the same, against a staged installation
+docs/backup.md   which XDG paths a player should copy
 ```
 
 ## The Rules Authority

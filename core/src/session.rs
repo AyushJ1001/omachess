@@ -7,9 +7,20 @@
 //! Every chess answer in an event comes from the Played Game, which gets it
 //! from the Rules Authority. The session decides nothing about chess: it
 //! decides what a workspace needs to be told.
+//!
+//! When opened against a Live Store, every successful change advances the
+//! Game Record's Saved Snapshot, and closing the session records workspace
+//! residue so a later session can offer restore.
+
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use omachess_store::{
+    GameRecord, GameRecordKind, GameRecordPayload, LiveStore, MoveEntry, OpenError, RecordResult,
+};
 
 use crate::board::Orientation;
-use crate::game::{result_label, Destination, Game, MoveRejected};
+use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove};
 use crate::json;
 use crate::rules::Winner;
 
@@ -17,6 +28,17 @@ pub struct Session {
     game: Game,
     orientation: Orientation,
     events: Vec<String>,
+    store: Option<LiveStore>,
+    /// The Game Record currently being played, when the session has a store.
+    record_id: Option<String>,
+    /// A prior Game Record the player may restore, when residue points at one.
+    restore_offer: Option<RestoreOffer>,
+}
+
+#[derive(Clone, Debug)]
+struct RestoreOffer {
+    record_id: String,
+    ply_count: u32,
 }
 
 /// Why a command was rejected. Values are part of the C ABI contract.
@@ -27,15 +49,59 @@ pub enum CommandError {
     /// The player's intent was understood but the game cannot honour it — an
     /// illegal move, or a move in a game that is over or being reviewed.
     RejectedMove = 5,
+    /// The Live Store could not honour a durable operation.
+    Store = 6,
 }
 
+/// Why a session could not be opened against the Live Store.
+pub type SessionOpenError = OpenError;
+
 impl Session {
+    /// An ephemeral session with no Live Store — used by unit tests that only
+    /// exercise in-memory play.
     pub fn new() -> Self {
         Session {
             game: Game::standard(),
             orientation: Orientation::WhiteBottom,
             events: Vec::new(),
+            store: None,
+            record_id: None,
+            restore_offer: None,
         }
+    }
+
+    /// Opens a session against the Live Store at the fixed XDG location.
+    pub fn open_default() -> Result<Self, SessionOpenError> {
+        Self::open_store(LiveStore::open_default()?)
+    }
+
+    /// Opens a session against the Live Store at `path`.
+    pub fn open(path: &Path) -> Result<Self, SessionOpenError> {
+        Self::open_store(LiveStore::open(path)?)
+    }
+
+    fn open_store(store: LiveStore) -> Result<Self, SessionOpenError> {
+        let restore_offer = match store.workspace().residue("active_record_id") {
+            Ok(Some(record_id)) => match store.workspace().get_game_record(&record_id) {
+                Ok(Some(record)) if record.ply_count > 0 || record.payload.result.is_some() => {
+                    Some(RestoreOffer {
+                        record_id,
+                        ply_count: record.ply_count,
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+
+        Ok(Session {
+            game: Game::standard(),
+            orientation: Orientation::WhiteBottom,
+            events: Vec::new(),
+            store: Some(store),
+            record_id: None,
+            restore_offer,
+        })
     }
 
     /// Applies one command given as JSON, queueing the events it produces.
@@ -50,10 +116,17 @@ impl Session {
             "flip_board" => self.orientation = self.orientation.flipped(),
             "play_move" => self.play_move(command)?,
             "navigate" => self.navigate(command)?,
+            "restore_record" => self.restore_record()?,
+            "dismiss_restore" => self.dismiss_restore()?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
         self.events.push(event);
+        if kind == "describe_board" {
+            if let Some(offer) = &self.restore_offer {
+                self.events.push(restore_available_event(offer));
+            }
+        }
         Ok(())
     }
 
@@ -79,7 +152,9 @@ impl Session {
                 MoveRejected::Illegal | MoveRejected::GameOver | MoveRejected::Reviewing => {
                     CommandError::RejectedMove
                 }
-            })
+            })?;
+        self.persist_current_record()?;
+        Ok(())
     }
 
     fn navigate(&mut self, command: &str) -> Result<(), CommandError> {
@@ -92,6 +167,132 @@ impl Session {
         // Asking to go where the board already is is not a failure; the
         // workspace still gets told what it is showing.
         self.game.navigate(destination);
+        Ok(())
+    }
+
+    fn restore_record(&mut self) -> Result<(), CommandError> {
+        let Some(offer) = self.restore_offer.clone() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let Some(store) = self.store.as_ref() else {
+            return Err(CommandError::Store);
+        };
+        let record = store
+            .workspace()
+            .get_game_record(&offer.record_id)
+            .map_err(|_| CommandError::Store)?
+            .ok_or(CommandError::Store)?;
+        let moves = record
+            .payload
+            .moves
+            .into_iter()
+            .map(|entry| PlayedMove {
+                uci: entry.uci,
+                san: entry.san,
+                number: entry.number,
+                side: match entry.side.as_str() {
+                    "black" => "black",
+                    _ => "white",
+                },
+            })
+            .collect();
+        self.game = Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        self.record_id = Some(record.id);
+        self.restore_offer = None;
+        self.persist_residue()?;
+        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        Ok(())
+    }
+
+    fn dismiss_restore(&mut self) -> Result<(), CommandError> {
+        self.restore_offer = None;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .workspace()
+                .clear_residue("active_record_id")
+                .map_err(|_| CommandError::Store)?;
+        }
+        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        Ok(())
+    }
+
+    fn persist_current_record(&mut self) -> Result<(), CommandError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let now = timestamp_now();
+        let id = self
+            .record_id
+            .clone()
+            .unwrap_or_else(|| new_record_id());
+        let outcome = self.game.outcome();
+        let result = if outcome.is_over() {
+            Some(RecordResult {
+                status: status_name(outcome.winner).to_owned(),
+                termination: outcome.termination.name().to_owned(),
+                score: outcome.winner.score().to_owned(),
+            })
+        } else {
+            None
+        };
+        let result_score = result.as_ref().map(|result| result.score.clone());
+        let payload = GameRecordPayload {
+            variant: "standard".into(),
+            start_fen: self.game.start_fen().to_owned(),
+            moves: self
+                .game
+                .moves()
+                .iter()
+                .map(|played| MoveEntry {
+                    uci: played.uci.clone(),
+                    san: played.san.clone(),
+                    number: played.number,
+                    side: played.side.to_owned(),
+                })
+                .collect(),
+            result,
+            participation: None,
+            clock: None,
+        };
+        let created_at = store
+            .workspace()
+            .get_game_record(&id)
+            .ok()
+            .flatten()
+            .map(|existing| existing.created_at)
+            .unwrap_or_else(|| now.clone());
+        let record = GameRecord {
+            id: id.clone(),
+            kind: GameRecordKind::Played,
+            title: None,
+            result_score,
+            ply_count: payload.moves.len() as u32,
+            archived: false,
+            created_at,
+            updated_at: now,
+            payload,
+        };
+        store
+            .workspace()
+            .upsert_game_record(&record)
+            .map_err(|_| CommandError::Store)?;
+        self.record_id = Some(id);
+        self.persist_residue()?;
+        // Playing a new game dismisses any prior restore offer.
+        self.restore_offer = None;
+        Ok(())
+    }
+
+    fn persist_residue(&self) -> Result<(), CommandError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        if let Some(id) = &self.record_id {
+            store
+                .workspace()
+                .set_residue("active_record_id", id)
+                .map_err(|_| CommandError::Store)?;
+        }
         Ok(())
     }
 
@@ -200,6 +401,33 @@ impl Session {
     }
 }
 
+fn restore_available_event(offer: &RestoreOffer) -> String {
+    let mut out = String::from("{\"type\":\"restore_available\",\"recordId\":");
+    json::write_string(&mut out, &offer.record_id);
+    out.push_str(",\"plyCount\":");
+    out.push_str(&offer.ply_count.to_string());
+    out.push_str(",\"label\":");
+    json::write_string(&mut out, "Restore previous game");
+    out.push('}');
+    out
+}
+
+fn new_record_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("gr_{nanos}")
+}
+
+fn timestamp_now() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
 /// The stable status identifier a workspace switches on.
 fn status_name(winner: Winner) -> &'static str {
     match winner {
@@ -213,6 +441,12 @@ fn status_name(winner: Winner) -> &'static str {
 impl Default for Session {
     fn default() -> Self {
         Session::new()
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.persist_residue();
     }
 }
 
@@ -401,5 +635,46 @@ mod tests {
             session.submit(r#"{"type":"play_move","from":"e1","to":"f2"}"#),
             Err(CommandError::RejectedMove)
         );
+    }
+
+    #[test]
+    fn a_played_game_reloads_from_the_live_store_after_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+
+        {
+            let mut session = Session::open(&path).unwrap();
+            play(&mut session, "e2", "e4");
+            play(&mut session, "e7", "e5");
+            play(&mut session, "g1", "f3");
+            // Closing the session is the restart boundary: residue is written
+            // when the session ends.
+            drop(session);
+        }
+
+        let mut session = Session::open(&path).unwrap();
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = session.poll_event() {
+            events.push(event);
+        }
+        assert!(
+            events.iter().any(|event| event.contains(r#""type":"restore_available""#)),
+            "restart must offer to restore the previous Game Record: {events:?}"
+        );
+
+        session.submit(r#"{"type":"restore_record"}"#).unwrap();
+        let mut restored = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"board_changed""#) {
+                restored = Some(event);
+            }
+        }
+        let event = restored.expect("restore answers with the board");
+        assert!(event.contains(r#""san":"e4"#));
+        assert!(event.contains(r#""san":"e5"#));
+        assert!(event.contains(r#""san":"Nf3"#));
+        assert!(event.contains(r#""cursor":3"#));
+        assert!(event.contains(r#""piece":"white_knight""#) && event.contains(r#""name":"f3""#));
     }
 }
