@@ -63,6 +63,8 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString setupFen READ setupFen NOTIFY boardChanged)
     Q_PROPERTY(QString setupError READ setupError NOTIFY boardChanged)
     Q_PROPERTY(QString positionCapabilities READ positionCapabilities NOTIFY boardChanged)
+    Q_PROPERTY(QString displayedFen READ displayedFen NOTIFY boardChanged)
+    Q_PROPERTY(bool displayedPositionRuleValid READ displayedPositionRuleValid NOTIFY boardChanged)
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
@@ -129,6 +131,11 @@ public:
     QString setupFen() const { return field(QStringLiteral("setupFen")); }
     QString setupError() const { return field(QStringLiteral("setupError")); }
     QString positionCapabilities() const { return field(QStringLiteral("positionCapabilities")); }
+    QString displayedFen() const { return field(QStringLiteral("displayedFen")); }
+    bool displayedPositionRuleValid() const
+    {
+        return m_state.value(QStringLiteral("displayedPositionRuleValid")).toBool();
+    }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }

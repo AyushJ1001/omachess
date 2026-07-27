@@ -1279,6 +1279,16 @@ impl Session {
             out.push('}');
         }
         out.push(']');
+        out.push_str(",\"displayedFen\":");
+        json::write_string(&mut out, &position.setup_fen());
+        out.push_str(",\"displayedPositionRuleValid\":");
+        out.push_str(
+            if self.setup.as_ref().is_none_or(|setup| setup.rule_valid) {
+                "true"
+            } else {
+                "false"
+            },
+        );
 
         if let Some(setup) = &self.setup {
             out.push_str(",\"activity\":\"position_setup\",\"positionClass\":");

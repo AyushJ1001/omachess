@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
+#include <QMap>
 
 // Curated engines are discovered only at catalog-owned paths. A discovered
 // executable is never started until consent is recorded for that exact path.
@@ -16,6 +17,11 @@ class EngineManager : public QAbstractListModel
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
+    Q_PROPERTY(bool analysisReady READ analysisReady NOTIFY analysisChanged)
+    Q_PROPERTY(bool analyzing READ analyzing NOTIFY analysisChanged)
+    Q_PROPERTY(QString analysisEvaluation READ analysisEvaluation NOTIFY analysisChanged)
+    Q_PROPERTY(QStringList analysisVariations READ analysisVariations NOTIFY analysisChanged)
+    Q_PROPERTY(QString analysisMessage READ analysisMessage NOTIFY analysisChanged)
     Q_PROPERTY(bool livePlayActive READ livePlayActive NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayEngineSide READ livePlayEngineSide NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayStatus READ livePlayStatus NOTIFY livePlayChanged)
@@ -51,6 +57,8 @@ public:
     Q_INVOKABLE void install(const QString &key);
     Q_INVOKABLE void cancelInstall(const QString &key);
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
+    Q_INVOKABLE void analyzePosition(const QString &fen, bool ruleValid);
+    Q_INVOKABLE void clearAnalysis();
     Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
     Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
     Q_INVOKABLE void setLivePlayClock(const QString &key, int milliseconds);
@@ -71,8 +79,17 @@ signals:
 
 public:
     Q_INVOKABLE void registerCustomEngine(const QUrl &path,
-                                          const QString &arguments,
-                                          const QString &workingDirectory);
+                                           const QString &arguments,
+                                           const QString &workingDirectory);
+
+    bool analysisReady() const { return !m_analysisEvaluation.isEmpty(); }
+    bool analyzing() const { return m_operation == Operation::Analysis && m_active >= 0; }
+    QString analysisEvaluation() const { return m_analysisEvaluation; }
+    QStringList analysisVariations() const { return m_analysisVariations; }
+    QString analysisMessage() const { return m_analysisMessage; }
+
+signals:
+    void analysisChanged();
 
 private:
     struct Profile {
@@ -111,6 +128,7 @@ private:
         LiveReady,
         LiveSearch
     };
+    enum class Operation { Probe, Analysis };
 
     void discover();
     void loadCustomEngine();
@@ -118,6 +136,9 @@ private:
     QString discoverPath(const Profile &profile) const;
     int indexOf(const QString &key) const;
     void startProbe(int index);
+    void startAnalysis();
+    void finishAnalysis();
+    void consumeAnalysisInfo(const QString &line);
     void send(const QByteArray &command);
     void readOutput();
     void consumeLine(const QString &line);
@@ -139,8 +160,16 @@ private:
     QByteArray m_output;
     Stage m_stage = Stage::Idle;
     int m_active = -1;
+    int m_readyProfile = -1;
+    Operation m_operation = Operation::Probe;
     bool m_registrationRequired = false;
     bool m_sawMalformedHandshake = false;
+    QString m_requestedFen;
+    bool m_requestedRuleValid = true;
+    QString m_analysisEvaluation;
+    QStringList m_analysisVariations;
+    QString m_analysisMessage;
+    QMap<int, QString> m_searchVariations;
     bool m_livePlayActive = false;
     QString m_livePlayEngineSide;
     QString m_livePlayStatus;

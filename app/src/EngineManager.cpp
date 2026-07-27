@@ -520,6 +520,8 @@ int EngineManager::livePlayClock(const QString &key) const
 void EngineManager::startLivePlay(const QString &key, const QString &humanSide)
 {
     const int profileIndex = indexOf(key);
+    if (m_operation == Operation::Analysis && m_active >= 0)
+        clearAnalysis();
     if (profileIndex < 0 || m_livePlayActive || m_active >= 0
         || !m_profiles.at(profileIndex).state.startsWith(QStringLiteral("Ready"))
         || (humanSide != QStringLiteral("white") && humanSide != QStringLiteral("black"))) {
@@ -536,8 +538,10 @@ void EngineManager::startLivePlay(const QString &key, const QString &humanSide)
     emit livePlayChanged();
 
     m_output.clear();
-    m_process.setProgram(m_profiles.at(profileIndex).path);
-    m_process.setArguments({});
+    const Profile &profile = m_profiles.at(profileIndex);
+    m_process.setProgram(profile.path);
+    m_process.setArguments(QProcess::splitCommand(profile.arguments));
+    m_process.setWorkingDirectory(profile.workingDirectory);
     m_process.setProcessChannelMode(QProcess::SeparateChannels);
     m_process.start();
     advance(Stage::LiveStarting, deadline(3000));
@@ -580,10 +584,13 @@ void EngineManager::stopLivePlay()
     m_active = -1;
     m_stage = Stage::Idle;
     emit livePlayChanged();
+    if (!m_requestedFen.isEmpty() && m_requestedRuleValid)
+        startAnalysis();
 }
 
 void EngineManager::startProbe(int index)
 {
+    m_operation = Operation::Probe;
     m_active = index;
     Profile &profile = m_profiles[index];
     profile.state = QStringLiteral("Probing…");
@@ -597,6 +604,70 @@ void EngineManager::startProbe(int index)
     m_output.clear();
     emit dataChanged(this->index(index), this->index(index));
 
+    m_process.setProgram(profile.path);
+    m_process.setArguments(QProcess::splitCommand(profile.arguments));
+    m_process.setWorkingDirectory(profile.workingDirectory);
+    m_process.setProcessChannelMode(QProcess::SeparateChannels);
+    m_process.start();
+    advance(Stage::Starting, deadline(3000));
+}
+
+void EngineManager::analyzePosition(const QString &fen, bool ruleValid)
+{
+    if (m_requestedFen == fen && m_requestedRuleValid == ruleValid
+        && (analyzing() || analysisReady()))
+        return;
+
+    m_requestedFen = fen;
+    m_requestedRuleValid = ruleValid;
+    m_analysisEvaluation.clear();
+    m_analysisVariations.clear();
+    m_searchVariations.clear();
+    m_analysisMessage = ruleValid ? QStringLiteral("Waiting for a Ready engine.")
+                                  : QStringLiteral("Engine analysis is not guaranteed for a Freeform Position.");
+    if (m_livePlayActive && ruleValid)
+        m_analysisMessage = QStringLiteral("Live Position Analysis pauses while this engine is playing.");
+    emit analysisChanged();
+
+    if (m_livePlayActive)
+        return;
+    if (m_operation == Operation::Analysis && m_active >= 0) {
+        m_active = -1;
+        m_stage = Stage::Idle;
+        stopProcess();
+    }
+    if (!ruleValid) {
+        return;
+    }
+    if (m_readyProfile >= 0 && m_active < 0)
+        startAnalysis();
+}
+
+void EngineManager::clearAnalysis()
+{
+    if (m_operation == Operation::Analysis) {
+        m_active = -1;
+        m_stage = Stage::Idle;
+        stopProcess();
+    }
+    m_analysisEvaluation.clear();
+    m_analysisVariations.clear();
+    m_searchVariations.clear();
+    m_analysisMessage.clear();
+    emit analysisChanged();
+}
+
+void EngineManager::startAnalysis()
+{
+    if (m_readyProfile < 0 || m_requestedFen.isEmpty() || !m_requestedRuleValid)
+        return;
+    m_operation = Operation::Analysis;
+    m_active = m_readyProfile;
+    m_output.clear();
+    m_searchVariations.clear();
+    m_analysisMessage = QStringLiteral("Analyzing…");
+    emit analysisChanged();
+    const Profile &profile = m_profiles.at(m_readyProfile);
     m_process.setProgram(profile.path);
     m_process.setArguments(QProcess::splitCommand(profile.arguments));
     m_process.setWorkingDirectory(profile.workingDirectory);
@@ -701,6 +772,11 @@ void EngineManager::consumeLine(const QString &line)
             ++profile.optionCount;
         }
         else if (line == QStringLiteral("uciok")) {
+            if (m_operation == Operation::Analysis) {
+                send("setoption name MultiPV value 3\nisready\n");
+                advance(Stage::Ready, deadline(5000));
+                return;
+            }
             if (profile.identity.isEmpty() || m_sawMalformedHandshake) {
                 fail(QStringLiteral("malformed UCI handshake"));
                 return;
@@ -744,9 +820,20 @@ void EngineManager::consumeLine(const QString &line)
             m_sawMalformedHandshake = true;
         }
     } else if (m_stage == Stage::Ready && line == QStringLiteral("readyok")) {
-        send("ucinewgame\nposition startpos\ngo movetime 50\n");
+        if (m_operation == Operation::Analysis) {
+            send("position fen " + m_requestedFen.toUtf8() + "\ngo movetime 250\n");
+        } else {
+            send("ucinewgame\nposition startpos\ngo movetime 50\n");
+        }
         advance(Stage::Search, deadline(1500));
+    } else if (m_stage == Stage::Search && m_operation == Operation::Analysis
+               && line.startsWith(QStringLiteral("info "))) {
+        consumeAnalysisInfo(line);
     } else if (m_stage == Stage::Search && line.startsWith(QStringLiteral("bestmove "))) {
+        if (m_operation == Operation::Analysis) {
+            finishAnalysis();
+            return;
+        }
         const QString move = line.sliced(9).section(QLatin1Char(' '), 0, 0).toLower();
         if (!omachess_standard_start_move_is_legal(move.toUtf8().constData())) {
             fail(QStringLiteral("illegal or malformed bestmove"));
@@ -759,6 +846,47 @@ void EngineManager::consumeLine(const QString &line)
     }
 }
 
+void EngineManager::consumeAnalysisInfo(const QString &line)
+{
+    static const QRegularExpression scorePattern(QStringLiteral("(?:^| )score (cp|mate) (-?\\d+)"));
+    static const QRegularExpression pvPattern(QStringLiteral("(?:^| )pv (.+)$"));
+    static const QRegularExpression rankPattern(QStringLiteral("(?:^| )multipv (\\d+)"));
+    const QRegularExpressionMatch scoreMatch = scorePattern.match(line);
+    const QRegularExpressionMatch pvMatch = pvPattern.match(line);
+    if (!scoreMatch.hasMatch() || !pvMatch.hasMatch())
+        return;
+    const QRegularExpressionMatch rankMatch = rankPattern.match(line);
+    const int rank = rankMatch.hasMatch() ? rankMatch.captured(1).toInt() : 1;
+    if (rank == 1) {
+        const int score = scoreMatch.captured(2).toInt();
+        if (scoreMatch.captured(1) == QStringLiteral("mate"))
+            m_analysisEvaluation = score >= 0 ? QStringLiteral("#%1").arg(score)
+                                               : QStringLiteral("-#%1").arg(-score);
+        else
+            m_analysisEvaluation =
+                QStringLiteral("%1%2").arg(score >= 0 ? QStringLiteral("+") : QString())
+                    .arg(score / 100.0, 0, 'f', 2);
+    }
+    m_searchVariations.insert(rank, pvMatch.captured(1));
+}
+
+void EngineManager::finishAnalysis()
+{
+    m_deadline.stop();
+    m_analysisVariations.clear();
+    for (auto variation = m_searchVariations.cbegin(); variation != m_searchVariations.cend();
+         ++variation)
+        m_analysisVariations.append(QStringLiteral("%1. %2").arg(variation.key()).arg(variation.value()));
+    m_analysisMessage = m_analysisEvaluation.isEmpty()
+                            ? QStringLiteral("The engine returned no analysis.")
+                            : QStringLiteral("Live Position Analysis");
+    m_active = -1;
+    m_stage = Stage::Idle;
+    send("quit\n");
+    stopProcess();
+    emit analysisChanged();
+}
+
 void EngineManager::advance(Stage next, int deadlineMs)
 {
     m_stage = next;
@@ -769,6 +897,16 @@ void EngineManager::fail(const QString &reason)
 {
     if (m_active < 0)
         return;
+    if (m_operation == Operation::Analysis) {
+        m_analysisMessage = QStringLiteral("Analysis unavailable — %1").arg(reason);
+        m_analysisEvaluation.clear();
+        m_analysisVariations.clear();
+        m_stage = Stage::Idle;
+        stopProcess();
+        m_active = -1;
+        emit analysisChanged();
+        return;
+    }
     Profile &profile = m_profiles[m_active];
     profile.state =
         m_registrationRequired
@@ -788,9 +926,12 @@ void EngineManager::finishReady()
     Profile &profile = m_profiles[completed];
     profile.state = profile.identityMismatch ? QStringLiteral("Ready — identity mismatch")
                                              : QStringLiteral("Ready");
+    m_readyProfile = completed;
     m_active = -1;
     m_stage = Stage::Idle;
     emit dataChanged(index(completed), index(completed));
+    if (!m_requestedFen.isEmpty() && m_requestedRuleValid)
+        startAnalysis();
 }
 
 bool EngineManager::identityMatches(const Profile &profile) const
