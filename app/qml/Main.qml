@@ -1816,6 +1816,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("White player")
                         text: WorkspaceSession.whitePlayer
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: blackPlayerField
@@ -1823,6 +1824,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Black player")
                         text: WorkspaceSession.blackPlayer
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: eventField
@@ -1830,6 +1832,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Event")
                         text: WorkspaceSession.gameEvent
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: dateField
@@ -1837,6 +1840,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Date")
                         text: WorkspaceSession.gameDate
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: titleField
@@ -1844,6 +1848,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Title")
                         text: WorkspaceSession.gameTitle
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: tagsField
@@ -1851,11 +1856,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Tags")
                         text: WorkspaceSession.gameTags
+                        visible: !WorkspaceSession.workshopActive
                     }
                     Button {
                         objectName: "saveMetadataButton"
                         Layout.fillWidth: true
                         enabled: WorkspaceSession.activeRecordId.length > 0
+                        visible: !WorkspaceSession.workshopActive
                         text: qsTr("Save metadata")
                         onClicked: WorkspaceSession.updateMetadata(
                             whitePlayerField.text, blackPlayerField.text,
@@ -1872,6 +1879,7 @@ ApplicationWindow {
                         clip: true
                         model: WorkspaceSession.moveList
                         visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
                         // Follow play, and follow the player while they navigate.
                         currentIndex: WorkspaceSession.cursor - 1
                         onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
@@ -1895,6 +1903,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 4
                         visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
 
                         Button {
                             objectName: "startButton"
@@ -1929,7 +1938,9 @@ ApplicationWindow {
                     Label {
                         objectName: "reviewLabel"
                         Layout.fillWidth: true
-                        visible: !WorkspaceSession.positionSetup && WorkspaceSession.reviewing
+                        visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
+                                 && WorkspaceSession.reviewing
                         wrapMode: Text.WordWrap
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
