@@ -10,6 +10,7 @@ public operations. They never open the Live Store or read its tables.
 
 from __future__ import annotations
 
+import time
 import unittest
 
 from harness import Screen, Workspace, executable_under_test
@@ -39,7 +40,8 @@ class LiveStoreJourney(unittest.TestCase):
         self.addCleanup(self.workspace.stop)
         self.workspace.screen_when(board_is_drawn)
 
-    def test_a_played_game_survives_restart_and_restore(self) -> None:
+    def test_a_timed_game_suspends_and_restores_without_running_until_resumed(self) -> None:
+        self.workspace.select("clockPicker", 2)
         self.workspace.play_all("e2e4 e7e5 g1f3")
         screen = self.workspace.screen_when(lambda s: len(s.moves()) == 3)
         self.assertEqual(screen.moves(), ["1. e4", "1... e5", "2. Nf3"])
@@ -47,17 +49,55 @@ class LiveStoreJourney(unittest.TestCase):
         ids = library_ids(screen)
         self.assertEqual(len(ids), 1)
 
+        self.workspace.click("suspendGameButton")
+        screen = self.workspace.screen_when(lambda s: "resumeGameButton" in s.labels)
+        frozen_clocks = (
+            screen.labels["whiteClockLabel"],
+            screen.labels["blackClockLabel"],
+        )
+        time.sleep(0.3)
+        screen = self.workspace.screen()
+        self.assertEqual(
+            (screen.labels["whiteClockLabel"], screen.labels["blackClockLabel"]),
+            frozen_clocks,
+        )
+
         self.workspace.restart()
-        # Open tabs restore the active board on restart; the Game Record also
-        # remains listed in the Personal Library.
         screen = self.workspace.screen_when(
-            lambda s: board_is_drawn(s) and len(s.moves()) == 3 and len(library_ids(s)) == 1
+            lambda s: "restoreButton" in s.labels and len(library_ids(s)) == 1
+        )
+        self.assertEqual(
+            screen.labels["restoreLabel"],
+            "Restore suspended Played Game · 3 moves",
+        )
+        self.assertEqual(screen.moves(), [])
+
+        self.workspace.click("restoreButton")
+        screen = self.workspace.screen_when(
+            lambda s: len(s.moves()) == 3 and "resumeGameButton" in s.labels
         )
         self.assertEqual(screen.moves(), ["1. e4", "1... e5", "2. Nf3"])
         self.assertEqual(screen.pieces().get("f3"), "white_knight")
         self.assertEqual(screen.pieces().get("e4"), "white_pawn")
         self.assertEqual(screen.pieces().get("e5"), "black_pawn")
         self.assertEqual(library_ids(screen), ids)
+        self.assertEqual(
+            (screen.labels["whiteClockLabel"], screen.labels["blackClockLabel"]),
+            frozen_clocks,
+        )
+        time.sleep(0.3)
+        self.assertEqual(
+            (
+                self.workspace.screen().labels["whiteClockLabel"],
+                self.workspace.screen().labels["blackClockLabel"],
+            ),
+            frozen_clocks,
+        )
+
+        self.workspace.click("resumeGameButton")
+        self.workspace.screen_when(
+            lambda s: s.labels.get("blackClockLabel") != frozen_clocks[1]
+        )
 
 
 if __name__ == "__main__":

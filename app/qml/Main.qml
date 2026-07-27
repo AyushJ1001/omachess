@@ -216,6 +216,13 @@ ApplicationWindow {
                 actions.push(action("dismiss-restore", qsTr("Dismiss restore offer"), "Escape",
                                     function() { WorkspaceSession.dismissRestore() }))
             }
+            if (WorkspaceSession.gameSuspended) {
+                actions.push(action("resume-game", qsTr("Resume Played Game"), "Ctrl+Shift+R",
+                                    function() { WorkspaceSession.resumeGame() }))
+            } else if (WorkspaceSession.canSuspendGame) {
+                actions.push(action("suspend-game", qsTr("Suspend Played Game"), "Ctrl+Shift+S",
+                                    function() { WorkspaceSession.suspendGame() }))
+            }
             ActionRegistry.replace("cockpit", actions)
         }
     }
@@ -300,6 +307,18 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            Button {
+                objectName: WorkspaceSession.gameSuspended ? "resumeGameButton"
+                                                           : "suspendGameButton"
+                visible: WorkspaceSession.gameSuspended
+                         || WorkspaceSession.canSuspendGame
+                text: WorkspaceSession.gameSuspended ? qsTr("Resume play")
+                                                     : qsTr("Suspend")
+                onClicked: WorkspaceSession.gameSuspended
+                           ? WorkspaceSession.resumeGame()
+                           : WorkspaceSession.suspendGame()
             }
 
             ComboBox {
@@ -816,6 +835,114 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 12
                     spacing: 8
+
+                    Button {
+                        id: engineProfilesButton
+                        objectName: "engineProfilesButton"
+                        Layout.fillWidth: true
+                        text: qsTr("Engines")
+                        checkable: true
+                    }
+
+                    ListView {
+                        id: engines
+                        objectName: "engineProfiles"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: engineProfilesButton.checked
+                                                ? Math.min(contentHeight, 250) : 0
+                        visible: engineProfilesButton.checked
+                        clip: true
+                        model: EngineManager
+                        spacing: 6
+
+                        delegate: Frame {
+                            required property string key
+                            required property string name
+                            required property string readinessState
+                            required property string identity
+                            required property int optionCount
+                            required property int rating
+                            required property string artwork
+                            required property string artworkProvenance
+                            required property bool found
+                            required property bool consentRequired
+
+                            width: engines.width
+                            padding: 6
+                            implicitHeight: engineProfileContent.implicitHeight + 12
+
+                            ColumnLayout {
+                                id: engineProfileContent
+                                anchors.fill: parent
+                                spacing: 2
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Image {
+                                        source: artwork
+                                        sourceSize.width: 24
+                                        sourceSize.height: 24
+                                        Layout.preferredWidth: 24
+                                        Layout.preferredHeight: 24
+                                        Accessible.name: artworkProvenance
+                                    }
+                                    Label {
+                                        objectName: "engineName:" + key
+                                        Layout.fillWidth: true
+                                        text: name
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                Label {
+                                    objectName: "engineState:" + key
+                                    Layout.fillWidth: true
+                                    text: readinessState
+                                    color: Theme.muted
+                                    wrapMode: Text.WordWrap
+                                }
+                                Label {
+                                    objectName: "engineIdentity:" + key
+                                    Layout.fillWidth: true
+                                    visible: identity.length > 0
+                                    text: identity
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    objectName: "engineOptions:" + key
+                                    Layout.fillWidth: true
+                                    visible: optionCount > 0
+                                    text: qsTr("%1 UCI options").arg(optionCount)
+                                }
+                                SpinBox {
+                                    objectName: "engineRatingEditor:" + key
+                                    Layout.fillWidth: true
+                                    from: 0
+                                    to: 5000
+                                    value: rating
+                                    editable: true
+                                    textFromValue: function(value) {
+                                        return qsTr("≈ %1 Elo estimate").arg(value)
+                                    }
+                                    onValueModified: EngineManager.setDisplayRating(key, value)
+                                    contentItem.objectName: "engineRating:" + key
+                                }
+                                Button {
+                                    objectName: "engineConsent:" + key
+                                    visible: consentRequired
+                                    text: qsTr("Allow and probe")
+                                    onClicked: EngineManager.grantConsent(key)
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.muted
+                        opacity: 0.4
+                    }
 
                     Label {
                         objectName: "rightRailHeading"

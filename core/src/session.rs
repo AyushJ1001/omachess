@@ -13,8 +13,8 @@
 //! residue so a later session can offer restore.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
@@ -39,6 +39,8 @@ pub struct Session {
     /// A prior Game Record the player may restore, when residue points at one.
     restore_offer: Option<RestoreOffer>,
     clock: Option<GameClock>,
+    /// Suspended Games are fully loaded but inert until the player resumes.
+    suspended: bool,
     metadata: GameMetadata,
     setup: Option<PositionSetup>,
 }
@@ -116,6 +118,7 @@ impl Session {
             open_tabs: Vec::new(),
             restore_offer: None,
             clock: None,
+            suspended: false,
             metadata: GameMetadata::default(),
             setup: None,
         }
@@ -144,17 +147,11 @@ impl Session {
             .filter(|id| open_tabs.iter().any(|tab| tab == id));
         let restore_offer = match store.workspace().residue("active_record_id") {
             Ok(Some(record_id)) => match store.workspace().get_game_record(&record_id) {
-                Ok(Some(record)) if record.ply_count > 0 || record.payload.result.is_some() => {
-                    // When open tabs already remember this record, the tab
-                    // chrome is the restore surface — no separate restore card.
-                    if active_id.as_ref() == Some(&record_id) {
-                        None
-                    } else {
-                        Some(RestoreOffer {
-                            record_id,
-                            ply_count: record.ply_count,
-                        })
-                    }
+                Ok(Some(record)) if record.ply_count > 0 && record.payload.result.is_none() => {
+                    Some(RestoreOffer {
+                        record_id,
+                        ply_count: record.ply_count,
+                    })
                 }
                 _ => None,
             },
@@ -170,13 +167,16 @@ impl Session {
             open_tabs,
             restore_offer,
             clock: None,
+            suspended: false,
             metadata: GameMetadata::default(),
             setup: None,
         };
-        // Remembered open tabs restore their active board on open. Clocks and
-        // engines stay idle — that remains a later ticket's job.
-        if let Some(id) = active_id {
-            let _ = session.load_record(&id);
+        // Completed records may reopen directly. Unfinished Played Games are
+        // offered for restore and remain unloaded until the player chooses it.
+        if session.restore_offer.is_none() {
+            if let Some(id) = active_id {
+                let _ = session.load_record(&id);
+            }
         }
         Ok(session)
     }
@@ -194,6 +194,8 @@ impl Session {
             "play_move" => self.play_move(command)?,
             "navigate" => self.navigate(command)?,
             "restore_record" => self.restore_record()?,
+            "suspend_game" => self.suspend_game()?,
+            "resume_game" => self.resume_game()?,
             "dismiss_restore" => self.dismiss_restore()?,
             "new_game" => self.new_game()?,
             "open_record" => self.open_record(command)?,
@@ -329,6 +331,9 @@ impl Session {
     }
 
     fn play_move(&mut self, command: &str) -> Result<(), CommandError> {
+        if self.suspended {
+            return Err(CommandError::RejectedMove);
+        }
         self.apply_elapsed_clock()?;
         if self.setup.is_some() {
             return Err(CommandError::RejectedMove);
@@ -376,7 +381,7 @@ impl Session {
     }
 
     fn apply_elapsed_clock(&mut self) -> Result<(), CommandError> {
-        if self.game.outcome().is_over() || self.game.reviewing() {
+        if self.suspended || self.game.outcome().is_over() || self.game.reviewing() {
             if let Some(clock) = self.clock.as_mut() {
                 clock.last_tick = None;
             }
@@ -450,6 +455,7 @@ impl Session {
             return Err(CommandError::MalformedCommand);
         };
         self.load_record(&offer.record_id)?;
+        self.suspended = true;
         self.ensure_tab_open(&offer.record_id);
         self.restore_offer = None;
         self.persist_residue()?;
@@ -457,6 +463,34 @@ impl Session {
             .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
         Ok(())
+    }
+
+    fn suspend_game(&mut self) -> Result<(), CommandError> {
+        if !self.can_suspend_game() {
+            return Err(CommandError::RejectedMove);
+        }
+        self.apply_elapsed_clock()?;
+        self.suspended = true;
+        self.persist_current_record()
+    }
+
+    fn resume_game(&mut self) -> Result<(), CommandError> {
+        if !self.suspended || self.game.outcome().is_over() {
+            return Err(CommandError::RejectedMove);
+        }
+        self.suspended = false;
+        if let Some(clock) = self.clock.as_mut() {
+            clock.last_tick = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    fn can_suspend_game(&mut self) -> bool {
+        self.setup.is_none()
+            && !self.suspended
+            && !self.game.moves().is_empty()
+            && !self.game.reviewing()
+            && !self.game.outcome().is_over()
     }
 
     fn dismiss_restore(&mut self) -> Result<(), CommandError> {
@@ -480,6 +514,7 @@ impl Session {
         self.orientation = Orientation::WhiteBottom;
         self.restore_offer = None;
         self.clock = None;
+        self.suspended = false;
         self.metadata = GameMetadata::default();
         self.setup = None;
         if let Some(store) = self.store.as_ref() {
@@ -606,6 +641,7 @@ impl Session {
         self.record_id = None;
         self.restore_offer = None;
         self.metadata = GameMetadata::default();
+        self.suspended = false;
         Ok(())
     }
 
@@ -643,6 +679,7 @@ impl Session {
                 self.game = Game::standard();
                 self.record_id = None;
                 self.clock = None;
+                self.suspended = false;
                 self.metadata = GameMetadata::default();
                 self.setup = None;
                 if let Some(store) = self.store.as_ref() {
@@ -694,6 +731,7 @@ impl Session {
             self.game.complete_on_time(loser);
         }
         self.clock = stored_clock;
+        self.suspended = stored_result.is_none() && record.ply_count > 0;
         self.metadata = decode_metadata(record.payload.participation.as_deref());
         if self.metadata.title.is_empty() {
             self.metadata.title = record.title.clone().unwrap_or_default();
@@ -934,7 +972,12 @@ impl Session {
         // where a picked-up piece may go and to offer a promotion choice; the
         // core still rejects anything else that arrives.
         out.push_str(",\"moves\":[");
-        for (index, offer) in self.game.offers().iter().enumerate() {
+        let offers = if self.suspended {
+            Vec::new()
+        } else {
+            self.game.offers()
+        };
+        for (index, offer) in offers.iter().enumerate() {
             if index > 0 {
                 out.push(',');
             }
@@ -978,6 +1021,10 @@ impl Session {
         } else {
             "false"
         });
+        out.push_str(",\"suspended\":");
+        out.push_str(if self.suspended { "true" } else { "false" });
+        out.push_str(",\"canSuspend\":");
+        out.push_str(if self.can_suspend_game() { "true" } else { "false" });
 
         out.push_str(",\"clock\":");
         match &self.clock {
@@ -991,7 +1038,8 @@ impl Session {
                 out.push_str(",\"running\":");
                 let running = !self.game.moves().is_empty()
                     && !self.game.outcome().is_over()
-                    && !self.game.reviewing();
+                    && !self.game.reviewing()
+                    && !self.suspended;
                 out.push_str(if running { "true" } else { "false" });
                 out.push('}');
             }
@@ -1125,7 +1173,12 @@ fn restore_available_event(offer: &RestoreOffer) -> String {
     out.push_str(",\"plyCount\":");
     out.push_str(&offer.ply_count.to_string());
     out.push_str(",\"label\":");
-    json::write_string(&mut out, "Restore previous game");
+    let label = if offer.ply_count == 1 {
+        String::from("Restore suspended Played Game · 1 move")
+    } else {
+        format!("Restore suspended Played Game · {} moves", offer.ply_count)
+    };
+    json::write_string(&mut out, &label);
     out.push('}');
     out
 }
@@ -1598,12 +1651,15 @@ mod tests {
     }
 
     #[test]
-    fn a_played_game_reloads_from_the_live_store_after_restart() {
+    fn an_unfinished_played_game_is_restored_suspended_after_restart() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
 
         {
             let mut session = Session::open(&path).unwrap();
+            session
+                .submit(r#"{"type":"configure_clock","milliseconds":"60000"}"#)
+                .unwrap();
             play(&mut session, "e2", "e4");
             play(&mut session, "e7", "e5");
             play(&mut session, "g1", "f3");
@@ -1614,25 +1670,53 @@ mod tests {
 
         let mut session = Session::open(&path).unwrap();
         session.submit(r#"{"type":"describe_board"}"#).unwrap();
-        let mut board = None;
-        let mut tabs = None;
+        let mut restore = None;
         while let Some(event) = session.poll_event() {
-            if event.contains(r#""type":"board_changed""#) {
-                board = Some(event);
-            } else if event.contains(r#""type":"tabs_changed""#) {
-                tabs = Some(event);
+            if event.contains(r#""type":"restore_available""#) {
+                restore = Some(event);
             }
         }
-        // Open tabs restore the active board on restart; the Game Record stays
-        // in the tab chrome rather than behind a separate restore card.
-        let tabs = tabs.expect("the open tab is restored after restart");
-        assert!(tabs.contains(r#""activeId":"gr_"#));
-        let event = board.expect("the active tab's board is restored");
+        let restore = restore.expect("unfinished work is offered for restore");
+        assert!(restore.contains("Restore suspended Played Game · 3 moves"));
+
+        session.submit(r#"{"type":"restore_record"}"#).unwrap();
+        let event = describe(&mut session);
         assert!(event.contains(r#""san":"e4"#));
         assert!(event.contains(r#""san":"e5"#));
         assert!(event.contains(r#""san":"Nf3"#));
         assert!(event.contains(r#""cursor":3"#));
         assert!(event.contains(r#""piece":"white_knight""#) && event.contains(r#""name":"f3""#));
+        assert!(event.contains(r#""suspended":true"#));
+        assert!(event.contains(r#""running":false"#));
+
+        assert_eq!(
+            session.submit(r#"{"type":"play_move","from":"b8","to":"c6"}"#),
+            Err(CommandError::RejectedMove)
+        );
+        session.submit(r#"{"type":"resume_game"}"#).unwrap();
+        let event = describe(&mut session);
+        assert!(event.contains(r#""suspended":false"#));
+        assert!(event.contains(r#""running":true"#));
+        play(&mut session, "b8", "c6");
+    }
+
+    #[test]
+    fn a_played_game_can_only_be_suspended_at_its_latest_position() {
+        let mut session = Session::new();
+        play(&mut session, "e2", "e4");
+        session
+            .submit(r#"{"type":"navigate","to":"start"}"#)
+            .unwrap();
+        let event = describe(&mut session);
+        assert!(event.contains(r#""canSuspend":false"#));
+        assert_eq!(
+            session.submit(r#"{"type":"suspend_game"}"#),
+            Err(CommandError::RejectedMove)
+        );
+
+        session.submit(r#"{"type":"navigate","to":"end"}"#).unwrap();
+        let event = describe(&mut session);
+        assert!(event.contains(r#""canSuspend":true"#));
     }
 
     #[test]
@@ -1846,7 +1930,17 @@ mod tests {
         let tabs = tabs.expect("open tabs are restored after restart");
         assert!(!tabs.contains(&format!(r#""id":"{first_id}""#)));
         assert!(tabs.contains(&format!(r#""id":"{second_id}""#)));
-        assert!(tabs.contains(&format!(r#""activeId":"{second_id}""#)));
+        assert!(tabs.contains(r#""activeId":null"#));
+
+        session.submit(r#"{"type":"restore_record"}"#).unwrap();
+        let mut restored_tabs = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"tabs_changed""#) {
+                restored_tabs = Some(event);
+            }
+        }
+        let restored_tabs = restored_tabs.expect("restore reactivates the suspended tab");
+        assert!(restored_tabs.contains(&format!(r#""activeId":"{second_id}""#)));
     }
 
     #[test]

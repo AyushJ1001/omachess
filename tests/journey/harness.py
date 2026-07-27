@@ -200,6 +200,7 @@ class Workspace:
         malformed_palette: bool = False,
         import_pgn: Path | None = None,
         export_pgn: Path | None = None,
+        environment: dict[str, str] | None = None,
     ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
@@ -221,6 +222,7 @@ class Workspace:
         self._malformed_palette = malformed_palette
         self._import_pgn = import_pgn
         self._export_pgn = export_pgn
+        self._extra_environment = environment or {}
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
@@ -250,6 +252,7 @@ class Workspace:
             directory = self._root / variable.lower()
             directory.mkdir(parents=True, exist_ok=True)
             environment[variable] = str(directory)
+        environment.update(self._extra_environment)
 
         # Always point the adapter at an isolated prefix so journeys never read
         # the developer's real /usr/share/omarchy/version.
