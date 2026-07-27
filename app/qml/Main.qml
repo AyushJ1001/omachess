@@ -62,7 +62,9 @@ ApplicationWindow {
                 color: Theme.foreground
                 // A finished game reports its result; an unfinished one reports
                 // whose turn it is, and whether that side is in check.
-                text: WorkspaceSession.gameOver
+                text: WorkspaceSession.positionSetup
+                      ? qsTr("Position Setup — %1").arg(WorkspaceSession.positionClass)
+                      : WorkspaceSession.gameOver
                       ? WorkspaceSession.resultLabel + " (" + WorkspaceSession.resultScore + ")"
                       : (WorkspaceSession.sideToMove === "white"
                          ? qsTr("White to move") : qsTr("Black to move"))
@@ -75,6 +77,12 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            Button {
+                objectName: "positionSetupButton"
+                text: qsTr("Position Setup")
+                onClicked: WorkspaceSession.beginPositionSetup()
             }
 
             // Board Theme: follow the Quattro Palette, or pin an Omachess-owned set.
@@ -422,6 +430,83 @@ ApplicationWindow {
                                 }
                             }
                         }
+
+                        Frame {
+                            visible: WorkspaceSession.positionSetup
+                            Layout.fillWidth: true
+
+                            ColumnLayout {
+                                anchors.fill: parent
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    TextField {
+                                        id: fenInput
+                                        objectName: "fenInput"
+                                        Layout.fillWidth: true
+                                        text: WorkspaceSession.setupFen
+                                        placeholderText: qsTr("FEN")
+                                    }
+                                    Button {
+                                        objectName: "applyFenButton"
+                                        text: qsTr("Apply FEN")
+                                        onClicked: WorkspaceSession.setSetupFen(fenInput.text)
+                                    }
+                                }
+
+                                Label {
+                                    objectName: "fenErrorLabel"
+                                    visible: WorkspaceSession.setupError.length > 0
+                                    text: WorkspaceSession.setupError
+                                    color: Theme.red
+                                }
+
+                                Label {
+                                    objectName: "positionClassLabel"
+                                    text: WorkspaceSession.positionClass
+                                    font.bold: true
+                                }
+
+                                Label {
+                                    objectName: "positionCapabilitiesLabel"
+                                    text: WorkspaceSession.positionCapabilities
+                                }
+
+                                Button {
+                                    objectName: "startSetupGameButton"
+                                    text: qsTr("Start Played Game")
+                                    enabled: WorkspaceSession.positionClass === "Rule-valid Position"
+                                    onClicked: WorkspaceSession.startSetupGame()
+                                }
+
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    Repeater {
+                                        model: ["white_king", "white_queen", "white_rook",
+                                                "white_bishop", "white_knight", "white_pawn",
+                                                "black_king", "black_queen", "black_rook",
+                                                "black_bishop", "black_knight", "black_pawn"]
+                                        Button {
+                                            required property string modelData
+                                            objectName: "tray:" + modelData
+                                            text: modelData.replace("_", " ")
+                                            onClicked: board.setupPiece = modelData
+                                        }
+                                    }
+                                    Button {
+                                        objectName: "removePieceTool"
+                                        text: qsTr("Remove")
+                                        onClicked: board.setupPiece = "__remove"
+                                    }
+                                    Button {
+                                        objectName: "relocatePieceTool"
+                                        text: qsTr("Relocate")
+                                        onClicked: board.setupPiece = "__move"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -449,7 +534,7 @@ ApplicationWindow {
 
                     Label {
                         objectName: "rightRailHeading"
-                        text: qsTr("Moves")
+                        text: WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
                         font.bold: true
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
@@ -463,6 +548,7 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         clip: true
                         model: WorkspaceSession.moveList
+                        visible: !WorkspaceSession.positionSetup
                         // Follow play, and follow the player while they navigate.
                         currentIndex: WorkspaceSession.cursor - 1
                         onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
@@ -484,6 +570,7 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 4
+                        visible: !WorkspaceSession.positionSetup
 
                         Button {
                             objectName: "startButton"
@@ -518,7 +605,7 @@ ApplicationWindow {
                     Label {
                         objectName: "reviewLabel"
                         Layout.fillWidth: true
-                        visible: WorkspaceSession.reviewing
+                        visible: !WorkspaceSession.positionSetup && WorkspaceSession.reviewing
                         wrapMode: Text.WordWrap
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")

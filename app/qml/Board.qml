@@ -35,6 +35,8 @@ Item {
     property bool dragging: false
     property real dragX: 0
     property real dragY: 0
+    property string setupPiece: "__move"
+    property string setupFrom: ""
 
     readonly property real cell: side / 8
 
@@ -142,6 +144,23 @@ Item {
 
         onPressed: function (mouse) {
             const square = board.squareAt(mouse.x, mouse.y)
+            if (WorkspaceSession.positionSetup) {
+                if (square === "")
+                    return
+                if (board.setupPiece === "__move") {
+                    if (board.setupFrom === "") {
+                        if (WorkspaceSession.pieceOn(square) !== "")
+                            board.setupFrom = square
+                    } else {
+                        WorkspaceSession.relocateSetupPiece(board.setupFrom, square)
+                        board.setupFrom = ""
+                    }
+                } else {
+                    WorkspaceSession.placeSetupPiece(
+                        square, board.setupPiece === "__remove" ? "" : board.setupPiece)
+                }
+                return
+            }
             if (square === "") {
                 board.cancel()
                 return

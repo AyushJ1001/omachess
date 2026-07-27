@@ -385,6 +385,10 @@ class Workspace:
     def click(self, target: str) -> None:
         self._request({"command": "click", "target": target})
 
+    def enter_text(self, target: str, text: str) -> None:
+        """Replace the text in an ordinary visible text input."""
+        self._request({"command": "enter_text", "target": target, "text": text})
+
     def click_square(self, square: str) -> None:
         """Press and release the middle of a board square."""
         self.click(f"square:{square}")

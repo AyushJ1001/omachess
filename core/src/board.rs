@@ -77,7 +77,11 @@ impl Piece {
             'p' => Role::Pawn,
             _ => return None,
         };
-        let color = if character.is_ascii_uppercase() { Color::White } else { Color::Black };
+        let color = if character.is_ascii_uppercase() {
+            Color::White
+        } else {
+            Color::Black
+        };
         Some(Piece { color, role })
     }
 
@@ -88,6 +92,41 @@ impl Piece {
             Color::Black => "black",
         };
         format!("{color}_{}", self.role.name())
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        let (color, role) = id.split_once('_')?;
+        let color = match color {
+            "white" => Color::White,
+            "black" => Color::Black,
+            _ => return None,
+        };
+        let role = match role {
+            "king" => Role::King,
+            "queen" => Role::Queen,
+            "rook" => Role::Rook,
+            "bishop" => Role::Bishop,
+            "knight" => Role::Knight,
+            "pawn" => Role::Pawn,
+            _ => return None,
+        };
+        Some(Piece { color, role })
+    }
+
+    fn fen_char(self) -> char {
+        let role = match self.role {
+            Role::King => 'k',
+            Role::Queen => 'q',
+            Role::Rook => 'r',
+            Role::Bishop => 'b',
+            Role::Knight => 'n',
+            Role::Pawn => 'p',
+        };
+        if self.color == Color::White {
+            role.to_ascii_uppercase()
+        } else {
+            role
+        }
     }
 }
 
@@ -168,6 +207,64 @@ impl Position {
         }
         out
     }
+
+    pub fn place(&mut self, square: &str, piece: Option<Piece>) -> bool {
+        let Some(index) = square_index(square) else {
+            return false;
+        };
+        self.squares[index] = piece;
+        true
+    }
+
+    pub fn piece_on(&self, square: &str) -> Option<Piece> {
+        square_index(square).and_then(|index| self.squares[index])
+    }
+
+    pub fn relocate(&mut self, from: &str, to: &str) -> bool {
+        let (Some(from_index), Some(to_index)) = (square_index(from), square_index(to)) else {
+            return false;
+        };
+        let Some(piece) = self.squares[from_index].take() else {
+            return false;
+        };
+        self.squares[to_index] = Some(piece);
+        true
+    }
+
+    pub fn setup_fen(&self) -> String {
+        let mut placement = String::new();
+        for rank in (0..8).rev() {
+            if rank != 7 {
+                placement.push('/');
+            }
+            let mut empty = 0;
+            for file in 0..8 {
+                match self.squares[rank * 8 + file] {
+                    Some(piece) => {
+                        if empty > 0 {
+                            placement.push(char::from_digit(empty, 10).unwrap());
+                            empty = 0;
+                        }
+                        placement.push(piece.fen_char());
+                    }
+                    None => empty += 1,
+                }
+            }
+            if empty > 0 {
+                placement.push(char::from_digit(empty, 10).unwrap());
+            }
+        }
+        format!("{placement} w - - 0 1")
+    }
+}
+
+fn square_index(square: &str) -> Option<usize> {
+    let bytes = square.as_bytes();
+    if bytes.len() != 2 || !(b'a'..=b'h').contains(&bytes[0]) || !(b'1'..=b'8').contains(&bytes[1])
+    {
+        return None;
+    }
+    Some(usize::from(bytes[1] - b'1') * 8 + usize::from(bytes[0] - b'a'))
 }
 
 #[cfg(test)]
@@ -215,7 +312,12 @@ mod tests {
                 .unwrap();
         let squares: Vec<_> = position.rendered(Orientation::WhiteBottom);
         let named = |name: &str| {
-            squares.iter().find(|square| square.name == name).unwrap().piece.map(Piece::id)
+            squares
+                .iter()
+                .find(|square| square.name == name)
+                .unwrap()
+                .piece
+                .map(Piece::id)
         };
         assert_eq!(named("e4").as_deref(), Some("white_pawn"));
         assert_eq!(named("e2"), None);
