@@ -45,6 +45,21 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString resultStatus READ resultStatus NOTIFY boardChanged)
     Q_PROPERTY(QString resultScore READ resultScore NOTIFY boardChanged)
     Q_PROPERTY(bool gameOver READ gameOver NOTIFY boardChanged)
+    Q_PROPERTY(bool clockEnabled READ clockEnabled NOTIFY boardChanged)
+    Q_PROPERTY(bool clockRunning READ clockRunning NOTIFY boardChanged)
+    Q_PROPERTY(int whiteClockMs READ whiteClockMs NOTIFY boardChanged)
+    Q_PROPERTY(int blackClockMs READ blackClockMs NOTIFY boardChanged)
+    Q_PROPERTY(QString whitePlayer READ whitePlayer NOTIFY boardChanged)
+    Q_PROPERTY(QString blackPlayer READ blackPlayer NOTIFY boardChanged)
+    Q_PROPERTY(QString gameEvent READ gameEvent NOTIFY boardChanged)
+    Q_PROPERTY(QString gameDate READ gameDate NOTIFY boardChanged)
+    Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY boardChanged)
+    Q_PROPERTY(QString gameTags READ gameTags NOTIFY boardChanged)
+    Q_PROPERTY(bool positionSetup READ positionSetup NOTIFY boardChanged)
+    Q_PROPERTY(QString positionClass READ positionClass NOTIFY boardChanged)
+    Q_PROPERTY(QString setupFen READ setupFen NOTIFY boardChanged)
+    Q_PROPERTY(QString setupError READ setupError NOTIFY boardChanged)
+    Q_PROPERTY(QString positionCapabilities READ positionCapabilities NOTIFY boardChanged)
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
@@ -78,6 +93,21 @@ public:
     QString resultStatus() const { return result(QStringLiteral("status")); }
     QString resultScore() const { return result(QStringLiteral("score")); }
     bool gameOver() const;
+    bool clockEnabled() const { return clockField(QStringLiteral("enabled")).toBool(); }
+    bool clockRunning() const { return clockField(QStringLiteral("running")).toBool(); }
+    int whiteClockMs() const { return clockField(QStringLiteral("whiteMs")).toInt(); }
+    int blackClockMs() const { return clockField(QStringLiteral("blackMs")).toInt(); }
+    QString whitePlayer() const { return metadataField(QStringLiteral("white")); }
+    QString blackPlayer() const { return metadataField(QStringLiteral("black")); }
+    QString gameEvent() const { return metadataField(QStringLiteral("event")); }
+    QString gameDate() const { return metadataField(QStringLiteral("date")); }
+    QString gameTitle() const { return metadataField(QStringLiteral("title")); }
+    QString gameTags() const { return metadataField(QStringLiteral("tags")); }
+    bool positionSetup() const { return field(QStringLiteral("activity")) == QStringLiteral("position_setup"); }
+    QString positionClass() const { return field(QStringLiteral("positionClass")); }
+    QString setupFen() const { return field(QStringLiteral("setupFen")); }
+    QString setupError() const { return field(QStringLiteral("setupError")); }
+    QString positionCapabilities() const { return field(QStringLiteral("positionCapabilities")); }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }
@@ -118,6 +148,16 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void configureClock(int milliseconds);
+    Q_INVOKABLE void tickClock();
+    Q_INVOKABLE void updateMetadata(const QString &white, const QString &black,
+                                    const QString &event, const QString &date,
+                                    const QString &title, const QString &tags);
+    Q_INVOKABLE void beginPositionSetup();
+    Q_INVOKABLE void setSetupFen(const QString &fen);
+    Q_INVOKABLE void placeSetupPiece(const QString &square, const QString &piece);
+    Q_INVOKABLE void relocateSetupPiece(const QString &from, const QString &to);
+    Q_INVOKABLE void startSetupGame();
 
     // --- What the core said a player may do -------------------------------
     //
@@ -160,6 +200,8 @@ private:
     QString field(const QString &name) const;
     QString result(const QString &name) const;
     QString lastMoveSquare(const QString &name) const;
+    QJsonValue clockField(const QString &name) const;
+    QString metadataField(const QString &name) const;
 
     OmachessSession *m_session = nullptr;
     BoardModel m_board;

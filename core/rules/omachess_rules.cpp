@@ -225,6 +225,15 @@ int omachess_rules_in_check(OmachessRules *rules)
     return rules->position.checkers() ? 1 : 0;
 }
 
+int omachess_rules_time_forfeit_winner(OmachessRules *rules, int loser)
+{
+    const Borrowed borrowed(rules);
+    const Color winner = loser == 0 ? BLACK : WHITE;
+    if (has_insufficient_material(winner, rules->position))
+        return OMACHESS_RULES_WINNER_DRAW;
+    return winner == WHITE ? OMACHESS_RULES_WINNER_WHITE : OMACHESS_RULES_WINNER_BLACK;
+}
+
 namespace {
 
 // The engine's game-end questions, asked in the order its own library

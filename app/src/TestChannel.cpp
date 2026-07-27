@@ -8,11 +8,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLocalSocket>
 #include <QLoggingCategory>
 #include <QMouseEvent>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QTest>
 
 Q_LOGGING_CATEGORY(lcTestChannel, "omachess.testchannel")
 
@@ -154,6 +156,11 @@ QJsonObject TestChannel::handle(const QJsonObject &command)
         const QString target = command.value(QStringLiteral("target")).toString();
         return QJsonObject{{"ok", clickTarget(target)}};
     }
+    if (name == QStringLiteral("enter_text")) {
+        settle();
+        return QJsonObject{{"ok", enterText(command.value(QStringLiteral("target")).toString(),
+                                             command.value(QStringLiteral("text")).toString())}};
+    }
     if (name == QStringLiteral("resize")) {
         const int width = command.value(QStringLiteral("width")).toInt();
         const int height = command.value(QStringLiteral("height")).toInt();
@@ -162,6 +169,28 @@ QJsonObject TestChannel::handle(const QJsonObject &command)
         m_window->resize(width, height);
         QCoreApplication::processEvents();
         return QJsonObject{{"ok", true}};
+    }
+    if (name == QStringLiteral("set_text")) {
+        settle();
+        const QString target = command.value(QStringLiteral("target")).toString();
+        QQuickItem *item = findItem(m_window, target);
+        if (!item || !item->isVisible())
+            return QJsonObject{{"ok", false}, {"error", QStringLiteral("missing text target")}};
+        item->setProperty("text", command.value(QStringLiteral("text")).toString());
+        QCoreApplication::processEvents();
+        return QJsonObject{{"ok", true}};
+    }
+    if (name == QStringLiteral("select")) {
+        settle();
+        QQuickItem *item =
+            findItem(m_window, command.value(QStringLiteral("target")).toString());
+        const int index = command.value(QStringLiteral("index")).toInt(-1);
+        if (!item || !item->isVisible() || index < 0)
+            return QJsonObject{{"ok", false}, {"error", QStringLiteral("missing picker")}};
+        item->setProperty("currentIndex", index);
+        const bool invoked = QMetaObject::invokeMethod(item, "activated", Q_ARG(int, index));
+        QCoreApplication::processEvents();
+        return QJsonObject{{"ok", invoked}};
     }
     if (name == QStringLiteral("quit")) {
         QCoreApplication::quit();
@@ -216,6 +245,8 @@ QJsonObject TestChannel::snapshot() const
     // internals.
     ThemeController *activeTheme = ThemeController::instance();
 
+    const QQuickItem *focused = keyboardTarget(m_window);
+
     const QString chromeBackground = activeTheme ? colorHex(activeTheme->background())
                                                  : colorHex(m_window->color());
     const QString chromeForeground =
@@ -248,6 +279,7 @@ QJsonObject TestChannel::snapshot() const
         {"themeName", themeName},
         {"boardThemeId", boardThemeId},
         {"pieceSetId", pieceSetId},
+        {"activeFocus", focused ? focused->objectName() : QString()},
         {"squares", squares},
         {"labels", labels},
     };
@@ -255,19 +287,15 @@ QJsonObject TestChannel::snapshot() const
 
 bool TestChannel::sendKey(const QString &key)
 {
-    if (key.size() != 1)
+    const QKeySequence sequence = QKeySequence::fromString(key, QKeySequence::PortableText);
+    if (sequence.isEmpty())
         return false;
-
-    const QChar character = key.at(0).toLower();
-    if (character < QLatin1Char('a') || character > QLatin1Char('z'))
-        return false;
-    const int code = Qt::Key_A + (character.unicode() - u'a');
-
-    QObject *target = keyboardTarget(m_window);
-    QKeyEvent press(QEvent::KeyPress, code, Qt::NoModifier, QString(character));
-    QCoreApplication::sendEvent(target, &press);
-    QKeyEvent release(QEvent::KeyRelease, code, Qt::NoModifier, QString(character));
-    QCoreApplication::sendEvent(target, &release);
+    const QKeyCombination combination = sequence[0];
+    const int code = combination.key();
+    const Qt::KeyboardModifiers modifiers = combination.keyboardModifiers();
+    m_window->requestActivate();
+    QCoreApplication::processEvents();
+    QTest::keyClick(m_window, static_cast<Qt::Key>(code), modifiers);
     QCoreApplication::processEvents();
     return true;
 }
@@ -286,6 +314,15 @@ bool TestChannel::clickTarget(const QString &objectName)
     QMouseEvent release(QEvent::MouseButtonRelease, centre, global, Qt::LeftButton, Qt::NoButton,
                         Qt::NoModifier);
     QCoreApplication::sendEvent(m_window, &release);
+    QCoreApplication::processEvents();
+    return true;
+}
+
+bool TestChannel::enterText(const QString &objectName, const QString &text)
+{
+    QQuickItem *item = findItem(m_window, objectName);
+    if (!item || !item->isVisible() || !item->setProperty("text", text))
+        return false;
     QCoreApplication::processEvents();
     return true;
 }

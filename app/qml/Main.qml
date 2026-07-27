@@ -21,7 +21,187 @@ ApplicationWindow {
     title: qsTr("Omachess")
     color: Theme.background
 
-    Component.onCompleted: WorkspaceSession.describeBoard()
+    Component.onCompleted: {
+        WorkspaceSession.describeBoard()
+        actionSource.rebuild()
+    }
+
+    function focusPane(delta) {
+        let current = paneIndexForItem(workspace.activeFocusItem)
+        if (current < 0)
+            current = delta > 0 ? -1 : 0
+        const focusedPane = (current + delta + 3) % 3
+        const panes = [libraryList, boardArea, moves]
+        panes[focusedPane].forceActiveFocus(Qt.ShortcutFocusReason)
+    }
+
+    function paneIndexForItem(item) {
+        for (let candidate = item; candidate; candidate = candidate.parent) {
+            if (candidate === libraryRail)
+                return 0
+            if (candidate === rightRail)
+                return 2
+            if (candidate === centrePane)
+                return 1
+            if (candidate === surface)
+                return -1
+        }
+        return -1
+    }
+
+    function handleRegisteredKey(event) {
+        let key = ""
+        if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z)
+            key = String.fromCharCode("A".charCodeAt(0) + event.key - Qt.Key_A)
+        else if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9)
+            key = String.fromCharCode("0".charCodeAt(0) + event.key - Qt.Key_0)
+        else {
+            const names = {}
+            names[Qt.Key_Left] = "Left"
+            names[Qt.Key_Right] = "Right"
+            names[Qt.Key_Home] = "Home"
+            names[Qt.Key_End] = "End"
+            names[Qt.Key_Tab] = "Tab"
+            names[Qt.Key_Escape] = "Escape"
+            key = names[event.key] || ""
+        }
+        if (key.length === 0)
+            return false
+        let prefix = ""
+        if (event.modifiers & Qt.ControlModifier)
+            prefix += "Ctrl+"
+        if (event.modifiers & Qt.AltModifier)
+            prefix += "Alt+"
+        if (event.modifiers & Qt.ShiftModifier)
+            prefix += "Shift+"
+        const binding = prefix + key
+        if (ActionRegistry.triggerBinding(binding)) {
+            event.accepted = true
+            return true
+        }
+        return false
+    }
+
+    QtObject {
+        id: actionSource
+
+        function action(id, title, binding, invoke, enabled, shortcut) {
+            return {
+                "id": id,
+                "title": title,
+                "binding": binding,
+                "invoke": invoke,
+                "enabled": enabled === undefined ? true : enabled,
+                "shortcut": shortcut === undefined ? binding : shortcut
+            }
+        }
+
+        function rebuild() {
+            let actions = [
+                action("palette", qsTr("Command palette"), "Ctrl+K",
+                       function() { commandPalette.open() }),
+                action("new-game", qsTr("New game"), "Ctrl+N",
+                       function() { WorkspaceSession.newGame() }),
+                action("flip", qsTr("Flip board"), "F",
+                       function() { WorkspaceSession.flipBoard() }),
+                action("first", qsTr("First position"), "Home",
+                       function() { WorkspaceSession.navigate("start") },
+                       WorkspaceSession.cursor > 0),
+                action("previous", qsTr("Previous position"), "Left",
+                       function() { WorkspaceSession.navigate("backward") },
+                       WorkspaceSession.cursor > 0),
+                action("next", qsTr("Next position"), "Right",
+                       function() { WorkspaceSession.navigate("forward") },
+                       WorkspaceSession.reviewing),
+                action("latest", qsTr("Latest position"), "End",
+                       function() { WorkspaceSession.navigate("end") },
+                       WorkspaceSession.reviewing),
+                action("next-pane", qsTr("Focus next pane"), "Alt+Right",
+                       function() { workspace.focusPane(1) }),
+                action("previous-pane", qsTr("Focus previous pane"), "Alt+Left",
+                       function() { workspace.focusPane(-1) })
+            ]
+
+            const themeBindings = {
+                "follow": "Alt+T",
+                "classic": "Alt+Shift+T",
+                "slate": "Alt+S",
+                "walnut": "Alt+W"
+            }
+            for (const themeId of Theme.boardThemeIds) {
+                const id = themeId
+                const title = id === "follow"
+                            ? qsTr("Follow desktop Board Theme")
+                            : qsTr("Use %1 Board Theme").arg(id)
+                actions.push(action("theme-" + id, title, themeBindings[id],
+                                    function() { Theme.setBoardTheme(id) }))
+            }
+            for (let index = 0; index < Theme.pieceSetIds.length; ++index) {
+                const pieceSetId = Theme.pieceSetIds[index]
+                actions.push(action("pieces-" + pieceSetId,
+                                    qsTr("Use %1 Piece Set").arg(pieceSetId),
+                                    index === 0 ? "Ctrl+Shift+P" : "Ctrl+Shift+" + (index + 1),
+                                    function() { Theme.setPieceSet(pieceSetId) }))
+            }
+
+            for (let index = 0; index < WorkspaceSession.libraryRecords.length; ++index) {
+                const record = WorkspaceSession.libraryRecords[index]
+                const id = record.id
+                actions.push(action("open-" + id, qsTr("Open %1").arg(record.title),
+                                    index < 9 ? "Alt+" + (index + 1)
+                                              : "Alt+Right · ↑/↓ · Enter",
+                                    function() { WorkspaceSession.openRecord(id) },
+                                    true, index < 9 ? "Alt+" + (index + 1) : ""))
+            }
+            for (let index = 0; index < WorkspaceSession.openTabs.length; ++index) {
+                const tab = WorkspaceSession.openTabs[index]
+                const id = tab.id
+                actions.push(action("switch-" + id, qsTr("Switch to %1").arg(tab.title),
+                                    index < 9 ? "Ctrl+" + (index + 1)
+                                              : "Alt+Right · Tab · Enter",
+                                    function() { WorkspaceSession.openRecord(id) },
+                                    true, index < 9 ? "Ctrl+" + (index + 1) : ""))
+                const active = id === WorkspaceSession.activeRecordId
+                actions.push(action("close-" + id, qsTr("Close %1").arg(tab.title),
+                                    active ? "Ctrl+W" : "Alt+Right · Tab · Enter",
+                                    function() { WorkspaceSession.closeTab(id) },
+                                    true, active ? "Ctrl+W" : ""))
+            }
+            if (WorkspaceSession.restoreAvailable) {
+                actions.push(action("restore", qsTr("Restore Game Record"), "Ctrl+R",
+                                    function() { WorkspaceSession.restoreRecord() }))
+                actions.push(action("dismiss-restore", qsTr("Dismiss restore offer"), "Escape",
+                                    function() { WorkspaceSession.dismissRestore() }))
+            }
+            ActionRegistry.replace("cockpit", actions)
+        }
+    }
+
+    Connections {
+        target: WorkspaceSession
+        function onBoardChanged() { actionSource.rebuild() }
+        function onLibraryChanged() { actionSource.rebuild() }
+        function onTabsChanged() { actionSource.rebuild() }
+        function onRestoreChanged() { actionSource.rebuild() }
+    }
+
+    Repeater {
+        model: ActionRegistry.actions
+        Shortcut {
+            required property var modelData
+            sequences: modelData.shortcut.length > 0 ? [modelData.shortcut] : []
+            enabled: modelData.enabled !== false && modelData.shortcut.length > 0
+            context: Qt.ApplicationShortcut
+            onActivated: ActionRegistry.trigger(modelData.id)
+        }
+    }
+
+    Timer {
+        interval: 100
+        repeat: true
+        running: WorkspaceSession.clockRunning
+        onTriggered: WorkspaceSession.tickClock()
+    }
 
     // Fail-closed Live Store open: the workspace cannot play without it.
     Rectangle {
@@ -62,7 +242,9 @@ ApplicationWindow {
                 color: Theme.foreground
                 // A finished game reports its result; an unfinished one reports
                 // whose turn it is, and whether that side is in check.
-                text: WorkspaceSession.gameOver
+                text: WorkspaceSession.positionSetup
+                      ? qsTr("Position Setup — %1").arg(WorkspaceSession.positionClass)
+                      : WorkspaceSession.gameOver
                       ? WorkspaceSession.resultLabel + " (" + WorkspaceSession.resultScore + ")"
                       : (WorkspaceSession.sideToMove === "white"
                          ? qsTr("White to move") : qsTr("Black to move"))
@@ -75,6 +257,26 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            ComboBox {
+                id: clockPicker
+                objectName: "clockPicker"
+                model: [
+                    { text: qsTr("No clock"), milliseconds: 0 },
+                    { text: qsTr("1 second"), milliseconds: 1000 },
+                    { text: qsTr("1 minute"), milliseconds: 60000 },
+                    { text: qsTr("3 minutes"), milliseconds: 180000 }
+                ]
+                textRole: "text"
+                enabled: WorkspaceSession.moveList.length === 0
+                onActivated: WorkspaceSession.configureClock(model[currentIndex].milliseconds)
+            }
+
+            Button {
+                objectName: "positionSetupButton"
+                text: qsTr("Position Setup")
+                onClicked: WorkspaceSession.beginPositionSetup()
             }
 
             // Board Theme: follow the Quattro Palette, or pin an Omachess-owned set.
@@ -146,31 +348,7 @@ ApplicationWindow {
         id: surface
         anchors.fill: parent
         focus: true
-
-        // Player intent leaves the workspace here, and comes back as a core
-        // event carrying the board to draw.
-        Keys.onPressed: function (event) {
-            switch (event.key) {
-            case Qt.Key_F:
-                WorkspaceSession.flipBoard()
-                break
-            case Qt.Key_Left:
-                WorkspaceSession.navigate("backward")
-                break
-            case Qt.Key_Right:
-                WorkspaceSession.navigate("forward")
-                break
-            case Qt.Key_Home:
-                WorkspaceSession.navigate("start")
-                break
-            case Qt.Key_End:
-                WorkspaceSession.navigate("end")
-                break
-            default:
-                return
-            }
-            event.accepted = true
-        }
+        Keys.onPressed: function(event) { workspace.handleRegisteredKey(event) }
 
         RowLayout {
             anchors.fill: parent
@@ -203,6 +381,29 @@ ApplicationWindow {
                         color: Theme.muted
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: WorkspaceSession.clockEnabled
+
+                        Label {
+                            objectName: "whiteClockLabel"
+                            Layout.fillWidth: true
+                            text: qsTr("White %1").arg(
+                                (WorkspaceSession.whiteClockMs / 1000).toFixed(1))
+                            font.bold: WorkspaceSession.sideToMove === "white"
+                                       && WorkspaceSession.clockRunning
+                        }
+                        Label {
+                            objectName: "blackClockLabel"
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            text: qsTr("Black %1").arg(
+                                (WorkspaceSession.blackClockMs / 1000).toFixed(1))
+                            font.bold: WorkspaceSession.sideToMove === "black"
+                                       && WorkspaceSession.clockRunning
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
@@ -212,7 +413,8 @@ ApplicationWindow {
 
                     ListView {
                         id: libraryList
-                        objectName: "libraryList"
+                        objectName: "pane:library:list"
+                        activeFocusOnTab: true
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
@@ -226,6 +428,7 @@ ApplicationWindow {
                             objectName: "library:" + modelData.id
                             width: libraryList.width
                             highlighted: modelData.id === WorkspaceSession.activeRecordId
+                            activeFocusOnTab: true
 
                             contentItem: ColumnLayout {
                                 spacing: 2
@@ -262,6 +465,8 @@ ApplicationWindow {
                             }
 
                             onClicked: WorkspaceSession.openRecord(modelData.id)
+                            Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
+                            Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
                         }
 
                         Label {
@@ -283,6 +488,7 @@ ApplicationWindow {
 
             // ── Centre: tabs + full-size board ───────────────────────────
             ColumnLayout {
+                id: centrePane
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
@@ -320,6 +526,9 @@ ApplicationWindow {
                                 border.color: modelData.id === WorkspaceSession.activeRecordId
                                               ? Theme.muted : "transparent"
                                 border.width: 1
+                                activeFocusOnTab: true
+                                Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
+                                Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -409,6 +618,8 @@ ApplicationWindow {
 
                         Item {
                             id: boardArea
+                            objectName: "pane:board"
+                            activeFocusOnTab: true
                             Layout.fillWidth: true
                             Layout.fillHeight: true
 
@@ -419,6 +630,83 @@ ApplicationWindow {
 
                                 onPromotionRequested: function (from, to, roles) {
                                     promotion.ask(from, to, roles)
+                                }
+                            }
+                        }
+
+                        Frame {
+                            visible: WorkspaceSession.positionSetup
+                            Layout.fillWidth: true
+
+                            ColumnLayout {
+                                anchors.fill: parent
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    TextField {
+                                        id: fenInput
+                                        objectName: "fenInput"
+                                        Layout.fillWidth: true
+                                        text: WorkspaceSession.setupFen
+                                        placeholderText: qsTr("FEN")
+                                    }
+                                    Button {
+                                        objectName: "applyFenButton"
+                                        text: qsTr("Apply FEN")
+                                        onClicked: WorkspaceSession.setSetupFen(fenInput.text)
+                                    }
+                                }
+
+                                Label {
+                                    objectName: "fenErrorLabel"
+                                    visible: WorkspaceSession.setupError.length > 0
+                                    text: WorkspaceSession.setupError
+                                    color: Theme.red
+                                }
+
+                                Label {
+                                    objectName: "positionClassLabel"
+                                    text: WorkspaceSession.positionClass
+                                    font.bold: true
+                                }
+
+                                Label {
+                                    objectName: "positionCapabilitiesLabel"
+                                    text: WorkspaceSession.positionCapabilities
+                                }
+
+                                Button {
+                                    objectName: "startSetupGameButton"
+                                    text: qsTr("Start Played Game")
+                                    enabled: WorkspaceSession.positionClass === "Rule-valid Position"
+                                    onClicked: WorkspaceSession.startSetupGame()
+                                }
+
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    Repeater {
+                                        model: ["white_king", "white_queen", "white_rook",
+                                                "white_bishop", "white_knight", "white_pawn",
+                                                "black_king", "black_queen", "black_rook",
+                                                "black_bishop", "black_knight", "black_pawn"]
+                                        Button {
+                                            required property string modelData
+                                            objectName: "tray:" + modelData
+                                            text: modelData.replace("_", " ")
+                                            onClicked: board.setupPiece = modelData
+                                        }
+                                    }
+                                    Button {
+                                        objectName: "removePieceTool"
+                                        text: qsTr("Remove")
+                                        onClicked: board.setupPiece = "__remove"
+                                    }
+                                    Button {
+                                        objectName: "relocatePieceTool"
+                                        text: qsTr("Relocate")
+                                        onClicked: board.setupPiece = "__move"
+                                    }
                                 }
                             }
                         }
@@ -447,20 +735,21 @@ ApplicationWindow {
                     anchors.margins: 12
                     spacing: 8
 
-                    Label {
-                        objectName: "rightRailHeading"
+                    Button {
+                        id: engineProfilesButton
+                        objectName: "engineProfilesButton"
+                        Layout.fillWidth: true
                         text: qsTr("Engines")
-                        font.bold: true
-                        font.pixelSize: 11
-                        font.capitalization: Font.AllUppercase
-                        color: Theme.muted
+                        checkable: true
                     }
 
                     ListView {
                         id: engines
                         objectName: "engineProfiles"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.min(contentHeight, 250)
+                        Layout.preferredHeight: engineProfilesButton.checked
+                                                ? Math.min(contentHeight, 250) : 0
+                        visible: engineProfilesButton.checked
                         clip: true
                         model: EngineManager
                         spacing: 6
@@ -555,20 +844,81 @@ ApplicationWindow {
                     }
 
                     Label {
-                        text: qsTr("Moves")
+                        objectName: "rightRailHeading"
+                        text: WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
                         font.bold: true
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
                     }
 
+                    Label {
+                        text: qsTr("Game Metadata")
+                        font.bold: true
+                        color: Theme.muted
+                    }
+                    TextField {
+                        id: whitePlayerField
+                        objectName: "metadata:white"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("White player")
+                        text: WorkspaceSession.whitePlayer
+                    }
+                    TextField {
+                        id: blackPlayerField
+                        objectName: "metadata:black"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Black player")
+                        text: WorkspaceSession.blackPlayer
+                    }
+                    TextField {
+                        id: eventField
+                        objectName: "metadata:event"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Event")
+                        text: WorkspaceSession.gameEvent
+                    }
+                    TextField {
+                        id: dateField
+                        objectName: "metadata:date"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Date")
+                        text: WorkspaceSession.gameDate
+                    }
+                    TextField {
+                        id: titleField
+                        objectName: "metadata:title"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Title")
+                        text: WorkspaceSession.gameTitle
+                    }
+                    TextField {
+                        id: tagsField
+                        objectName: "metadata:tags"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Tags")
+                        text: WorkspaceSession.gameTags
+                    }
+                    Button {
+                        objectName: "saveMetadataButton"
+                        Layout.fillWidth: true
+                        enabled: WorkspaceSession.activeRecordId.length > 0
+                        text: qsTr("Save metadata")
+                        onClicked: WorkspaceSession.updateMetadata(
+                            whitePlayerField.text, blackPlayerField.text,
+                            eventField.text, dateField.text,
+                            titleField.text, tagsField.text)
+                    }
+
                     ListView {
                         id: moves
-                        objectName: "moveList"
+                        objectName: "pane:right:moves"
+                        activeFocusOnTab: true
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         model: WorkspaceSession.moveList
+                        visible: !WorkspaceSession.positionSetup
                         // Follow play, and follow the player while they navigate.
                         currentIndex: WorkspaceSession.cursor - 1
                         onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
@@ -581,6 +931,7 @@ ApplicationWindow {
                             width: moves.width
                             // The position after this move is the one on screen.
                             highlighted: index + 1 === WorkspaceSession.cursor
+                            activeFocusOnTab: true
                             text: (modelData.side === "white"
                                    ? modelData.number + ". "
                                    : modelData.number + "... ") + modelData.san
@@ -590,6 +941,7 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 4
+                        visible: !WorkspaceSession.positionSetup
 
                         Button {
                             objectName: "startButton"
@@ -624,10 +976,77 @@ ApplicationWindow {
                     Label {
                         objectName: "reviewLabel"
                         Layout.fillWidth: true
-                        visible: WorkspaceSession.reviewing
+                        visible: !WorkspaceSession.positionSetup && WorkspaceSession.reviewing
                         wrapMode: Text.WordWrap
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: commandPalette
+        objectName: "commandPalette"
+        anchors.centerIn: parent
+        width: Math.min(560, workspace.width - 48)
+        height: Math.min(520, workspace.height - 48)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Command palette")
+
+        onOpened: paletteList.forceActiveFocus(Qt.ShortcutFocusReason)
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "commandPaletteTitle"
+                text: qsTr("All chrome actions")
+                color: Theme.foreground
+                font.bold: true
+            }
+            ListView {
+                id: paletteList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                model: ActionRegistry.actions
+                currentIndex: 0
+                clip: true
+                Keys.onReturnPressed: {
+                    const selected = ActionRegistry.actions[currentIndex]
+                    commandPalette.close()
+                    ActionRegistry.trigger(selected.id)
+                }
+                Keys.onPressed: function(event) {
+                    if (workspace.handleRegisteredKey(event))
+                        commandPalette.close()
+                }
+
+                delegate: ItemDelegate {
+                    required property var modelData
+                    required property int index
+                    width: paletteList.width
+                    implicitHeight: 32
+                    objectName: "paletteAction:" + modelData.id
+                    enabled: modelData.enabled !== false
+                    highlighted: ListView.isCurrentItem
+                    onClicked: {
+                        commandPalette.close()
+                        ActionRegistry.trigger(modelData.id)
+                    }
+                    contentItem: RowLayout {
+                        Label {
+                            objectName: "paletteTitle:" + modelData.id
+                            Layout.fillWidth: true
+                            text: modelData.title
+                            color: Theme.foreground
+                        }
+                        Label {
+                            objectName: "paletteBinding:" + modelData.id
+                            text: modelData.binding
+                            color: Theme.muted
+                            font.family: "monospace"
+                        }
                     }
                 }
             }

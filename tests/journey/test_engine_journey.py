@@ -80,6 +80,7 @@ class EngineJourney(unittest.TestCase):
 
     def test_discovery_requires_consent_and_does_not_execute_the_engine(self) -> None:
         with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
             screen = workspace.screen_when(
                 lambda value: value.labels.get("engineState:stockfish") == "Consent required"
             )
@@ -89,6 +90,7 @@ class EngineJourney(unittest.TestCase):
 
     def test_consent_runs_a_complete_probe_and_captures_identity_and_options(self) -> None:
         with self.run_workspace() as workspace:
+            workspace.click("engineProfilesButton")
             workspace.click("engineConsent:stockfish")
             screen = workspace.screen_when(
                 lambda value: value.labels.get("engineState:stockfish") == "Ready"
@@ -99,6 +101,7 @@ class EngineJourney(unittest.TestCase):
 
     def test_identity_mismatch_downgrades_the_known_profile(self) -> None:
         with self.run_workspace("identity-mismatch") as workspace:
+            workspace.click("engineProfilesButton")
             workspace.click("engineConsent:stockfish")
             screen = workspace.screen_when(
                 lambda value: value.labels.get("engineState:stockfish")
@@ -108,6 +111,7 @@ class EngineJourney(unittest.TestCase):
 
     def test_registration_is_recognized_but_unsupported(self) -> None:
         with self.run_workspace("registration") as workspace:
+            workspace.click("engineProfilesButton")
             workspace.click("engineConsent:stockfish")
             screen = workspace.screen_when(
                 lambda value: "registration" in value.labels.get("engineState:stockfish", "")
@@ -130,6 +134,7 @@ class EngineJourney(unittest.TestCase):
                 if self.log.exists():
                     self.log.unlink()
                 with self.run_workspace(behavior) as workspace:
+                    workspace.click("engineProfilesButton")
                     workspace.click("engineConsent:stockfish")
                     screen = workspace.screen_when(
                         lambda value: value.labels.get("engineState:stockfish", "").startswith(

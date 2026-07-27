@@ -77,6 +77,7 @@ class Screen:
     squares: tuple[SquareOnScreen, ...]
     # The text of every named item that shows any, by item name.
     labels: dict[str, str]
+    active_focus: str
 
     def square(self, name: str) -> SquareOnScreen:
         for square in self.squares:
@@ -388,6 +389,10 @@ class Workspace:
     def click(self, target: str) -> None:
         self._request({"command": "click", "target": target})
 
+    def enter_text(self, target: str, text: str) -> None:
+        """Replace the text in an ordinary visible text input."""
+        self._request({"command": "enter_text", "target": target, "text": text})
+
     def click_square(self, square: str) -> None:
         """Press and release the middle of a board square."""
         self.click(f"square:{square}")
@@ -425,6 +430,14 @@ class Workspace:
         """Choose a Piece Set from the chrome."""
         self.click(f"pieceSet:{piece_set_id}")
 
+    def set_text(self, target: str, text: str) -> None:
+        """Enter text into a visible workspace field."""
+        self._request({"command": "set_text", "target": target, "text": text})
+
+    def select(self, target: str, index: int) -> None:
+        """Choose a visible picker option."""
+        self._request({"command": "select", "target": target, "index": index})
+
     def replace_theme(
         self,
         palette: dict[str, str] | None,
@@ -455,6 +468,7 @@ class Workspace:
             theme_name=raw["themeName"],
             board_theme_id=raw["boardThemeId"],
             piece_set_id=raw["pieceSetId"],
+            active_focus=raw["activeFocus"],
             labels=dict(raw["labels"]),
             squares=tuple(
                 SquareOnScreen(

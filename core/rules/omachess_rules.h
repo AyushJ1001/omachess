@@ -71,6 +71,8 @@ int omachess_rules_side_to_move(OmachessRules *rules);
 
 /* Whether the side to move is in check. */
 int omachess_rules_in_check(OmachessRules *rules);
+/* Result when `loser` (0 White, 1 Black) forfeits on time. */
+int omachess_rules_time_forfeit_winner(OmachessRules *rules, int loser);
 
 /* Why the game ends in the current position: an OMACHESS_RULES_* termination.
  * Repetition and the fifty-move rule end a game here rather than waiting for
