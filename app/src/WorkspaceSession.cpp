@@ -7,6 +7,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QStandardPaths>
+#include <QDBusInterface>
+#include <QDBusReply>
 
 extern "C" {
 #include "omachess_core.h"
@@ -118,6 +120,21 @@ void WorkspaceSession::playMove(const QString &from, const QString &to, const QS
 void WorkspaceSession::navigate(const QString &destination)
 {
     submit(command(QStringLiteral("navigate"), {{QStringLiteral("to"), destination}}));
+}
+
+bool WorkspaceSession::startBackgroundComputerAnalysis()
+{
+    if (m_activeRecordId.isEmpty() || !gameOver())
+        return false;
+    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
+                          QStringLiteral("/BackgroundJobs"),
+                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
+                          QDBusConnection::sessionBus());
+    if (!worker.isValid())
+        return false;
+    const QDBusReply<QString> reply = worker.call(QStringLiteral("StartComputerAnalysis"),
+                                                   m_activeRecordId, moveList().size() + 1);
+    return reply.isValid() && !reply.value().isEmpty();
 }
 
 void WorkspaceSession::restoreRecord()

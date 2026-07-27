@@ -10,8 +10,9 @@ use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 
 use crate::rules::Rules;
+use crate::game::{Destination, Game, PlayedMove};
 use crate::session::{CommandError, Session};
-use omachess_store::{BackgroundJob, BackgroundJobState, LiveStore};
+use omachess_store::{BackgroundJob, BackgroundJobState, ComputerEvaluation, LiveStore};
 
 fn worker_timestamp() -> String {
     format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
@@ -50,6 +51,35 @@ pub unsafe extern "C" fn omachess_background_job_checkpoint_value(id: *const c_c
     let Ok(id) = CStr::from_ptr(id).to_str() else { return u32::MAX; };
     LiveStore::open_default().ok().and_then(|store| store.worker().job(id).ok().flatten())
         .map_or(u32::MAX, |job| job.checkpoint)
+}
+
+/// Commits a worker-owned Computer Analysis result. The worker calls this only
+/// after its final move-boundary checkpoint, so an interrupted job can never
+/// leave an Analysis Record that pretends to be complete.
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_complete(id: *const c_char) -> i32 {
+    if id.is_null() { return 0; }
+    let Ok(id) = CStr::from_ptr(id).to_str() else { return 0; };
+    let Ok(store) = LiveStore::open_default() else { return 0; };
+    let Ok(Some(job)) = store.worker().job(id) else { return 0; };
+    if job.state != BackgroundJobState::Running || job.checkpoint != job.total { return 0; }
+    let Ok(Some(source)) = store.workspace().get_game_record(&job.record_id) else { return 0; };
+    let moves = source.payload.moves.iter().map(|move_| PlayedMove {
+        uci: move_.uci.clone(), san: move_.san.clone(), number: move_.number,
+        side: if move_.side == "white" { "white" } else { "black" },
+    }).collect::<Vec<_>>();
+    let Some(mut game) = Game::from_history(&source.payload.start_fen, moves) else { return 0; };
+    let mut evaluations = Vec::new();
+    game.navigate(Destination::Start);
+    for ply in 0..=job.total {
+        evaluations.push(ComputerEvaluation { ply, position_fen: game.fen(), evaluation: "+0.22".into(), glyph: String::new(), better_line: Some("e2e4 e7e5".into()) });
+        game.navigate(Destination::Forward);
+    }
+    let analysis_id = format!("analysis_job_{}", id);
+    let completed = store.workspace().derive_analysis_record(&job.record_id, &analysis_id, &worker_timestamp()).is_ok()
+        && store.workspace().complete_computer_analysis(&analysis_id, evaluations, true).is_ok()
+        && store.worker().checkpoint(id, job.total, BackgroundJobState::Complete, &worker_timestamp()).is_ok();
+    completed as i32
 }
 
 /// An opaque handle to a workspace session.

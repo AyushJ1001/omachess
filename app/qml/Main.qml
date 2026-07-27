@@ -52,6 +52,13 @@ ApplicationWindow {
     }
 
     function startComputerAnalysis() {
+        if (WorkspaceSession.startBackgroundComputerAnalysis()) {
+            computerAnalysisRunning = true
+            computerAnalysisRunState = "Running in background worker"
+            computerAnalysisTotal = WorkspaceSession.moveList.length + 1
+            computerAnalysisResults = []
+            return
+        }
         computerAnalysisRunning = true
         computerAnalysisRunState = "Running"
         computerAnalysisTargetPly = 0

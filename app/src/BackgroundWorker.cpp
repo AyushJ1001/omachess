@@ -27,8 +27,9 @@ public slots:
         connect(timer, &QTimer::timeout, this, [timer, checkpoint, job, total] {
             ++*checkpoint; // Each tick represents exactly one completed move boundary.
             const bool complete = *checkpoint >= total;
-            omachess_background_job_checkpoint(job.constData(), *checkpoint,
-                                                complete ? "complete" : "running");
+            omachess_background_job_checkpoint(job.constData(), *checkpoint, "running");
+            if (complete)
+                omachess_background_job_complete(job.constData());
             if (complete) timer->deleteLater();
         });
         timer->start();
