@@ -42,7 +42,11 @@ source=(
   "$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz"
   "$pkgname-$pkgver.tar.gz.sig::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz.sig"
 )
-# The detached signature is the integrity check; pin the digest at release time.
+# The detached signature is the integrity check for the tarball, and a
+# signature has no digest of its own.
+#
+# TODO(release): replace the tarball's SKIP with its sha256 once the v0.1.0
+# release is published.
 sha256sums=('SKIP' 'SKIP')
 
 build() {

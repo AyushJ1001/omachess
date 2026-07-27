@@ -96,7 +96,7 @@ core/            the Rust core: owns all chess state
 app/src/         the workspace: C++ glue around the ABI
 app/qml/         the workspace: how a game looks
   pieces/        Piece Set artwork
-packaging/       the AUR recipe, desktop entry, and application icon
+packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
 tests/packaging/ the same, against a staged installation
 ```

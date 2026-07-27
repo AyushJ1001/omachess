@@ -12,13 +12,18 @@ from installed import REPOSITORY_ROOT
 PKGBUILD = REPOSITORY_ROOT / "packaging" / "PKGBUILD"
 
 # Reading the recipe's own variables, rather than grepping its text, keeps the
-# journey honest about what makepkg would see.
-_DUMP = r"""
+# journey honest about what makepkg would see. Every array is passed whole, so
+# an assertion never sees just its first element.
+_ARRAYS = ("arch", "depends", "makedepends", "optdepends", "source", "validpgpkeys")
+
+RECIPE_AS_JSON = r"""
 source "$1"
-python3 - "$pkgname" "$pkgver" "$arch" "$install" <<'PY' \
-  "${depends[@]}" --- "${makedepends[@]}" --- "${source[@]}" --- "${validpgpkeys[@]}"
+python3 - "$pkgname" "$pkgver" "$install" <<'PY' \
+  "${arch[@]}" --- "${depends[@]}" --- "${makedepends[@]}" --- \
+  "${optdepends[@]}" --- "${source[@]}" --- "${validpgpkeys[@]}"
 import json, sys
-head, rest = sys.argv[1:5], sys.argv[5:]
+names = %r
+head, rest = sys.argv[1:4], sys.argv[4:]
 groups, current = [], []
 for item in rest:
     if item == "---":
@@ -27,18 +32,16 @@ for item in rest:
     else:
         current.append(item)
 groups.append(current)
-print(json.dumps({
-    "pkgname": head[0], "pkgver": head[1], "arch": head[2], "install": head[3],
-    "depends": groups[0], "makedepends": groups[1],
-    "source": groups[2], "validpgpkeys": groups[3],
-}))
+recipe = {"pkgname": head[0], "pkgver": head[1], "install": head[2]}
+recipe.update(dict(zip(names, groups)))
+print(json.dumps(recipe))
 PY
-"""
+""" % (_ARRAYS,)
 
 
 def recipe() -> dict:
     result = subprocess.run(
-        ["bash", "-c", _DUMP, "bash", str(PKGBUILD)],
+        ["bash", "-c", RECIPE_AS_JSON, "bash", str(PKGBUILD)],
         capture_output=True,
         text=True,
         check=True,
@@ -92,8 +95,12 @@ class PackageRecipe(unittest.TestCase):
             any(">=4" in item for item in omarchy),
             f"the Omarchy 4/Quattro floor is not pinned: {omarchy}",
         )
-        # Hard dependency, so it may not also appear as optional.
-        self.assertNotIn("optdepends", self.text.split("package()")[0].split("depends=")[0])
+        # Hard dependency, so it may not also be offered as an optional one.
+        self.assertNotIn(
+            "omarchy",
+            " ".join(self.recipe["optdepends"]),
+            "omarchy is also listed as an optdepend",
+        )
 
     def test_the_package_carries_no_install_scriptlet(self) -> None:
         """No Omarchy hooks or launcher refresh for ordinary operation.

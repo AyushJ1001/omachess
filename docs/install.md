@@ -1,7 +1,8 @@
 # Installing, backing up, and removing Omachess
 
-Omachess is an Omarchy 4 (Quattro) application. It is local-first: no account,
-no hosted backend, and no network access is needed to install or run it.
+Omachess is an Omarchy 4 (Quattro) application. It is local-first: it needs no
+account and no hosted backend, and once installed it runs entirely offline.
+Installing itself downloads the signed source tarball, as any package does.
 
 ## Install
 
