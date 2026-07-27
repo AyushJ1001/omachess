@@ -295,7 +295,7 @@ impl Drop for Rules {
 }
 
 /// Splits an engine move such as `e2e4` or `e7e8q` into its parts.
-fn parse_uci(uci: &str) -> Option<LegalMove> {
+pub(crate) fn parse_uci(uci: &str) -> Option<LegalMove> {
     // Coordinates are two characters on an 8x8 board; the engine only ever
     // appends a promotion letter.
     let mut characters = uci.chars();

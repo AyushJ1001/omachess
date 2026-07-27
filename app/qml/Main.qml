@@ -451,6 +451,15 @@ ApplicationWindow {
             }
 
             Button {
+                objectName: "deriveAnalysisButton"
+                visible: WorkspaceSession.activity === "played_game"
+                         && WorkspaceSession.activeRecordId.length > 0
+                         && WorkspaceSession.gameOver
+                text: qsTr("Derive analysis")
+                onClicked: WorkspaceSession.deriveAnalysisRecord()
+            }
+
+            Button {
                 objectName: "autosaveMode"
                 text: qsTr("Autosave Mode")
                 checkable: true
@@ -1438,6 +1447,20 @@ ApplicationWindow {
                                 font.family: "monospace"
                             }
                         }
+                        Button {
+                            objectName: "pinEngineLineButton"
+                            Layout.fillWidth: true
+                            visible: WorkspaceSession.activity === "analysis_record"
+                                     && EngineManager.analysisReady
+                                     && EngineManager.analysisVariations.length > 0
+                            text: qsTr("Pin first line")
+                            onClicked: WorkspaceSession.pinEngineLine(
+                                WorkspaceSession.displayedFen,
+                                EngineManager.analysisEvaluation,
+                                EngineManager.analysisVariations[0].replace(/^[0-9]+\. /, ""),
+                                EngineManager.analysisEngine,
+                                EngineManager.analysisSearchContext)
+                        }
                     }
 
                     Label {
@@ -1644,6 +1667,95 @@ ApplicationWindow {
                         text: qsTr("Game Metadata")
                         font.bold: true
                         color: Theme.muted
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: WorkspaceSession.activity === "analysis_record"
+
+                        Label {
+                            text: qsTr("Source Snapshot")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "sourceSnapshotMoves"
+                            text: qsTr("%1 moves").arg(
+                                WorkspaceSession.sourceSnapshot.moveCount || 0)
+                        }
+                        Label {
+                            objectName: "recordGraphSource"
+                            text: WorkspaceSession.recordSources.length > 0
+                                  ? WorkspaceSession.recordSources[0]
+                                  : WorkspaceSession.sourceSnapshot.sourceId || ""
+                        }
+                        Label {
+                            objectName: "analysisStructure"
+                            text: qsTr("Main line: %1 ply · %2 sidelines · %3 annotations")
+                                  .arg(WorkspaceSession.analysisMainLinePly)
+                                  .arg(WorkspaceSession.analysisSidelineCount)
+                                  .arg(WorkspaceSession.analysisAnnotationCount)
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                        TextField {
+                            id: annotationInput
+                            objectName: "analysisAnnotationInput"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Annotation at displayed position")
+                        }
+                        Button {
+                            objectName: "addAnalysisAnnotationButton"
+                            text: qsTr("Add annotation")
+                            enabled: annotationInput.text.trim().length > 0
+                            onClicked: {
+                                WorkspaceSession.addAnalysisAnnotation(
+                                    WorkspaceSession.cursor, annotationInput.text)
+                                annotationInput.clear()
+                            }
+                        }
+                        TextField {
+                            id: sidelineInput
+                            objectName: "analysisSidelineInput"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Sideline in UCI moves")
+                        }
+                        Button {
+                            objectName: "addAnalysisSidelineButton"
+                            text: qsTr("Add sideline")
+                            enabled: sidelineInput.text.trim().length > 0
+                            onClicked: {
+                                WorkspaceSession.addAnalysisSideline(
+                                    WorkspaceSession.cursor, sidelineInput.text)
+                                sidelineInput.clear()
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.pinnedEngineLines
+                            ColumnLayout {
+                                required property int index
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    objectName: "pinnedEngineEvaluation:" + (index + 1)
+                                    text: modelData.evaluation
+                                    font.bold: true
+                                }
+                                Label {
+                                    objectName: "pinnedEngineVariation:" + (index + 1)
+                                    Layout.fillWidth: true
+                                    text: modelData.variation
+                                    wrapMode: Text.WordWrap
+                                    font.family: "monospace"
+                                }
+                                Label {
+                                    objectName: "pinnedEngineName:" + (index + 1)
+                                    text: modelData.engine
+                                }
+                                Label {
+                                    objectName: "pinnedEngineSearch:" + (index + 1)
+                                    text: modelData.searchContext
+                                }
+                            }
+                        }
                     }
                     TextField {
                         id: whitePlayerField

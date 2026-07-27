@@ -65,6 +65,14 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString positionCapabilities READ positionCapabilities NOTIFY boardChanged)
     Q_PROPERTY(QString displayedFen READ displayedFen NOTIFY boardChanged)
     Q_PROPERTY(bool displayedPositionRuleValid READ displayedPositionRuleValid NOTIFY boardChanged)
+    Q_PROPERTY(QString activity READ activity NOTIFY boardChanged)
+    Q_PROPERTY(QVariantMap sourceSnapshot READ sourceSnapshot NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QStringList recordSources READ recordSources NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QStringList recordDerivations READ recordDerivations NOTIFY analysisRecordChanged)
+    Q_PROPERTY(int analysisMainLinePly READ analysisMainLinePly NOTIFY analysisRecordChanged)
+    Q_PROPERTY(int analysisSidelineCount READ analysisSidelineCount NOTIFY analysisRecordChanged)
+    Q_PROPERTY(int analysisAnnotationCount READ analysisAnnotationCount NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QVariantList pinnedEngineLines READ pinnedEngineLines NOTIFY analysisRecordChanged)
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
@@ -140,6 +148,14 @@ public:
     {
         return m_state.value(QStringLiteral("displayedPositionRuleValid")).toBool();
     }
+    QString activity() const { return field(QStringLiteral("activity")); }
+    QVariantMap sourceSnapshot() const { return m_sourceSnapshot; }
+    QStringList recordSources() const { return m_recordSources; }
+    QStringList recordDerivations() const { return m_recordDerivations; }
+    int analysisMainLinePly() const { return m_analysisMainLinePly; }
+    int analysisSidelineCount() const { return m_analysisSidelineCount; }
+    int analysisAnnotationCount() const { return m_analysisAnnotationCount; }
+    QVariantList pinnedEngineLines() const { return m_pinnedEngineLines; }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }
@@ -227,6 +243,12 @@ public:
     Q_INVOKABLE void toggleVariantRule(const QString &rule);
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
+    Q_INVOKABLE void deriveAnalysisRecord();
+    Q_INVOKABLE void addAnalysisAnnotation(int ply, const QString &text);
+    Q_INVOKABLE void addAnalysisSideline(int afterPly, const QString &variation);
+    Q_INVOKABLE void pinEngineLine(const QString &positionFen, const QString &evaluation,
+                                   const QString &variation, const QString &engine,
+                                   const QString &searchContext);
 
     // --- What the core said a player may do -------------------------------
     //
@@ -259,6 +281,7 @@ signals:
     void restoreChanged();
     void workshopChanged();
     void pgnImportResultsChanged();
+    void analysisRecordChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -305,4 +328,11 @@ private:
     QString m_ruleConflict;
     QVariantList m_pgnImportResults;
     QString m_exportPath;
+    QVariantMap m_sourceSnapshot;
+    QStringList m_recordSources;
+    QStringList m_recordDerivations;
+    int m_analysisMainLinePly = 0;
+    int m_analysisSidelineCount = 0;
+    int m_analysisAnnotationCount = 0;
+    QVariantList m_pinnedEngineLines;
 };

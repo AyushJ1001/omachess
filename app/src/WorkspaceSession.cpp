@@ -245,6 +245,39 @@ void WorkspaceSession::exportPgn(const QStringList &recordIds)
                    {{QStringLiteral("ids"), recordIds.join(',')}}));
 }
 
+void WorkspaceSession::deriveAnalysisRecord()
+{
+    submit(command(QStringLiteral("derive_analysis_record")));
+}
+
+void WorkspaceSession::addAnalysisAnnotation(int ply, const QString &text)
+{
+    if (!text.trimmed().isEmpty())
+        submit(command(QStringLiteral("add_analysis_annotation"),
+                       {{QStringLiteral("ply"), QString::number(ply)},
+                        {QStringLiteral("text"), text}}));
+}
+
+void WorkspaceSession::addAnalysisSideline(int afterPly, const QString &variation)
+{
+    if (!variation.trimmed().isEmpty())
+        submit(command(QStringLiteral("add_analysis_sideline"),
+                       {{QStringLiteral("after_ply"), QString::number(afterPly)},
+                        {QStringLiteral("variation"), variation}}));
+}
+
+void WorkspaceSession::pinEngineLine(const QString &positionFen, const QString &evaluation,
+                                     const QString &variation, const QString &engine,
+                                     const QString &searchContext)
+{
+    submit(command(QStringLiteral("pin_engine_line"),
+                   {{QStringLiteral("position_fen"), positionFen},
+                    {QStringLiteral("evaluation"), evaluation},
+                    {QStringLiteral("variation"), variation},
+                    {QStringLiteral("engine"), engine},
+                    {QStringLiteral("search_context"), searchContext}}));
+}
+
 QVariantList WorkspaceSession::moveList() const
 {
     QVariantList moves;
@@ -425,6 +458,23 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
             m_libraryRecords.append(entry);
         }
         emit libraryChanged();
+        return;
+    }
+    if (type == QStringLiteral("analysis_record_changed")) {
+        m_sourceSnapshot = event.value(QStringLiteral("sourceSnapshot")).toObject().toVariantMap();
+        m_recordSources.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("sources")).toArray())
+            m_recordSources.append(value.toString());
+        m_recordDerivations.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("derivations")).toArray())
+            m_recordDerivations.append(value.toString());
+        m_analysisMainLinePly = event.value(QStringLiteral("mainLinePly")).toInt();
+        m_analysisSidelineCount = event.value(QStringLiteral("sidelineCount")).toInt();
+        m_analysisAnnotationCount = event.value(QStringLiteral("annotationCount")).toInt();
+        m_pinnedEngineLines.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("pinnedLines")).toArray())
+            m_pinnedEngineLines.append(value.toObject().toVariantMap());
+        emit analysisRecordChanged();
         return;
     }
     if (type == QStringLiteral("variant_library_changed")) {

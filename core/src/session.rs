@@ -18,15 +18,15 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
-    GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
-    OpenError, RecordResult,
+    AnalysisRecordData, AnalysisSideline, GameRecord, GameRecordKind, GameRecordPayload,
+    GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine, RecordResult,
 };
 
 use crate::board::{Orientation, Piece, Position};
 use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
 use crate::pgn::{self, ImportEntry, ImportReport, PgnGame};
-use crate::rules::{Rules, Winner};
+use crate::rules::{parse_uci, Rules, Winner};
 
 pub struct Session {
     game: Game,
@@ -218,7 +218,11 @@ impl Session {
             .filter(|id| open_tabs.iter().any(|tab| tab == id));
         let restore_offer = match store.workspace().residue("active_record_id") {
             Ok(Some(record_id)) => match store.workspace().get_game_record(&record_id) {
-                Ok(Some(record)) if record.ply_count > 0 && record.payload.result.is_none() => {
+                Ok(Some(record))
+                    if record.kind == GameRecordKind::Played
+                        && record.ply_count > 0
+                        && record.payload.result.is_none() =>
+                {
                     Some(RestoreOffer {
                         record_id,
                         ply_count: record.ply_count,
@@ -300,6 +304,10 @@ impl Session {
             "toggle_variant_rule" => self.toggle_variant_rule(command)?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
+            "derive_analysis_record" => self.derive_analysis_record()?,
+            "add_analysis_annotation" => self.add_analysis_annotation(command)?,
+            "add_analysis_sideline" => self.add_analysis_sideline(command)?,
+            "pin_engine_line" => self.pin_engine_line(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -312,6 +320,7 @@ impl Session {
             if let Some(offer) = &self.restore_offer {
                 self.events.push(restore_available_event(offer));
             }
+            self.emit_analysis_record_changed();
         }
         if self.workshop.is_some() {
             self.events.push(self.workshop_changed_event());
@@ -320,6 +329,149 @@ impl Session {
             ));
         }
         Ok(())
+    }
+
+    fn derive_analysis_record(&mut self) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
+        let source_id = self.record_id.clone().ok_or(CommandError::RejectedMove)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        let id = new_record_id();
+        store
+            .workspace()
+            .derive_analysis_record(&source_id, &id, &timestamp_now())
+            .map_err(|_| CommandError::RejectedMove)?;
+        self.load_record(&id)?;
+        self.suspended = false;
+        self.ensure_tab_open(&id);
+        self.persist_residue()?;
+        self.emit_library_changed();
+        self.emit_tabs_changed();
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn add_analysis_annotation(&mut self, command: &str) -> Result<(), CommandError> {
+        let id = self.analysis_record_id()?;
+        let ply = json::read_string_field(command, "ply")
+            .and_then(|value| value.parse().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        let text =
+            json::read_string_field(command, "text").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .add_annotation(&id, ply, &text)
+            .map_err(|_| CommandError::Store)?;
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn add_analysis_sideline(&mut self, command: &str) -> Result<(), CommandError> {
+        let id = self.analysis_record_id()?;
+        let after_ply = json::read_string_field(command, "after_ply")
+            .and_then(|value| value.parse().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        let variation =
+            json::read_string_field(command, "variation").ok_or(CommandError::MalformedCommand)?;
+        let workspace = self.store.as_ref().ok_or(CommandError::Store)?.workspace();
+        let analysis = workspace
+            .analysis_record(&id)
+            .map_err(|_| CommandError::Store)?
+            .ok_or(CommandError::Store)?;
+        let prefix: Vec<_> = analysis
+            .main_line
+            .iter()
+            .take(after_ply as usize)
+            .map(|entry| PlayedMove {
+                uci: entry.uci.clone(),
+                san: entry.san.clone(),
+                number: entry.number,
+                side: if entry.side == "black" { "black" } else { "white" },
+            })
+            .collect();
+        if prefix.len() != after_ply as usize {
+            return Err(CommandError::MalformedCommand);
+        }
+        let mut sideline_game =
+            Game::from_history(&analysis.source_snapshot.start_fen, prefix)
+                .ok_or(CommandError::Store)?;
+        let base = sideline_game.moves().len();
+        for uci in variation.split_whitespace() {
+            let parsed = parse_uci(uci).ok_or(CommandError::MalformedCommand)?;
+            sideline_game
+                .play(&parsed.from, &parsed.to, parsed.promotion.as_deref())
+                .map_err(|_| CommandError::RejectedMove)?;
+        }
+        let moves = sideline_game.moves()[base..]
+            .iter()
+            .map(|played| MoveEntry {
+                uci: played.uci.clone(),
+                san: played.san.clone(),
+                number: played.number,
+                side: played.side.to_owned(),
+            })
+            .collect();
+        workspace
+            .add_sideline(&id, AnalysisSideline { after_ply, moves })
+            .map_err(|_| CommandError::Store)?;
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn pin_engine_line(&mut self, command: &str) -> Result<(), CommandError> {
+        let id = self.analysis_record_id()?;
+        let required = |name| {
+            json::read_string_field(command, name).ok_or(CommandError::MalformedCommand)
+        };
+        let line = PinnedEngineLine {
+            position_fen: required("position_fen")?,
+            evaluation: required("evaluation")?,
+            variation: required("variation")?,
+            engine: required("engine")?,
+            search_context: required("search_context")?,
+        };
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .pin_engine_line(&id, &line)
+            .map_err(|_| CommandError::Store)?;
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn analysis_record_id(&self) -> Result<String, CommandError> {
+        let id = self.record_id.clone().ok_or(CommandError::RejectedMove)?;
+        let record = self
+            .store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .get_game_record(&id)
+            .map_err(|_| CommandError::Store)?
+            .ok_or(CommandError::Store)?;
+        (record.kind == GameRecordKind::Analysis)
+            .then_some(id)
+            .ok_or(CommandError::RejectedMove)
+    }
+
+    fn emit_analysis_record_changed(&mut self) {
+        let Ok(id) = self.analysis_record_id() else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Ok(Some(data)) = store.workspace().analysis_record(&id) else {
+            return;
+        };
+        let sources = store.workspace().sources_of(&id).unwrap_or_default();
+        let derivations = store.workspace().derivations_from(&id).unwrap_or_default();
+        self.events
+            .push(analysis_record_changed_event(&data, &sources, &derivations));
     }
 
     fn persist_variant_definition(&self) -> Result<(), CommandError> {
@@ -831,6 +983,7 @@ impl Session {
         self.events
             .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
+        self.emit_analysis_record_changed();
         Ok(())
     }
 
@@ -1040,6 +1193,7 @@ impl Session {
         self.events
             .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
+        self.emit_analysis_record_changed();
         Ok(())
     }
 
@@ -1127,6 +1281,9 @@ impl Session {
         }
         self.clock = stored_clock;
         self.suspended = stored_result.is_none() && record.ply_count > 0;
+        if record.kind == GameRecordKind::Analysis {
+            self.suspended = false;
+        }
         self.metadata = decode_metadata(record.payload.participation.as_deref());
         if self.metadata.title.is_empty() {
             self.metadata.title = record.title.clone().unwrap_or_default();
@@ -1149,8 +1306,12 @@ impl Session {
         };
         let now = timestamp_now();
         let id = self.record_id.clone().unwrap_or_else(new_record_id);
+        let existing = store.workspace().get_game_record(&id).ok().flatten();
+        let kind = existing
+            .as_ref()
+            .map_or(GameRecordKind::Played, |record| record.kind);
         let outcome = self.game.outcome();
-        let result = if outcome.is_over() {
+        let result = if kind == GameRecordKind::Played && outcome.is_over() {
             Some(RecordResult {
                 status: status_name(outcome.winner).to_owned(),
                 termination: outcome.termination.name().to_owned(),
@@ -1176,18 +1337,17 @@ impl Session {
                 .collect(),
             result,
             participation: Some(encode_metadata(&self.metadata)),
-            clock: self.clock.as_ref().map(encode_clock),
+            clock: (kind == GameRecordKind::Played)
+                .then(|| self.clock.as_ref().map(encode_clock))
+                .flatten(),
         };
-        let created_at = store
-            .workspace()
-            .get_game_record(&id)
-            .ok()
-            .flatten()
-            .map(|existing| existing.created_at)
+        let created_at = existing
+            .as_ref()
+            .map(|record| record.created_at.clone())
             .unwrap_or_else(|| now.clone());
         let record = GameRecord {
             id: id.clone(),
-            kind: GameRecordKind::Played,
+            kind,
             title: (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone()),
             result_score,
             ply_count: payload.moves.len() as u32,
@@ -1389,7 +1549,19 @@ impl Session {
                 },
             );
         } else {
-            out.push_str(",\"activity\":\"played_game\"");
+            let activity = self
+                .record_id
+                .as_ref()
+                .and_then(|id| self.store.as_ref()?.workspace().get_game_record(id).ok().flatten())
+                .map_or("played_game", |record| {
+                    if record.kind == GameRecordKind::Analysis {
+                        "analysis_record"
+                    } else {
+                        "played_game"
+                    }
+                });
+            out.push_str(",\"activity\":");
+            json::write_string(&mut out, activity);
         }
 
         out.push_str(",\"sideToMove\":");
@@ -2015,6 +2187,59 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
             Some(score) => json::write_string(&mut out, score),
             None => out.push_str("null"),
         }
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn analysis_record_changed_event(
+    data: &AnalysisRecordData,
+    sources: &[String],
+    derivations: &[String],
+) -> String {
+    let mut out = String::from("{\"type\":\"analysis_record_changed\",\"sourceSnapshot\":{");
+    out.push_str("\"sourceId\":");
+    json::write_string(&mut out, &data.source_snapshot.source_id);
+    out.push_str(",\"startFen\":");
+    json::write_string(&mut out, &data.source_snapshot.start_fen);
+    out.push_str(",\"moveCount\":");
+    out.push_str(&data.source_snapshot.moves.len().to_string());
+    out.push_str("},\"sources\":[");
+    for (index, id) in sources.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        json::write_string(&mut out, id);
+    }
+    out.push_str("],\"derivations\":[");
+    for (index, id) in derivations.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        json::write_string(&mut out, id);
+    }
+    out.push_str("],\"mainLinePly\":");
+    out.push_str(&data.main_line.len().to_string());
+    out.push_str(",\"sidelineCount\":");
+    out.push_str(&data.sidelines.len().to_string());
+    out.push_str(",\"annotationCount\":");
+    out.push_str(&data.annotations.len().to_string());
+    out.push_str(",\"pinnedLines\":[");
+    for (index, line) in data.pinned_lines.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"positionFen\":");
+        json::write_string(&mut out, &line.position_fen);
+        out.push_str(",\"evaluation\":");
+        json::write_string(&mut out, &line.evaluation);
+        out.push_str(",\"variation\":");
+        json::write_string(&mut out, &line.variation);
+        out.push_str(",\"engine\":");
+        json::write_string(&mut out, &line.engine);
+        out.push_str(",\"searchContext\":");
+        json::write_string(&mut out, &line.search_context);
         out.push('}');
     }
     out.push_str("]}");
@@ -2851,6 +3076,90 @@ mod tests {
         assert!(tabs.contains(r#""activeId":null"#));
         let board = board.expect("new_game clears the board");
         assert!(board.contains(r#""moveList":[]"#));
+    }
+
+    #[test]
+    fn deriving_twice_creates_independent_analysis_records_with_navigable_provenance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        for uci in ["f2f3", "e7e5", "g2g4", "d8h4"] {
+            play(&mut session, &uci[..2], &uci[2..4]);
+        }
+        let source_id = session.record_id.clone().unwrap();
+
+        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        while session.poll_event().is_some() {}
+        let first_id = session.record_id.clone().unwrap();
+        session
+            .submit(r#"{"type":"add_analysis_annotation","ply":"2","text":"First only"}"#)
+            .unwrap();
+        while session.poll_event().is_some() {}
+        session
+            .submit(r#"{"type":"add_analysis_sideline","after_ply":"2","variation":"b1c3"}"#)
+            .unwrap();
+        while session.poll_event().is_some() {}
+        session
+            .submit(&format!(r#"{{"type":"open_record","id":"{source_id}"}}"#))
+            .unwrap();
+        while session.poll_event().is_some() {}
+        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        while session.poll_event().is_some() {}
+        let second_id = session.record_id.clone().unwrap();
+        drop(session);
+
+        let store = LiveStore::open(&path).unwrap();
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            store.workspace().derivations_from(&source_id).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            store.workspace().sources_of(&first_id).unwrap(),
+            vec![source_id]
+        );
+        let first = store
+            .workspace()
+            .analysis_record(&first_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.annotations[0].text, "First only");
+        assert_eq!(first.sidelines[0].moves[0].san, "Nc3");
+        assert!(store
+            .workspace()
+            .analysis_record(&second_id)
+            .unwrap()
+            .unwrap()
+            .annotations
+            .is_empty());
+    }
+
+    #[test]
+    fn a_pinned_engine_line_and_its_context_are_emitted_after_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let mut session = Session::open(&path).unwrap();
+            for uci in ["f2f3", "e7e5", "g2g4", "d8h4"] {
+                play(&mut session, &uci[..2], &uci[2..4]);
+            }
+            session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+            while session.poll_event().is_some() {}
+            session.submit(r#"{"type":"pin_engine_line","position_fen":"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1","evaluation":"+0.22","variation":"e2e4 e7e5","engine":"Stockfish 18","search_context":"depth 8 · movetime 250 ms"}"#).unwrap();
+            while session.poll_event().is_some() {}
+        }
+
+        let mut session = Session::open(&path).unwrap();
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| session.poll_event()).collect();
+        let analysis = events
+            .iter()
+            .find(|event| event.contains(r#""type":"analysis_record_changed""#))
+            .expect("the active Analysis Record is described after restart");
+        assert!(analysis.contains(r#""evaluation":"+0.22""#));
+        assert!(analysis.contains(r#""variation":"e2e4 e7e5""#));
+        assert!(analysis.contains(r#""engine":"Stockfish 18""#));
+        assert!(analysis.contains(r#""searchContext":"depth 8 · movetime 250 ms""#));
     }
 
     fn two_played_games(path: &std::path::Path) -> (String, String) {
