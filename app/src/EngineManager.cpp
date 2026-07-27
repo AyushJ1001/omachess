@@ -109,11 +109,24 @@ EngineManager::EngineManager(QObject *parent)
         case Stage::Shutdown:
             fail(QStringLiteral("shutdown timeout"));
             break;
+        case Stage::LiveStarting:
+        case Stage::LiveUci:
+            failLivePlay(QStringLiteral("could not start"));
+            break;
+        case Stage::LiveReady:
+        case Stage::LiveSearch:
+            failLivePlay(QStringLiteral("did not respond"));
+            break;
         case Stage::Idle:
             break;
         }
     });
     connect(&m_process, &QProcess::started, this, [this] {
+        if (m_stage == Stage::LiveStarting) {
+            send("uci\n");
+            advance(Stage::LiveUci, deadline(3000));
+            return;
+        }
         if (m_stage != Stage::Starting)
             return;
         send("uci\n");
@@ -130,12 +143,20 @@ EngineManager::EngineManager(QObject *parent)
                         finishReady();
                     else
                         fail(QStringLiteral("unclean shutdown"));
+                } else if (m_livePlayActive && m_stage != Stage::Idle) {
+                    Q_UNUSED(exitCode)
+                    Q_UNUSED(exitStatus)
+                    failLivePlay(QStringLiteral("engine stopped unexpectedly"));
                 } else if (m_stage != Stage::Idle) {
                     fail(QStringLiteral("engine exited before completing the UCI probe"));
                 }
             });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (m_stage != Stage::Idle && error != QProcess::Crashed)
+        if (m_livePlayActive)
+            failLivePlay(error == QProcess::Crashed
+                             ? QStringLiteral("engine crashed")
+                             : QStringLiteral("could not start"));
+        else if (m_stage != Stage::Idle && error != QProcess::Crashed)
             fail(QStringLiteral("could not start"));
     });
 
@@ -470,6 +491,103 @@ void EngineManager::setDisplayRating(const QString &key, int rating)
     emit dataChanged(this->index(index), this->index(index), {RatingRole});
 }
 
+void EngineManager::setLivePlaySearchTime(const QString &key, int milliseconds)
+{
+    if (indexOf(key) < 0 || milliseconds < 10 || milliseconds > 60000)
+        return;
+    QSettings().setValue(QStringLiteral("livePlay/%1/searchTimeMs").arg(key), milliseconds);
+}
+
+int EngineManager::livePlaySearchTime(const QString &key) const
+{
+    return QSettings()
+        .value(QStringLiteral("livePlay/%1/searchTimeMs").arg(key), 250)
+        .toInt();
+}
+
+void EngineManager::setLivePlayClock(const QString &key, int milliseconds)
+{
+    if (indexOf(key) < 0 || milliseconds < 0)
+        return;
+    QSettings().setValue(QStringLiteral("livePlay/%1/clockMs").arg(key), milliseconds);
+}
+
+int EngineManager::livePlayClock(const QString &key) const
+{
+    return QSettings().value(QStringLiteral("livePlay/%1/clockMs").arg(key), 0).toInt();
+}
+
+void EngineManager::startLivePlay(const QString &key, const QString &humanSide)
+{
+    const int profileIndex = indexOf(key);
+    if (m_operation == Operation::Analysis && m_active >= 0)
+        clearAnalysis();
+    if (profileIndex < 0 || m_livePlayActive || m_active >= 0
+        || !m_profiles.at(profileIndex).state.startsWith(QStringLiteral("Ready"))
+        || (humanSide != QStringLiteral("white") && humanSide != QStringLiteral("black"))) {
+        return;
+    }
+    m_active = profileIndex;
+    m_livePlayActive = true;
+    m_livePlayEngineSide =
+        humanSide == QStringLiteral("white") ? QStringLiteral("black") : QStringLiteral("white");
+    m_liveSearchTimeMs = livePlaySearchTime(key);
+    m_liveMoves.clear();
+    m_liveSideToMove = QStringLiteral("white");
+    m_livePlayStatus = QStringLiteral("Playing %1").arg(m_profiles.at(profileIndex).name);
+    emit livePlayChanged();
+
+    m_output.clear();
+    const Profile &profile = m_profiles.at(profileIndex);
+    m_process.setProgram(profile.path);
+    m_process.setArguments(QProcess::splitCommand(profile.arguments));
+    m_process.setWorkingDirectory(profile.workingDirectory);
+    m_process.setProcessChannelMode(QProcess::SeparateChannels);
+    m_process.start();
+    advance(Stage::LiveStarting, deadline(3000));
+}
+
+void EngineManager::updateLivePosition(const QString &moves, const QString &sideToMove,
+                                       bool gameOver, int whiteMs, int blackMs)
+{
+    if (!m_livePlayActive)
+        return;
+    m_liveMoves = moves;
+    m_liveSideToMove = sideToMove;
+    m_liveWhiteMs = whiteMs;
+    m_liveBlackMs = blackMs;
+    if (gameOver) {
+        stopLivePlay();
+        return;
+    }
+    requestLiveMove();
+}
+
+void EngineManager::rejectLiveMove()
+{
+    failLivePlay(QStringLiteral("returned an illegal or malformed move"));
+}
+
+void EngineManager::stopLivePlay()
+{
+    if (!m_livePlayActive)
+        return;
+    m_deadline.stop();
+    if (m_process.state() != QProcess::NotRunning) {
+        send("quit\n");
+        if (!m_process.waitForFinished(50))
+            m_process.kill();
+    }
+    m_livePlayActive = false;
+    m_livePlayEngineSide.clear();
+    m_livePlayStatus.clear();
+    m_active = -1;
+    m_stage = Stage::Idle;
+    emit livePlayChanged();
+    if (!m_requestedFen.isEmpty() && m_requestedRuleValid)
+        startAnalysis();
+}
+
 void EngineManager::startProbe(int index)
 {
     m_operation = Operation::Probe;
@@ -507,8 +625,12 @@ void EngineManager::analyzePosition(const QString &fen, bool ruleValid)
     m_searchVariations.clear();
     m_analysisMessage = ruleValid ? QStringLiteral("Waiting for a Ready engine.")
                                   : QStringLiteral("Engine analysis is not guaranteed for a Freeform Position.");
+    if (m_livePlayActive && ruleValid)
+        m_analysisMessage = QStringLiteral("Live Position Analysis pauses while this engine is playing.");
     emit analysisChanged();
 
+    if (m_livePlayActive)
+        return;
     if (m_operation == Operation::Analysis && m_active >= 0) {
         m_active = -1;
         m_stage = Stage::Idle;
@@ -577,6 +699,37 @@ void EngineManager::consumeLine(const QString &line)
     if (m_active < 0)
         return;
     Profile &profile = m_profiles[m_active];
+    if (m_stage == Stage::LiveUci) {
+        if (line == QStringLiteral("uciok")) {
+            send("isready\n");
+            advance(Stage::LiveReady, deadline(5000));
+        }
+        return;
+    }
+    if (m_stage == Stage::LiveReady && line == QStringLiteral("readyok")) {
+        m_deadline.stop();
+        requestLiveMove();
+        return;
+    }
+    if (m_stage == Stage::LiveSearch && line.startsWith(QStringLiteral("bestmove "))) {
+        m_deadline.stop();
+        const QString move = line.sliced(9).section(QLatin1Char(' '), 0, 0).toLower();
+        if (move.size() < 4) {
+            failLivePlay(QStringLiteral("returned an invalid move"));
+            return;
+        }
+        m_stage = Stage::LiveReady;
+        const QString promotion =
+            move.size() > 4
+            ? QHash<QChar, QString>{{'q', QStringLiteral("queen")},
+                                    {'r', QStringLiteral("rook")},
+                                    {'b', QStringLiteral("bishop")},
+                                    {'n', QStringLiteral("knight")}}
+                  .value(move.at(4))
+            : QString();
+        emit liveMove(move.first(2), move.sliced(2, 2), promotion);
+        return;
+    }
     if (line.startsWith(QStringLiteral("registration"))
         || line.startsWith(QStringLiteral("copyprotection"))) {
         m_registrationRequired = true;
@@ -769,13 +922,14 @@ void EngineManager::finishReady()
 {
     if (m_active < 0)
         return;
-    Profile &profile = m_profiles[m_active];
+    const int completed = m_active;
+    Profile &profile = m_profiles[completed];
     profile.state = profile.identityMismatch ? QStringLiteral("Ready — identity mismatch")
                                              : QStringLiteral("Ready");
-    emit dataChanged(index(m_active), index(m_active));
-    m_readyProfile = m_active;
+    m_readyProfile = completed;
     m_active = -1;
     m_stage = Stage::Idle;
+    emit dataChanged(index(completed), index(completed));
     if (!m_requestedFen.isEmpty() && m_requestedRuleValid)
         startAnalysis();
 }
@@ -806,4 +960,38 @@ int EngineManager::deadline(int productionMs) const
     bool ok = false;
     const int testValue = qEnvironmentVariableIntValue("OMACHESS_TEST_ENGINE_DEADLINE_MS", &ok);
     return ok && qEnvironmentVariableIsSet("OMACHESS_TEST_CHANNEL") ? testValue : productionMs;
+}
+
+void EngineManager::requestLiveMove()
+{
+    if (!m_livePlayActive || m_stage != Stage::LiveReady
+        || m_liveSideToMove != m_livePlayEngineSide) {
+        return;
+    }
+    QByteArray position("position startpos");
+    if (!m_liveMoves.isEmpty())
+        position += " moves " + m_liveMoves.toUtf8();
+    QByteArray go;
+    if (m_liveWhiteMs > 0 && m_liveBlackMs > 0) {
+        go = "go wtime " + QByteArray::number(m_liveWhiteMs) + " btime "
+             + QByteArray::number(m_liveBlackMs);
+    } else {
+        go = "go movetime " + QByteArray::number(m_liveSearchTimeMs);
+    }
+    send(position + "\n" + go + "\n");
+    advance(Stage::LiveSearch, deadline(qMax(1500, m_liveSearchTimeMs + 1000)));
+}
+
+void EngineManager::failLivePlay(const QString &reason)
+{
+    if (!m_livePlayActive)
+        return;
+    m_deadline.stop();
+    m_livePlayActive = false;
+    m_livePlayEngineSide.clear();
+    m_livePlayStatus = QStringLiteral("Engine %1. The Played Game is safe.").arg(reason);
+    m_stage = Stage::Idle;
+    stopProcess();
+    m_active = -1;
+    emit livePlayChanged();
 }

@@ -32,6 +32,7 @@ class WorkspaceSession : public QObject
 
     // The played moves, as {number, side, san} entries in playing order.
     Q_PROPERTY(QVariantList moveList READ moveList NOTIFY boardChanged)
+    Q_PROPERTY(QString uciMoves READ uciMoves NOTIFY boardChanged)
     // How many of those moves the Displayed Position includes.
     Q_PROPERTY(int cursor READ cursor NOTIFY boardChanged)
     Q_PROPERTY(bool reviewing READ reviewing NOTIFY boardChanged)
@@ -102,6 +103,7 @@ public:
     bool inCheck() const { return m_state.value(QStringLiteral("inCheck")).toBool(); }
 
     QVariantList moveList() const;
+    QString uciMoves() const;
     int cursor() const { return m_state.value(QStringLiteral("cursor")).toInt(); }
     bool reviewing() const { return m_state.value(QStringLiteral("reviewing")).toBool(); }
 
