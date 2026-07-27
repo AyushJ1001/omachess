@@ -224,6 +224,39 @@ int omachess_rules_bounded_search(OmachessRules *rules, int depth)
     return 1;
 }
 
+const char *omachess_rules_analysis(OmachessRules *rules, int depth)
+{
+    if (!rules || depth < 1 || depth > 4)
+        return "";
+    Borrowed borrowed(rules);
+    Position search_position;
+    auto search_states = std::make_unique<std::deque<StateInfo>>(1);
+    search_position.set(rules->variant, rules->position.fen(), false,
+                        &search_states->back(), Threads.main());
+    Search::LimitsType limits;
+    limits.depth = depth;
+    Threads.start_thinking(search_position, search_states, limits, false);
+    Threads.main()->wait_for_search_finished();
+    const Thread *best = Threads.get_best_thread();
+    if (!best || best->rootMoves.empty() || best->rootMoves.front().pv.empty())
+        return "";
+    const Search::RootMove &root = best->rootMoves.front();
+    rules->scratch = UCI::value(root.score) + "|";
+    Position line;
+    std::deque<StateInfo> states(1);
+    line.set(rules->variant, rules->position.fen(), false, &states.back(), Threads.main());
+    for (Move move : root.pv) {
+        if (move == MOVE_NONE)
+            break;
+        if (rules->scratch.back() != '|')
+            rules->scratch += ' ';
+        rules->scratch += UCI::move(line, move);
+        states.emplace_back();
+        line.do_move(move, states.back());
+    }
+    return rules->scratch.c_str();
+}
+
 int omachess_rules_pop(OmachessRules *rules)
 {
     const Borrowed borrowed(rules);

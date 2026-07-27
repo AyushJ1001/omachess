@@ -79,6 +79,11 @@ void WorkspaceSession::validateVariantDefinition()
     submit(command(QStringLiteral("validate_variant_definition")));
 }
 
+void WorkspaceSession::editVariantDefinition()
+{
+    submit(command(QStringLiteral("edit_variant_definition")));
+}
+
 void WorkspaceSession::toggleBuiltinPiece(const QString &code)
 {
     submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
@@ -548,6 +553,14 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         for (const QJsonValue &value : event.value(QStringLiteral("pieces")).toArray())
             m_pieceCatalogue.append(value.toObject().toVariantMap());
         emit workshopChanged();
+        return;
+    }
+    if (type == QStringLiteral("variant_analysis_changed")) {
+        m_variantAnalysisEvaluation = event.value(QStringLiteral("evaluation")).toString();
+        m_variantAnalysisVariation = event.value(QStringLiteral("variation")).toString();
+        m_variantAnalysisEvaluator = event.value(QStringLiteral("evaluator")).toString();
+        m_variantAnalysisCaveat = event.value(QStringLiteral("caveat")).toString();
+        emit variantAnalysisChanged();
         return;
     }
     if (type == QStringLiteral("tabs_changed")) {
