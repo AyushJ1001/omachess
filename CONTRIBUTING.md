@@ -1,7 +1,17 @@
 # Contributing to Omachess
 
 Omachess is a local-first Qt 6/QML Wayland workspace backed by a Rust core.
-It needs no account, no hosted backend, and no network access to build or run.
+
+It is self-contained: no third-party service, no external database, no auth
+layer, no API keys. Clone the repository, install the packages below, and
+build — there is nothing to provision, register for, or configure first, and
+a fork needs no setup beyond this page. Playing chess is entirely local; where
+a later version reaches the network it will be for a feature that is about the
+network, such as Lichess integration, and never a requirement for the app to
+function.
+
+Building does need the network, because cargo fetches the crates the core
+depends on. Players never build: they install the `omachess` package.
 
 ## What you need
 
@@ -36,8 +46,9 @@ module. There is no separate cargo step to remember.
 
 The core's own `build.rs` compiles vendored Fairy-Stockfish and the rules
 bridge, so the first build spends a minute or two on the engine and then reuses
-it. Nothing is downloaded: the engine source is in the repository. The core
-depends on the Live Store crate, which links against system SQLite.
+it. The engine is not downloaded — its source is in the repository, at a pinned
+commit — while cargo fetches the core's crate dependencies as usual. The core
+also depends on the Live Store crate, which links against system SQLite.
 
 For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
 (`cmake --install build`) puts `omachess` on the path and installs the launcher

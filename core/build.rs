@@ -1,9 +1,9 @@
 //! Builds vendored Fairy-Stockfish and the rules bridge into the core.
 //!
-//! Omachess builds and runs without network access, so the core carries no
-//! crate dependencies — not even a build-time one. This script therefore
-//! drives the C++ compiler that the workspace already requires, the same way
-//! the engine's own Makefile does, and hands the resulting archive to rustc.
+//! The engine is vendored rather than fetched, so this script carries no
+//! build-time crate dependency of its own: it drives the C++ compiler that
+//! the workspace already requires, the same way the engine's own Makefile
+//! does, and hands the resulting archive to rustc.
 //!
 //! The engine is compiled in its large-board configuration. That is the build
 //! the Variant Workshop needs (12 files by 10 ranks), and using one build for

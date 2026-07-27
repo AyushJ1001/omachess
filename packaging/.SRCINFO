@@ -15,6 +15,7 @@ pkgbase = omachess
 	depends = qt6-base
 	depends = qt6-declarative
 	depends = qt6-svg
+	depends = sqlite
 	depends = hicolor-icon-theme
 	options = !lto
 	source = omachess-0.1.0.tar.gz::https://github.com/AyushJ1001/omachess/releases/download/v0.1.0/omachess-0.1.0.tar.gz

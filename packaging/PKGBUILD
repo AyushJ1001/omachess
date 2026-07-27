@@ -30,6 +30,8 @@ depends=(
   'qt6-declarative'
   # The Piece Set artwork is vector, so the workspace needs the SVG handler.
   'qt6-svg'
+  # The Live Store links system SQLite through rusqlite.
+  'sqlite'
   'hicolor-icon-theme'
 )
 makedepends=(
