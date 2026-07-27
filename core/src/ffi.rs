@@ -20,6 +20,7 @@ pub const OMACHESS_ERR_UNKNOWN_COMMAND: i32 = 1;
 pub const OMACHESS_ERR_MALFORMED_COMMAND: i32 = 2;
 pub const OMACHESS_ERR_NULL_ARGUMENT: i32 = 3;
 pub const OMACHESS_ERR_INVALID_UTF8: i32 = 4;
+pub const OMACHESS_ERR_REJECTED_MOVE: i32 = 5;
 
 /// Creates a session holding the standard-chess starting position.
 ///
@@ -65,6 +66,7 @@ pub unsafe extern "C" fn omachess_session_submit(
         Ok(()) => OMACHESS_OK,
         Err(CommandError::UnknownCommand) => OMACHESS_ERR_UNKNOWN_COMMAND,
         Err(CommandError::MalformedCommand) => OMACHESS_ERR_MALFORMED_COMMAND,
+        Err(CommandError::RejectedMove) => OMACHESS_ERR_REJECTED_MOVE,
     }
 }
 

@@ -5,5 +5,7 @@
 
 pub mod board;
 pub mod ffi;
+pub mod game;
 mod json;
+pub mod rules;
 pub mod session;
