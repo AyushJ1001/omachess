@@ -42,6 +42,18 @@
  *    "confirmation":"PERMANENTLY_PURGE"}
  *                              permanently remove an unbound draft Variant
  *                              Definition
+ *   {"type":"export_library_package"}
+ *                              build the Library Portability Package for the
+ *                              whole library; the workspace writes the text
+ *                              the ready event carries to the file the player
+ *                              chose through the portal
+ *   {"type":"restore_library_package","package":"<package text>"}
+ *                              restore a Library Portability Package. It goes
+ *                              into an empty library outright; a library that
+ *                              already holds work answers with
+ *                              library_replacement_required instead and needs
+ *                              "confirmation":"REPLACE_LIBRARY" to proceed.
+ *                              Nothing is ever merged.
  *
  * Events:
  *   {"type":"board_changed",...}
@@ -54,6 +66,18 @@
  *                              offered after describe_board when workspace
  *                              residue points at an unfinished Played Game
  *   {"type":"restore_cleared"} the restore offer is gone
+ *   {"type":"library_package_ready","package":"...","summary":"...",
+ *    "records":N,"studies":N,"variantDefinitions":N,"preferences":N}
+ *                              the exported package and what it carries
+ *   {"type":"library_replacement_required","message":"...",
+ *    "existing":{...},"incoming":{...}}
+ *                              a restore into a non-empty library, stating
+ *                              exactly what would be replaced; nothing changed
+ *   {"type":"library_package_restored","message":"...","records":N,...}
+ *                              the library now holds the package's contents
+ *   {"type":"library_package_rejected","message":"..."}
+ *                              an unreadable or incompatible package; the
+ *                              library was not changed
  *
  *   The 64 squares are in reading order for the current orientation: the
  *   top-left drawn square first, the bottom-right last.

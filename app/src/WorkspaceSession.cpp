@@ -319,6 +319,60 @@ void WorkspaceSession::exportPgn(const QStringList &recordIds)
                    {{QStringLiteral("ids"), recordIds.join(',')}}));
 }
 
+void WorkspaceSession::exportLibraryPackage()
+{
+    m_packageExportPath = qEnvironmentVariable("OMACHESS_TEST_EXPORT_PACKAGE");
+    if (m_packageExportPath.isEmpty()) {
+        m_packageExportPath = QFileDialog::getSaveFileName(
+            nullptr, tr("Export Library Portability Package"),
+            QStringLiteral("omachess-library.omalib"),
+            tr("Library Portability Package (*.omalib)"));
+    }
+    if (m_packageExportPath.isEmpty())
+        return;
+    submit(command(QStringLiteral("export_library_package")));
+}
+
+void WorkspaceSession::restoreLibraryPackage()
+{
+    QString path = qEnvironmentVariable("OMACHESS_TEST_RESTORE_PACKAGE");
+    if (path.isEmpty()) {
+        path = QFileDialog::getOpenFileName(
+            nullptr, tr("Restore Library Portability Package"), QString(),
+            tr("Library Portability Package (*.omalib)"));
+    }
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_libraryPackageMessage =
+            tr("Could not read %1: %2. Nothing was changed.").arg(path, file.errorString());
+        emit libraryPackageChanged();
+        return;
+    }
+    m_pendingPackage = QString::fromUtf8(file.readAll());
+    file.close();
+    submit(command(QStringLiteral("restore_library_package"),
+                   {{QStringLiteral("package"), m_pendingPackage}}));
+}
+
+void WorkspaceSession::confirmLibraryReplacement()
+{
+    if (m_pendingPackage.isEmpty())
+        return;
+    submit(command(QStringLiteral("restore_library_package"),
+                   {{QStringLiteral("package"), m_pendingPackage},
+                    {QStringLiteral("confirmation"), QStringLiteral("REPLACE_LIBRARY")}}));
+}
+
+void WorkspaceSession::cancelLibraryReplacement()
+{
+    m_pendingPackage.clear();
+    m_libraryReplacementMessage.clear();
+    m_libraryPackageMessage = tr("The library was left as it was.");
+    emit libraryPackageChanged();
+}
+
 void WorkspaceSession::deriveAnalysisRecord()
 {
     submit(command(QStringLiteral("derive_analysis_record")));
@@ -712,6 +766,43 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         file.write(event.value(QStringLiteral("pgn")).toString().toUtf8());
         file.close();
         m_exportPath.clear();
+        return;
+    }
+
+    if (type == QStringLiteral("library_package_ready")) {
+        QFile file(m_packageExportPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            m_libraryPackageMessage = tr("Could not write %1: %2.")
+                                          .arg(m_packageExportPath, file.errorString());
+        } else {
+            file.write(event.value(QStringLiteral("package")).toString().toUtf8());
+            file.close();
+            m_libraryPackageMessage = tr("Exported %1 · %2")
+                                          .arg(m_packageExportPath,
+                                               event.value(QStringLiteral("summary")).toString());
+        }
+        m_packageExportPath.clear();
+        emit libraryPackageChanged();
+        return;
+    }
+    if (type == QStringLiteral("library_replacement_required")) {
+        m_libraryReplacementMessage = event.value(QStringLiteral("message")).toString();
+        m_libraryPackageMessage.clear();
+        emit libraryPackageChanged();
+        return;
+    }
+    if (type == QStringLiteral("library_package_restored")) {
+        m_pendingPackage.clear();
+        m_libraryReplacementMessage.clear();
+        m_libraryPackageMessage = event.value(QStringLiteral("message")).toString();
+        emit libraryPackageChanged();
+        return;
+    }
+    if (type == QStringLiteral("library_package_rejected")) {
+        m_pendingPackage.clear();
+        m_libraryReplacementMessage.clear();
+        m_libraryPackageMessage = event.value(QStringLiteral("message")).toString();
+        emit libraryPackageChanged();
         return;
     }
 
