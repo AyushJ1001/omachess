@@ -8,9 +8,10 @@ recolours a piece from a Board Theme or a Quattro Palette.
 - Source: Wikimedia Commons, `File:Chess_<piece>t45.svg`
   (for example <https://commons.wikimedia.org/wiki/File:Chess_klt45.svg>)
 - Retrieved: 2026-07-26
-- Licence: multi-licensed by the author under GFDL, BSD 3-clause, and
-  CC BY-SA 3.0. Omachess redistributes them under the **BSD 3-clause** option,
-  which is compatible with Omachess's own GPL-3.0-or-later licence.
+- Licence: multi-licensed by the author; Omachess redistributes these files
+  under the author's **GPL-2.0-or-later** option. The attribution, upstream
+  file mapping, and preferred SVG source are retained here. GPL-2.0-or-later
+  is compatible with Omachess's GPL-3.0-or-later licence.
 
 ## File names
 
