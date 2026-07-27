@@ -14,7 +14,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 /// Schema version this build of Omachess understands and writes.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Why the Live Store could not be opened for use.
 #[derive(Debug)]
@@ -259,6 +259,54 @@ pub struct Study {
     pub id: String,
     pub name: String,
     pub record_ids: Vec<String>,
+}
+
+/// The durable lifecycle of a Background Job. A worker marks in-flight work
+/// interrupted when it starts; resumption is therefore always an explicit
+/// request and never an accidental restart after a crash or logout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundJobState {
+    Queued,
+    Running,
+    Paused,
+    Interrupted,
+    Complete,
+    Cancelled,
+    Failed,
+}
+
+impl BackgroundJobState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued", Self::Running => "running", Self::Paused => "paused",
+            Self::Interrupted => "interrupted", Self::Complete => "complete",
+            Self::Cancelled => "cancelled", Self::Failed => "failed",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "queued" => Self::Queued, "running" => Self::Running, "paused" => Self::Paused,
+            "interrupted" => Self::Interrupted, "complete" => Self::Complete,
+            "cancelled" => Self::Cancelled, "failed" => Self::Failed, _ => return None,
+        })
+    }
+
+    /// Parse the stable D-Bus / C-ABI spelling of a lifecycle state.
+    pub fn parse_public(value: &str) -> Option<Self> { Self::parse(value) }
+}
+
+/// Worker-owned durable facts. `checkpoint` is a completed move boundary.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub kind: String,
+    pub state: BackgroundJobState,
+    pub record_id: String,
+    pub checkpoint: u32,
+    pub total: u32,
+    pub controls: Vec<String>,
+    pub payload: String,
+    pub updated_at: String,
 }
 
 /// Workspace write partition: Game Records, residue, and other library tables.
@@ -723,6 +771,38 @@ impl<'a> WorkerWriter<'a> {
                 "background_jobs table missing from Live Store".into(),
             ));
         }
+        Ok(())
+    }
+
+    pub fn create_job(&self, job: &BackgroundJob) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO background_jobs (id, kind, state, record_id, checkpoint, total, controls, updated_at, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![job.id, job.kind, job.state.as_str(), job.record_id, job.checkpoint, job.total, job.controls.join(","), job.updated_at, job.payload],
+        )?;
+        Ok(())
+    }
+
+    pub fn job(&self, id: &str) -> Result<Option<BackgroundJob>, StoreError> {
+        match self.conn.query_row("SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload FROM background_jobs WHERE id = ?1", [id], |row| {
+            let state: String = row.get(2)?;
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, state, row.get::<_, String>(3)?, row.get::<_, u32>(4)?, row.get::<_, u32>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, String>(8)?))
+        }) {
+            Ok((id, kind, state, record_id, checkpoint, total, controls, updated_at, payload)) => Ok(Some(BackgroundJob { id, kind, state: BackgroundJobState::parse(&state).ok_or_else(|| StoreError::Message(format!("unknown Background Job state: {state}")))?, record_id, checkpoint, total, controls: controls.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect(), payload, updated_at })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Atomically records a completed move boundary and its lifecycle state.
+    pub fn checkpoint(&self, id: &str, checkpoint: u32, state: BackgroundJobState, updated_at: &str) -> Result<(), StoreError> {
+        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, updated_at = ?4 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), updated_at])?;
+        if changed == 0 { return Err(StoreError::Message("Background Job checkpoint was not accepted".into())); }
+        Ok(())
+    }
+
+    /// Startup recovery: running work had no orderly shutdown and is never resumed implicitly.
+    pub fn interrupt_inflight_jobs(&self, updated_at: &str) -> Result<(), StoreError> {
+        self.conn.execute("UPDATE background_jobs SET state = 'interrupted', updated_at = ?1 WHERE state = 'running'", [updated_at])?;
         Ok(())
     }
 }
@@ -1227,6 +1307,14 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 )
                 .map_err(|error| format!("could not record schema version: {error}"))?;
                 Ok(())
+            } else if parsed == 3 {
+                migrate_background_jobs_v4(conn)?;
+                conn.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    [SCHEMA_VERSION.to_string()],
+                )
+                .map_err(|error| format!("could not record schema version: {error}"))?;
+                Ok(())
             } else if parsed > SCHEMA_VERSION {
                 Err(format!(
                     "Live Store schema version {parsed} is newer than this Omachess understands ({SCHEMA_VERSION})"
@@ -1261,11 +1349,16 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
             value TEXT NOT NULL
         );
 
-        -- Worker write partition. Empty content for now; present so a second
-        -- writer can share the store without a schema redesign.
+        -- Worker write partition. The worker exclusively writes this table;
+        -- WAL lets the workspace safely read it while it checkpoints.
         CREATE TABLE background_jobs (
             id TEXT PRIMARY KEY NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'computer_analysis',
             state TEXT NOT NULL,
+            record_id TEXT NOT NULL DEFAULT '',
+            checkpoint INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            controls TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
         );
@@ -1274,6 +1367,17 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("could not create base schema tables: {error}"))?;
     create_analysis_schema(conn)?;
     create_studies_schema(conn)
+}
+
+fn migrate_background_jobs_v4(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "ALTER TABLE background_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'computer_analysis';
+         ALTER TABLE background_jobs ADD COLUMN record_id TEXT NOT NULL DEFAULT '';
+         ALTER TABLE background_jobs ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE background_jobs ADD COLUMN total INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE background_jobs ADD COLUMN controls TEXT NOT NULL DEFAULT '';",
+    )
+    .map_err(|error| format!("could not migrate Background Jobs: {error}"))
 }
 
 fn create_analysis_schema(conn: &Connection) -> Result<(), String> {
@@ -1466,6 +1570,31 @@ mod tests {
         let path = dir.path().join("live-store.sqlite");
         let store = LiveStore::open(&path).expect("a new Live Store should open");
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn worker_jobs_checkpoint_at_move_boundaries_and_recover_as_interrupted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            let worker = store.worker();
+            worker.create_job(&BackgroundJob {
+                id: "job-1".into(), kind: "computer_analysis".into(),
+                state: BackgroundJobState::Running, record_id: "played-1".into(),
+                checkpoint: 0, total: 5, controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                payload: "{}".into(), updated_at: "one".into(),
+            }).unwrap();
+            worker.checkpoint("job-1", 3, BackgroundJobState::Running, "two").unwrap();
+            assert!(worker.checkpoint("job-1", 2, BackgroundJobState::Running, "bad").is_err());
+        }
+        let store = LiveStore::open(&path).unwrap();
+        let worker = store.worker();
+        worker.interrupt_inflight_jobs("recovered").unwrap();
+        let job = worker.job("job-1").unwrap().unwrap();
+        assert_eq!(job.checkpoint, 3);
+        assert_eq!(job.state, BackgroundJobState::Interrupted);
+        assert_eq!(job.controls, vec!["pause", "cancel", "open"]);
     }
 
     #[test]

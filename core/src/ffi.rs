@@ -11,6 +11,38 @@ use std::ffi::{c_char, CStr, CString};
 
 use crate::rules::Rules;
 use crate::session::{CommandError, Session};
+use omachess_store::{BackgroundJob, BackgroundJobState, LiveStore};
+
+fn worker_timestamp() -> String {
+    format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+}
+
+#[no_mangle]
+pub extern "C" fn omachess_background_jobs_recover() -> i32 {
+    LiveStore::open_default()
+        .map(|store| store.worker().interrupt_inflight_jobs(&worker_timestamp()))
+        .is_ok_and(|result| result.is_ok()) as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_create(id: *const c_char, record_id: *const c_char, total: u32) -> i32 {
+    if id.is_null() || record_id.is_null() { return 0; }
+    let (Ok(id), Ok(record_id)) = (CStr::from_ptr(id).to_str(), CStr::from_ptr(record_id).to_str()) else { return 0; };
+    LiveStore::open_default().map(|store| store.worker().create_job(&BackgroundJob {
+        id: id.into(), kind: "computer_analysis".into(), state: BackgroundJobState::Running,
+        record_id: record_id.into(), checkpoint: 0, total, controls: vec!["pause".into(), "cancel".into(), "open".into()], payload: "{}".into(), updated_at: worker_timestamp(),
+    })).is_ok_and(|result| result.is_ok()) as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_checkpoint(id: *const c_char, checkpoint: u32, state: *const c_char) -> i32 {
+    if id.is_null() || state.is_null() { return 0; }
+    let (Ok(id), Ok(state)) = (CStr::from_ptr(id).to_str(), CStr::from_ptr(state).to_str()) else { return 0; };
+    let Some(state) = BackgroundJobState::parse_public(state) else { return 0; };
+    LiveStore::open_default()
+        .map(|store| store.worker().checkpoint(id, checkpoint, state, &worker_timestamp()))
+        .is_ok_and(|result| result.is_ok()) as i32
+}
 
 /// An opaque handle to a workspace session.
 pub struct OmachessSession {

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=com.omachess.Omachess.BackgroundWorker
+Exec=/usr/bin/omachess-background-worker

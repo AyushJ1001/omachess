@@ -105,6 +105,15 @@ int32_t omachess_standard_start_move_is_legal(const char *uci_move);
 /* Worker entry point used only by the executable's isolated validation mode. */
 int32_t omachess_variant_validation_worker(const char *stage, const char *fen);
 
+/* Background worker storage boundary. These functions are intentionally not
+ * session commands: the worker owns Background Jobs and writes only its
+ * partition of the shared Live Store. */
+int32_t omachess_background_jobs_recover(void);
+int32_t omachess_background_job_create(const char *id, const char *record_id,
+                                       uint32_t total);
+int32_t omachess_background_job_checkpoint(const char *id, uint32_t checkpoint,
+                                           const char *state);
+
 #ifdef __cplusplus
 }
 #endif
