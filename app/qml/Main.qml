@@ -1685,6 +1685,13 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             color: WorkspaceSession.variantPlayable ? Theme.success : Theme.danger
                         }
+                        Button {
+                            objectName: "playVariant"
+                            visible: WorkspaceSession.variantPlayable
+                            Layout.fillWidth: true
+                            text: qsTr("Play this variant")
+                            onClicked: WorkspaceSession.startVariantGame()
+                        }
                     }
 
                     Label {
@@ -1692,6 +1699,14 @@ ApplicationWindow {
                         text: qsTr("Game Metadata")
                         font.bold: true
                         color: Theme.muted
+                    }
+                    Button {
+                        objectName: "editVariantDefinition"
+                        visible: !WorkspaceSession.workshopActive
+                                 && WorkspaceSession.variant === "omachess"
+                        Layout.fillWidth: true
+                        text: qsTr("Edit library definition")
+                        onClicked: WorkspaceSession.openRecord("variant-draft")
                     }
                     ColumnLayout {
                         Layout.fillWidth: true

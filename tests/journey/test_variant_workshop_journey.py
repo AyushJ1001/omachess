@@ -226,6 +226,57 @@ class VariantWorkshopJourney(unittest.TestCase):
                 screen.labels["variantValidationMessage"],
             )
 
+    def test_played_game_keeps_its_variant_snapshot_after_the_definition_is_edited(self):
+        with Workspace(executable_under_test()) as workspace:
+            self.open_starting_position(workspace)
+            workspace.click("workshopTray:K")
+            workspace.click_square("e1")
+            workspace.click("workshopTray:R")
+            workspace.click_square("a1")
+            workspace.click("workshopTray:k")
+            workspace.click_square("e8")
+            workspace.click("workshopTray:r")
+            workspace.click_square("a8")
+            workspace.click("workshopContinue")
+            workspace.click("validateVariant")
+            workspace.screen_when(lambda s: "playVariant" in s.labels)
+            workspace.click("playVariant")
+
+            screen = workspace.screen_when(
+                lambda s: s.labels.get("statusLabel") == "White to move"
+                and s.pieces().get("e1") == "white_king"
+            )
+            self.assertEqual(screen.pieces().get("e8"), "black_king")
+            workspace.play("e1d1")
+            screen = workspace.screen_when(lambda s: s.pieces().get("d1") == "white_king")
+            played_ids = [
+                name.removeprefix("libraryMeta:")
+                for name, text in screen.labels.items()
+                if name.startswith("libraryMeta:") and text.startswith("Played")
+            ]
+            self.assertEqual(len(played_ids), 1)
+
+            workspace.click("editVariantDefinition")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.screen_when(
+                lambda s: s.labels.get("rightRailHeading") == "Variant Workshop"
+                and "rule:mandatoryCapture" in s.labels
+            )
+            workspace.click("rule:mandatoryCapture")
+            workspace.screen_when(
+                lambda s: s.labels.get("workshopStatus", "").startswith("Draft")
+            )
+
+            workspace.click(f"library:{played_ids[0]}")
+            screen = workspace.screen_when(
+                lambda s: s.pieces().get("d1") == "white_king"
+                and any(move.endswith("Kd1") for move in s.moves())
+            )
+            self.assertEqual(screen.pieces().get("e8"), "black_king")
+            self.assertTrue(any(move.endswith("Kd1") for move in screen.moves()))
+
 
 if __name__ == "__main__":
     unittest.main()

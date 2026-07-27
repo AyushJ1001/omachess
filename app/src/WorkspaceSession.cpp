@@ -79,6 +79,11 @@ void WorkspaceSession::validateVariantDefinition()
     submit(command(QStringLiteral("validate_variant_definition")));
 }
 
+void WorkspaceSession::startVariantGame()
+{
+    submit(command(QStringLiteral("start_variant_game")));
+}
+
 void WorkspaceSession::toggleBuiltinPiece(const QString &code)
 {
     submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
@@ -442,7 +447,10 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
     const QString type = event.value(QStringLiteral("type")).toString();
     if (type == QStringLiteral("board_changed")) {
         m_state = event;
+        m_boardFiles = event.value(QStringLiteral("files")).toInt(8);
+        m_boardRanks = event.value(QStringLiteral("ranks")).toInt(8);
         m_board.applySquares(event.value(QStringLiteral("squares")).toArray());
+        emit workshopChanged();
         emit boardChanged();
         return;
     }

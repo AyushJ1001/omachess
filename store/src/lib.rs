@@ -153,6 +153,9 @@ pub struct RecordResult {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GameRecordPayload {
     pub variant: String,
+    /// The immutable Variant Definition and compiled Rules Authority adapter
+    /// captured when this record began. Standard chess has no snapshot.
+    pub variant_snapshot: Option<VariantSnapshot>,
     pub start_fen: String,
     pub moves: Vec<MoveEntry>,
     pub result: Option<RecordResult>,
@@ -170,6 +173,7 @@ impl GameRecordPayload {
     pub fn empty_standard() -> Self {
         GameRecordPayload {
             variant: "standard".into(),
+            variant_snapshot: None,
             start_fen: Self::STANDARD_START.to_owned(),
             moves: Vec::new(),
             result: None,
@@ -177,6 +181,13 @@ impl GameRecordPayload {
             clock: None,
         }
     }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct VariantSnapshot {
+    pub definition_id: String,
+    pub definition: String,
+    pub adapter: String,
 }
 
 /// A Game Record as the Live Store holds it.
@@ -436,6 +447,30 @@ impl<'a> WorkspaceWriter<'a> {
         Ok(())
     }
 
+    /// Permanently purges a library Variant Definition only when no immutable
+    /// Variant Snapshot still identifies it.
+    pub fn purge_variant_definition(&self, id: &str) -> Result<(), StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT payload FROM game_records")?;
+        let payloads = statement.query_map([], |row| row.get::<_, String>(0))?;
+        for payload in payloads {
+            if decode_payload(&payload?)?
+                .variant_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.definition_id == id)
+            {
+                return Err(StoreError::Message(format!(
+                    "Variant Definition {id} is bound into an existing Variant Snapshot"
+                )));
+            }
+        }
+        if id == "variant-draft" {
+            self.clear_residue("variant_definition_draft")?;
+        }
+        Ok(())
+    }
+
     pub fn set_residue(&self, key: &str, value: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "
@@ -576,6 +611,11 @@ fn encode_payload(payload: &GameRecordPayload) -> Result<String, StoreError> {
     push_json_string(&mut out, &payload.variant);
     out.push_str(",\"start_fen\":");
     push_json_string(&mut out, &payload.start_fen);
+    out.push_str(",\"variant_snapshot\":");
+    match &payload.variant_snapshot {
+        Some(snapshot) => out.push_str(&serde_json::to_string(snapshot).map_err(json_error)?),
+        None => out.push_str("null"),
+    }
     out.push_str(",\"moves\":[");
     for (index, played) in payload.moves.iter().enumerate() {
         if index > 0 {
@@ -621,12 +661,17 @@ fn encode_payload(payload: &GameRecordPayload) -> Result<String, StoreError> {
 fn decode_payload(text: &str) -> Result<GameRecordPayload, StoreError> {
     let variant = required_string(text, "variant")?;
     let start_fen = required_string(text, "start_fen")?;
+    let variant_snapshot = extract_object(text, "variant_snapshot")
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_error)?;
     let moves = decode_moves(text)?;
     let result = decode_optional_result(text)?;
     let participation = optional_string(text, "participation")?;
     let clock = optional_string(text, "clock")?;
     Ok(GameRecordPayload {
         variant,
+        variant_snapshot,
         start_fen,
         moves,
         result,
@@ -1210,6 +1255,42 @@ mod tests {
     }
 
     #[test]
+    fn a_variant_definition_bound_into_a_game_record_cannot_be_purged() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let store = LiveStore::open(&path).unwrap();
+        let mut payload = GameRecordPayload::empty_standard();
+        payload.variant = "omachess".into();
+        payload.variant_snapshot = Some(VariantSnapshot {
+            definition_id: "variant-draft".into(),
+            definition: r#"{"schemaVersion":"1"}"#.into(),
+            adapter: "[omachess:chess]\n".into(),
+        });
+        store
+            .workspace()
+            .upsert_game_record(&GameRecord {
+                id: "variant-game".into(),
+                kind: GameRecordKind::Played,
+                title: None,
+                result_score: None,
+                ply_count: 0,
+                archived: false,
+                created_at: "2026-07-27T00:00:00Z".into(),
+                updated_at: "2026-07-27T00:00:00Z".into(),
+                payload,
+            })
+            .unwrap();
+
+        let error = store
+            .workspace()
+            .purge_variant_definition("variant-draft")
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("bound into an existing Variant Snapshot"));
+    }
+
+    #[test]
     fn opening_a_new_live_store_records_current_schema_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
@@ -1234,6 +1315,7 @@ mod tests {
                 updated_at: "2026-07-27T00:00:00Z".into(),
                 payload: GameRecordPayload {
                     variant: "standard".into(),
+                    variant_snapshot: None,
                     start_fen: GameRecordPayload::STANDARD_START.to_owned(),
                     moves: vec![MoveEntry {
                         uci: "e2e4".into(),

@@ -105,7 +105,17 @@ impl Game {
 
     /// Rebuilds a Game Record from its starting position and played moves.
     pub fn from_history(start_fen: &str, moves: Vec<PlayedMove>) -> Option<Self> {
-        let mut rules = Rules::new("standard", Some(start_fen))?;
+        Self::from_variant_history("standard", start_fen, moves)
+    }
+
+    /// Rebuilds a Game Record under the Rules Authority variant named by its
+    /// immutable Variant Snapshot.
+    pub fn from_variant_history(
+        variant: &str,
+        start_fen: &str,
+        moves: Vec<PlayedMove>,
+    ) -> Option<Self> {
+        let mut rules = Rules::new(variant, Some(start_fen))?;
         for played in &moves {
             if !rules.push(&played.uci) {
                 return None;
@@ -124,6 +134,10 @@ impl Game {
 
     pub fn from_position(fen: &str) -> Option<Self> {
         Self::from_history(fen, Vec::new())
+    }
+
+    pub fn from_variant(variant: &str, start_fen: &str) -> Option<Self> {
+        Self::from_variant_history(variant, start_fen, Vec::new())
     }
 
     pub fn start_fen(&self) -> &str {
@@ -255,7 +269,7 @@ impl Game {
         }
 
         if let Some(role) = promotion {
-            if !PROMOTION_ROLES.contains(&role) {
+            if !PROMOTION_ROLES.contains(&role) && !role.starts_with("fairy_") {
                 return Err(MoveRejected::Illegal);
             }
         }

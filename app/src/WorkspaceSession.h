@@ -250,6 +250,7 @@ public:
     Q_INVOKABLE void placeWorkshopPiece(const QString &square, const QString &piece);
     Q_INVOKABLE void toggleVariantRule(const QString &rule);
     Q_INVOKABLE void validateVariantDefinition();
+    Q_INVOKABLE void startVariantGame();
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();

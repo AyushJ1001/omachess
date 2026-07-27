@@ -158,7 +158,11 @@ const PROMOTIONS: [(&str, char); 4] =
 pub const PROMOTION_ROLES: [&str; 4] = ["queen", "rook", "bishop", "knight"];
 
 fn promotion_letter(role: &str) -> Option<char> {
-    PROMOTIONS.iter().find(|(name, _)| *name == role).map(|(_, letter)| *letter)
+    PROMOTIONS
+        .iter()
+        .find(|(name, _)| *name == role)
+        .map(|(_, letter)| *letter)
+        .or_else(|| role.strip_prefix("fairy_")?.chars().next())
 }
 
 fn promotion_role(letter: char) -> Option<&'static str> {
@@ -306,18 +310,29 @@ impl Drop for Rules {
 
 /// Splits an engine move such as `e2e4` or `e7e8q` into its parts.
 pub(crate) fn parse_uci(uci: &str) -> Option<LegalMove> {
-    // Coordinates are two characters on an 8x8 board; the engine only ever
-    // appends a promotion letter.
-    let mut characters = uci.chars();
-    let from: String = [characters.next()?, characters.next()?].into_iter().collect();
-    let to: String = [characters.next()?, characters.next()?].into_iter().collect();
-    let promotion = match characters.next() {
-        Some(letter) => Some(promotion_role(letter)?.to_owned()),
-        None => None,
+    let bytes = uci.as_bytes();
+    let split_coordinate = |start: usize| {
+        let file = *bytes.get(start)?;
+        file.is_ascii_alphabetic().then_some(())?;
+        let mut end = start + 1;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        (end > start + 1).then_some(end)
     };
-    if characters.next().is_some() {
-        return None;
-    }
+    let from_end = split_coordinate(0)?;
+    let to_end = split_coordinate(from_end)?;
+    let from = uci[..from_end].to_owned();
+    let to = uci[from_end..to_end].to_owned();
+    let promotion = match uci[to_end..].chars().collect::<Vec<_>>().as_slice() {
+        [] => None,
+        [letter] => Some(
+            promotion_role(*letter)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("fairy_{letter}")),
+        ),
+        _ => return None,
+    };
     Some(LegalMove { from, to, promotion })
 }
 
@@ -334,6 +349,18 @@ mod tests {
         assert_eq!(rules.move_number(), 1);
         assert!(rules.push("e7e5"));
         assert_eq!(rules.move_number(), 2);
+    }
+
+    #[test]
+    fn large_board_and_custom_promotion_moves_keep_their_coordinates() {
+        assert_eq!(
+            parse_uci("a10b9s"),
+            Some(LegalMove {
+                from: "a10".into(),
+                to: "b9".into(),
+                promotion: Some("fairy_s".into()),
+            })
+        );
     }
 
     #[test]
