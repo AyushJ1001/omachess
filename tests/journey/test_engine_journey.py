@@ -4,7 +4,10 @@ import os
 import stat
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from harness import Workspace, executable_under_test
@@ -74,9 +77,51 @@ class EngineJourney(unittest.TestCase):
         self.environment = {
             "OMACHESS_TEST_ENGINE_DEADLINE_MS": "150",
         }
+        self.server: ThreadingHTTPServer | None = None
+        self.server_thread: threading.Thread | None = None
 
     def tearDown(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.server_thread is not None:
+            self.server_thread.join()
         self.root.cleanup()
+
+    def serve_upstream(self, behavior: str) -> None:
+        engine = self.data_home / "upstream-stockfish"
+        fake_engine(engine, "ready", self.log)
+        payload = engine.read_bytes()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler) -> None:
+                if behavior == "failure":
+                    handler.send_error(503, "upstream unavailable")
+                    return
+                handler.send_response(200)
+                handler.send_header("Content-Length", str(len(payload) if behavior == "ready" else 1_000_000))
+                handler.end_headers()
+                if behavior == "interrupted":
+                    handler.wfile.write(payload[:32])
+                    handler.wfile.flush()
+                    handler.connection.close()
+                    return
+                if behavior == "slow":
+                    handler.wfile.write(payload[:32])
+                    handler.wfile.flush()
+                    time.sleep(1)
+                    return
+                handler.wfile.write(payload)
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+        self.environment["OMACHESS_TEST_STOCKFISH_URL"] = (
+            f"http://127.0.0.1:{self.server.server_port}/stockfish"
+        )
 
     def run_workspace(self, behavior: str = "ready") -> Workspace:
         fake_engine(self.store / "stockfish" / "stockfish", behavior, self.log)
@@ -240,6 +285,76 @@ class EngineJourney(unittest.TestCase):
                         )
                     )
                     self.assertNotIn("Ready", screen.labels["engineState:stockfish"])
+
+    def test_catalog_engine_installs_then_requires_consent_and_probe(self) -> None:
+        self.serve_upstream("ready")
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineInstall:stockfish")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish") == "Consent required"
+            )
+            self.assertEqual(screen.labels["engineState:stockfish"], "Consent required")
+            self.assertTrue((self.store / "stockfish" / "stockfish").is_file())
+            self.assertFalse(self.log.exists())
+
+            workspace.click("engineConsent:stockfish")
+            workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish") == "Ready"
+            )
+            self.assertTrue(self.log.exists())
+
+    def test_interrupted_install_never_advertises_readiness(self) -> None:
+        self.serve_upstream("interrupted")
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineInstall:stockfish")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish", "").startswith(
+                    "Install failed"
+                )
+            )
+            self.assertNotIn("Ready", screen.labels["engineState:stockfish"])
+            self.assertFalse((self.store / "stockfish" / "stockfish").exists())
+
+    def test_upstream_failure_is_visible_and_leaves_no_engine(self) -> None:
+        self.serve_upstream("failure")
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineInstall:stockfish")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish", "").startswith(
+                    "Install failed"
+                )
+            )
+            self.assertIn("upstream", screen.labels["engineState:stockfish"].lower())
+            self.assertFalse((self.store / "stockfish" / "stockfish").exists())
+
+    def test_player_can_cancel_an_install_without_leaving_a_partial_engine(self) -> None:
+        self.serve_upstream("slow")
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            workspace.click("engineProfilesButton")
+            workspace.click("engineInstall:stockfish")
+            workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish", "").startswith(
+                    "Downloading"
+                )
+            )
+            workspace.click("engineCancelInstall:stockfish")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:stockfish")
+                == "Install failed — cancelled"
+            )
+            self.assertNotIn("Ready", screen.labels["engineState:stockfish"])
+            self.assertFalse((self.store / "stockfish" / "stockfish").exists())
 
 
 if __name__ == "__main__":
