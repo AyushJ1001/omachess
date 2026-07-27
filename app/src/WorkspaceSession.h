@@ -55,6 +55,11 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString gameDate READ gameDate NOTIFY boardChanged)
     Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY boardChanged)
     Q_PROPERTY(QString gameTags READ gameTags NOTIFY boardChanged)
+    Q_PROPERTY(bool positionSetup READ positionSetup NOTIFY boardChanged)
+    Q_PROPERTY(QString positionClass READ positionClass NOTIFY boardChanged)
+    Q_PROPERTY(QString setupFen READ setupFen NOTIFY boardChanged)
+    Q_PROPERTY(QString setupError READ setupError NOTIFY boardChanged)
+    Q_PROPERTY(QString positionCapabilities READ positionCapabilities NOTIFY boardChanged)
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
@@ -98,6 +103,11 @@ public:
     QString gameDate() const { return metadataField(QStringLiteral("date")); }
     QString gameTitle() const { return metadataField(QStringLiteral("title")); }
     QString gameTags() const { return metadataField(QStringLiteral("tags")); }
+    bool positionSetup() const { return field(QStringLiteral("activity")) == QStringLiteral("position_setup"); }
+    QString positionClass() const { return field(QStringLiteral("positionClass")); }
+    QString setupFen() const { return field(QStringLiteral("setupFen")); }
+    QString setupError() const { return field(QStringLiteral("setupError")); }
+    QString positionCapabilities() const { return field(QStringLiteral("positionCapabilities")); }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }
@@ -143,6 +153,11 @@ public:
     Q_INVOKABLE void updateMetadata(const QString &white, const QString &black,
                                     const QString &event, const QString &date,
                                     const QString &title, const QString &tags);
+    Q_INVOKABLE void beginPositionSetup();
+    Q_INVOKABLE void setSetupFen(const QString &fen);
+    Q_INVOKABLE void placeSetupPiece(const QString &square, const QString &piece);
+    Q_INVOKABLE void relocateSetupPiece(const QString &from, const QString &to);
+    Q_INVOKABLE void startSetupGame();
 
     // --- What the core said a player may do -------------------------------
     //

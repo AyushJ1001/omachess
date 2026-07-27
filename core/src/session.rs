@@ -21,7 +21,7 @@ use omachess_store::{
     OpenError, RecordResult,
 };
 
-use crate::board::Orientation;
+use crate::board::{Orientation, Piece, Position};
 use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
 use crate::rules::Winner;
@@ -39,6 +39,7 @@ pub struct Session {
     restore_offer: Option<RestoreOffer>,
     clock: Option<GameClock>,
     metadata: GameMetadata,
+    setup: Option<PositionSetup>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -70,6 +71,14 @@ impl GameClock {
             last_tick: None,
         }
     }
+}
+
+struct PositionSetup {
+    position: Position,
+    fen: String,
+    fen_suffix: String,
+    rule_valid: bool,
+    error: String,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +116,7 @@ impl Session {
             restore_offer: None,
             clock: None,
             metadata: GameMetadata::default(),
+            setup: None,
         }
     }
 
@@ -160,6 +170,7 @@ impl Session {
             restore_offer,
             clock: None,
             metadata: GameMetadata::default(),
+            setup: None,
         };
         // Remembered open tabs restore their active board on open. Clocks and
         // engines stay idle — that remains a later ticket's job.
@@ -189,6 +200,11 @@ impl Session {
             "configure_clock" => self.configure_clock(command)?,
             "tick_clock" => self.tick_clock()?,
             "update_metadata" => self.update_metadata(command)?,
+            "begin_position_setup" => self.begin_position_setup(),
+            "set_setup_fen" => self.set_setup_fen(command)?,
+            "place_setup_piece" => self.place_setup_piece(command)?,
+            "relocate_setup_piece" => self.relocate_setup_piece(command)?,
+            "start_setup_game" => self.start_setup_game()?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -216,6 +232,9 @@ impl Session {
 
     fn play_move(&mut self, command: &str) -> Result<(), CommandError> {
         self.apply_elapsed_clock()?;
+        if self.setup.is_some() {
+            return Err(CommandError::RejectedMove);
+        }
         let from = json::read_string_field(command, "from");
         let to = json::read_string_field(command, "to");
         let (Some(from), Some(to)) = (from, to) else {
@@ -336,7 +355,8 @@ impl Session {
         self.ensure_tab_open(&offer.record_id);
         self.restore_offer = None;
         self.persist_residue()?;
-        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        self.events
+            .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
         Ok(())
     }
@@ -349,7 +369,8 @@ impl Session {
                 .clear_residue("active_record_id")
                 .map_err(|_| CommandError::Store)?;
         }
-        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        self.events
+            .push(String::from("{\"type\":\"restore_cleared\"}"));
         Ok(())
     }
 
@@ -362,11 +383,131 @@ impl Session {
         self.restore_offer = None;
         self.clock = None;
         self.metadata = GameMetadata::default();
+        self.setup = None;
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
         // Clear the active tab highlight so board/rail and tab chrome agree.
         self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn begin_position_setup(&mut self) {
+        // Position Setup is not clocked play; entering it suspends and removes
+        // the active time control as its capability contract promises.
+        self.clock = None;
+        let fen = self.game.fen();
+        let position = Position::from_fen(&fen).expect("Rules Authority FEN is drawable");
+        self.setup = Some(PositionSetup {
+            position,
+            fen: fen.clone(),
+            fen_suffix: fen.split_once(' ').map_or("w - - 0 1", |(_, suffix)| suffix).into(),
+            rule_valid: true,
+            error: String::new(),
+        });
+    }
+
+    fn set_setup_fen(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(fen) = json::read_string_field(command, "fen") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let Some(setup) = self.setup.as_mut() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        if fen.split_whitespace().count() != 6 {
+            setup.error = "FEN must contain six fields.".into();
+            return Ok(());
+        }
+        let fields: Vec<_> = fen.split_whitespace().collect();
+        if !matches!(fields[1], "w" | "b") {
+            setup.error = "FEN side to move must be “w” or “b”.".into();
+            return Ok(());
+        }
+        if fields[2] != "-"
+            && (fields[2].chars().any(|c| !"KQkq".contains(c))
+                || fields[2].chars().count() > 4)
+        {
+            setup.error = "FEN castling rights must use K, Q, k, q, or “-”.".into();
+            return Ok(());
+        }
+        if fields[3] != "-"
+            && !(fields[3].len() == 2
+                && matches!(fields[3].as_bytes()[0], b'a'..=b'h')
+                && matches!(fields[3].as_bytes()[1], b'3' | b'6'))
+        {
+            setup.error = "FEN en-passant target must be a third- or sixth-rank square, or “-”.".into();
+            return Ok(());
+        }
+        if fields[4].parse::<u32>().is_err()
+            || fields[5].parse::<u32>().ok().filter(|number| *number > 0).is_none()
+        {
+            setup.error =
+                "FEN move counters must be a non-negative halfmove and positive fullmove number."
+                    .into();
+            return Ok(());
+        }
+        let Some(position) = Position::from_fen(&fen) else {
+            setup.error =
+                "FEN piece placement must describe exactly eight ranks of eight squares.".into();
+            return Ok(());
+        };
+        setup.position = position;
+        setup.fen = fen.clone();
+        setup.fen_suffix = fields[1..].join(" ");
+        setup.rule_valid = Game::from_position(&fen).is_some();
+        setup.error.clear();
+        Ok(())
+    }
+
+    fn place_setup_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(square) = json::read_string_field(command, "square") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let piece_name = json::read_string_field(command, "piece").unwrap_or_default();
+        let piece = if piece_name.is_empty() {
+            None
+        } else {
+            Some(Piece::from_id(&piece_name).ok_or(CommandError::MalformedCommand)?)
+        };
+        let Some(setup) = self.setup.as_mut() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        if !setup.position.place(&square, piece) {
+            return Err(CommandError::MalformedCommand);
+        }
+        reclassify_setup(setup);
+        Ok(())
+    }
+
+    fn relocate_setup_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let (Some(from), Some(to)) = (
+            json::read_string_field(command, "from"),
+            json::read_string_field(command, "to"),
+        ) else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let Some(setup) = self.setup.as_mut() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        if !setup.position.relocate(&from, &to) {
+            return Err(CommandError::MalformedCommand);
+        }
+        reclassify_setup(setup);
+        Ok(())
+    }
+
+    fn start_setup_game(&mut self) -> Result<(), CommandError> {
+        let Some(setup) = self.setup.as_ref() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        if !setup.rule_valid {
+            return Err(CommandError::RejectedMove);
+        }
+        self.game = Game::from_position(&setup.fen).ok_or(CommandError::RejectedMove)?;
+        self.setup = None;
+        self.record_id = None;
+        self.restore_offer = None;
+        self.metadata = GameMetadata::default();
         Ok(())
     }
 
@@ -378,7 +519,8 @@ impl Session {
         self.ensure_tab_open(&id);
         self.restore_offer = None;
         self.persist_residue()?;
-        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        self.events
+            .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
         Ok(())
     }
@@ -404,6 +546,7 @@ impl Session {
                 self.record_id = None;
                 self.clock = None;
                 self.metadata = GameMetadata::default();
+                self.setup = None;
                 if let Some(store) = self.store.as_ref() {
                     let _ = store.workspace().clear_residue("active_record_id");
                 }
@@ -457,6 +600,7 @@ impl Session {
         if self.metadata.title.is_empty() {
             self.metadata.title = record.title.clone().unwrap_or_default();
         }
+        self.setup = None;
         self.record_id = Some(record.id);
         Ok(())
     }
@@ -569,13 +713,20 @@ impl Session {
 
     fn emit_tabs_changed(&mut self) {
         let titles = self.tab_titles();
-        self.events
-            .push(tabs_changed_event(&self.open_tabs, self.record_id.as_deref(), &titles));
+        self.events.push(tabs_changed_event(
+            &self.open_tabs,
+            self.record_id.as_deref(),
+            &titles,
+        ));
     }
 
     fn tab_titles(&self) -> Vec<String> {
         let Some(store) = self.store.as_ref() else {
-            return self.open_tabs.iter().map(|_| "Game Record".into()).collect();
+            return self
+                .open_tabs
+                .iter()
+                .map(|_| "Game Record".into())
+                .collect();
         };
         self.open_tabs
             .iter()
@@ -612,7 +763,15 @@ impl Session {
         json::write_string(&mut out, self.orientation.name());
 
         out.push_str(",\"squares\":[");
-        let position = self.game.position();
+        let position = self.setup.as_ref().map(|setup| &setup.position);
+        let game_position;
+        let position = match position {
+            Some(position) => position,
+            None => {
+                game_position = self.game.position();
+                &game_position
+            }
+        };
         for (index, square) in position.rendered(self.orientation).iter().enumerate() {
             if index > 0 {
                 out.push(',');
@@ -630,10 +789,48 @@ impl Session {
         }
         out.push(']');
 
+        if let Some(setup) = &self.setup {
+            out.push_str(",\"activity\":\"position_setup\",\"positionClass\":");
+            json::write_string(
+                &mut out,
+                if setup.rule_valid {
+                    "Rule-valid Position"
+                } else {
+                    "Freeform Position"
+                },
+            );
+            out.push_str(",\"setupFen\":");
+            json::write_string(&mut out, &setup.fen);
+            out.push_str(",\"setupError\":");
+            json::write_string(&mut out, &setup.error);
+            out.push_str(",\"positionCapabilities\":");
+            json::write_string(
+                &mut out,
+                if setup.rule_valid {
+                    "Clocks · Result detection · Start a Played Game · Engine use"
+                } else {
+                    "No clocks · No result detection · Cannot start a Played Game · Engine use not guaranteed"
+                },
+            );
+        } else {
+            out.push_str(",\"activity\":\"played_game\"");
+        }
+
         out.push_str(",\"sideToMove\":");
-        json::write_string(&mut out, if self.game.white_to_move() { "white" } else { "black" });
+        json::write_string(
+            &mut out,
+            if self.game.white_to_move() {
+                "white"
+            } else {
+                "black"
+            },
+        );
         out.push_str(",\"inCheck\":");
-        out.push_str(if self.game.in_check() { "true" } else { "false" });
+        out.push_str(if self.game.in_check() {
+            "true"
+        } else {
+            "false"
+        });
 
         // The moves a player may make now. The workspace uses these to show
         // where a picked-up piece may go and to offer a promotion choice; the
@@ -678,7 +875,11 @@ impl Session {
         out.push_str(",\"cursor\":");
         out.push_str(&self.game.cursor().to_string());
         out.push_str(",\"reviewing\":");
-        out.push_str(if self.game.reviewing() { "true" } else { "false" });
+        out.push_str(if self.game.reviewing() {
+            "true"
+        } else {
+            "false"
+        });
 
         out.push_str(",\"clock\":");
         match &self.clock {
@@ -810,6 +1011,16 @@ fn decode_clock(encoded: &str) -> Option<GameClock> {
     })
 }
 
+fn reclassify_setup(setup: &mut PositionSetup) {
+    let generated = setup.position.setup_fen();
+    let placement = generated
+        .split_once(' ')
+        .map_or(generated.as_str(), |(value, _)| value);
+    setup.fen = format!("{placement} {}", setup.fen_suffix);
+    setup.rule_valid = Game::from_position(&setup.fen).is_some();
+    setup.error.clear();
+}
+
 fn restore_available_event(offer: &RestoreOffer) -> String {
     let mut out = String::from("{\"type\":\"restore_available\",\"recordId\":");
     json::write_string(&mut out, &offer.record_id);
@@ -858,7 +1069,10 @@ fn tabs_changed_event(open_tabs: &[String], active_id: Option<&str>, titles: &[S
         out.push_str("{\"id\":");
         json::write_string(&mut out, id);
         out.push_str(",\"title\":");
-        let title = titles.get(index).map(String::as_str).unwrap_or("Game Record");
+        let title = titles
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("Game Record");
         json::write_string(&mut out, title);
         out.push('}');
     }
@@ -965,7 +1179,9 @@ mod tests {
 
     fn play(session: &mut Session, from: &str, to: &str) {
         let command = format!(r#"{{"type":"play_move","from":"{from}","to":"{to}"}}"#);
-        session.submit(&command).unwrap_or_else(|error| panic!("{from}{to}: {error:?}"));
+        session
+            .submit(&command)
+            .unwrap_or_else(|error| panic!("{from}{to}: {error:?}"));
         while session.poll_event().is_some() {}
     }
 
@@ -1003,13 +1219,19 @@ mod tests {
         session.submit(r#"{"type":"flip_board"}"#).unwrap();
         session.submit(r#"{"type":"flip_board"}"#).unwrap();
         session.poll_event().unwrap();
-        assert!(session.poll_event().unwrap().contains(r#""orientation":"white""#));
+        assert!(session
+            .poll_event()
+            .unwrap()
+            .contains(r#""orientation":"white""#));
     }
 
     #[test]
     fn rejected_commands_queue_no_events() {
         let mut session = Session::new();
-        assert_eq!(session.submit(r#"{"type":"resign"}"#), Err(CommandError::UnknownCommand));
+        assert_eq!(
+            session.submit(r#"{"type":"resign"}"#),
+            Err(CommandError::UnknownCommand)
+        );
         assert_eq!(session.submit("{}"), Err(CommandError::MalformedCommand));
         assert!(session.poll_event().is_none());
     }
@@ -1027,7 +1249,9 @@ mod tests {
     #[test]
     fn playing_a_move_answers_with_the_new_board_and_its_san() {
         let mut session = Session::new();
-        session.submit(r#"{"type":"play_move","from":"e2","to":"e4"}"#).unwrap();
+        session
+            .submit(r#"{"type":"play_move","from":"e2","to":"e4"}"#)
+            .unwrap();
         let event = session.poll_event().unwrap();
         assert!(event.contains(r#"{"name":"e4","light":true,"piece":"white_pawn"}"#));
         assert!(event.contains(r#"{"name":"e2","light":true,"piece":null}"#));
@@ -1086,7 +1310,9 @@ mod tests {
         play(&mut session, "e2", "e4");
         play(&mut session, "e7", "e5");
 
-        session.submit(r#"{"type":"navigate","to":"backward"}"#).unwrap();
+        session
+            .submit(r#"{"type":"navigate","to":"backward"}"#)
+            .unwrap();
         let event = session.poll_event().unwrap();
         assert!(event.contains(r#"{"name":"e5","light":false,"piece":null}"#));
         assert!(event.contains(r#""cursor":1"#));
@@ -1096,7 +1322,9 @@ mod tests {
         // No move may be played from a position being reviewed.
         assert!(event.contains(r#""moves":[]"#));
 
-        session.submit(r#"{"type":"navigate","to":"start"}"#).unwrap();
+        session
+            .submit(r#"{"type":"navigate","to":"start"}"#)
+            .unwrap();
         let event = session.poll_event().unwrap();
         assert!(event.contains(r#"{"name":"e4","light":true,"piece":null}"#));
         assert!(event.contains(r#""cursor":0"#));
@@ -1115,7 +1343,10 @@ mod tests {
             session.submit(r#"{"type":"navigate","to":"sideways"}"#),
             Err(CommandError::MalformedCommand)
         );
-        assert_eq!(session.submit(r#"{"type":"navigate"}"#), Err(CommandError::MalformedCommand));
+        assert_eq!(
+            session.submit(r#"{"type":"navigate"}"#),
+            Err(CommandError::MalformedCommand)
+        );
     }
 
     #[test]
@@ -1312,7 +1543,11 @@ mod tests {
                 }
             }
             let ids = library_ids(&second_library);
-            assert_eq!(ids.len(), 2, "library should hold both Game Records: {second_library}");
+            assert_eq!(
+                ids.len(),
+                2,
+                "library should hold both Game Records: {second_library}"
+            );
             let second_id = ids
                 .into_iter()
                 .find(|id| id != &first_id)
@@ -1409,8 +1644,14 @@ mod tests {
         }
         let library = library.expect("the Personal Library is still listed");
         let ids = library_ids(&library);
-        assert!(ids.contains(&first_id), "closed tab's record stays in the library: {library}");
-        assert!(ids.contains(&second_id), "open tab's record stays in the library: {library}");
+        assert!(
+            ids.contains(&first_id),
+            "closed tab's record stays in the library: {library}"
+        );
+        assert!(
+            ids.contains(&second_id),
+            "open tab's record stays in the library: {library}"
+        );
     }
 
     #[test]

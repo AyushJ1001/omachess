@@ -122,6 +122,10 @@ impl Game {
         })
     }
 
+    pub fn from_position(fen: &str) -> Option<Self> {
+        Self::from_history(fen, Vec::new())
+    }
+
     pub fn start_fen(&self) -> &str {
         &self.start_fen
     }
@@ -178,7 +182,9 @@ impl Game {
 
     /// The move that produced the Displayed Position, if any.
     pub fn last_move(&self) -> Option<&PlayedMove> {
-        self.cursor.checked_sub(1).and_then(|index| self.moves.get(index))
+        self.cursor
+            .checked_sub(1)
+            .and_then(|index| self.moves.get(index))
     }
 
     /// Every move a player may make now, grouped by the squares it joins.
@@ -192,14 +198,22 @@ impl Game {
 
         let mut offers: Vec<MoveOffer> = Vec::new();
         for legal in self.rules.legal_moves() {
-            let LegalMove { from, to, promotion } = legal;
+            let LegalMove {
+                from,
+                to,
+                promotion,
+            } = legal;
             let existing = offers
                 .iter_mut()
                 .find(|offer| offer.from == from && offer.to == to);
             let offer = match existing {
                 Some(offer) => offer,
                 None => {
-                    offers.push(MoveOffer { from, to, promotions: Vec::new() });
+                    offers.push(MoveOffer {
+                        from,
+                        to,
+                        promotions: Vec::new(),
+                    });
                     offers.last_mut().expect("just pushed")
                 }
             };
@@ -213,7 +227,10 @@ impl Game {
         // the same places.
         for offer in &mut offers {
             offer.promotions.sort_by_key(|role| {
-                PROMOTION_ROLES.iter().position(|known| known == role).unwrap_or(usize::MAX)
+                PROMOTION_ROLES
+                    .iter()
+                    .position(|known| known == role)
+                    .unwrap_or(usize::MAX)
             });
         }
         offers
@@ -256,12 +273,21 @@ impl Game {
             return Err(MoveRejected::Illegal);
         };
         let number = self.rules.move_number();
-        let side = if self.rules.white_to_move() { "white" } else { "black" };
+        let side = if self.rules.white_to_move() {
+            "white"
+        } else {
+            "black"
+        };
         if !self.rules.push(&uci) {
             return Err(MoveRejected::Illegal);
         }
 
-        self.moves.push(PlayedMove { uci, san, number, side });
+        self.moves.push(PlayedMove {
+            uci,
+            san,
+            number,
+            side,
+        });
         self.cursor = self.moves.len();
         self.outcome = self.rules.outcome();
         Ok(())
@@ -290,7 +316,10 @@ impl Game {
         }
         while self.cursor < wanted {
             let uci = self.moves[self.cursor].uci.clone();
-            assert!(self.rules.push(&uci), "a played move can always be replayed");
+            assert!(
+                self.rules.push(&uci),
+                "a played move can always be replayed"
+            );
             self.cursor += 1;
         }
         true
@@ -331,7 +360,8 @@ mod tests {
     fn play(game: &mut Game, moves: &[&str]) {
         for pair in moves {
             let (from, to) = pair.split_at(2);
-            game.play(from, to, None).unwrap_or_else(|error| panic!("{pair}: {error:?}"));
+            game.play(from, to, None)
+                .unwrap_or_else(|error| panic!("{pair}: {error:?}"));
         }
     }
 
@@ -350,7 +380,11 @@ mod tests {
     fn playing_a_move_records_its_san() {
         let mut game = Game::standard();
         play(&mut game, &["e2e4", "e7e5", "g1f3"]);
-        let sans: Vec<&str> = game.moves().iter().map(|played| played.san.as_str()).collect();
+        let sans: Vec<&str> = game
+            .moves()
+            .iter()
+            .map(|played| played.san.as_str())
+            .collect();
         assert_eq!(sans, ["e4", "e5", "Nf3"]);
         assert_eq!(game.cursor(), 3);
     }
@@ -368,8 +402,11 @@ mod tests {
     fn each_move_carries_the_number_and_side_the_engine_gave_it() {
         let mut game = Game::standard();
         play(&mut game, &["e2e4", "e7e5", "g1f3"]);
-        let numbered: Vec<(u32, &str)> =
-            game.moves().iter().map(|played| (played.number, played.side)).collect();
+        let numbered: Vec<(u32, &str)> = game
+            .moves()
+            .iter()
+            .map(|played| (played.number, played.side))
+            .collect();
         assert_eq!(numbered, [(1, "white"), (1, "black"), (2, "white")]);
     }
 
@@ -427,7 +464,11 @@ mod tests {
         play(&mut game, &["e2e4", "e7e5", "g1f3", "b8c6"]);
         game.navigate(Destination::Start);
         game.navigate(Destination::End);
-        let sans: Vec<&str> = game.moves().iter().map(|played| played.san.as_str()).collect();
+        let sans: Vec<&str> = game
+            .moves()
+            .iter()
+            .map(|played| played.san.as_str())
+            .collect();
         assert_eq!(sans, ["e4", "e5", "Nf3", "Nc6"]);
     }
 
@@ -465,7 +506,10 @@ mod tests {
     #[test]
     fn a_promotion_must_name_a_piece_a_pawn_may_become() {
         let mut game = Game::new_from("8/4P3/8/8/8/8/6k1/4K3 w - - 0 1");
-        assert_eq!(game.play("e7", "e8", Some("king")), Err(MoveRejected::Illegal));
+        assert_eq!(
+            game.play("e7", "e8", Some("king")),
+            Err(MoveRejected::Illegal)
+        );
         assert_eq!(game.play("e7", "e8", None), Err(MoveRejected::Illegal));
         game.play("e7", "e8", Some("queen")).unwrap();
         assert_eq!(game.moves().last().unwrap().san, "e8=Q");

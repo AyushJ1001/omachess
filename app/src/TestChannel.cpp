@@ -154,6 +154,11 @@ QJsonObject TestChannel::handle(const QJsonObject &command)
         const QString target = command.value(QStringLiteral("target")).toString();
         return QJsonObject{{"ok", clickTarget(target)}};
     }
+    if (name == QStringLiteral("enter_text")) {
+        settle();
+        return QJsonObject{{"ok", enterText(command.value(QStringLiteral("target")).toString(),
+                                             command.value(QStringLiteral("text")).toString())}};
+    }
     if (name == QStringLiteral("resize")) {
         const int width = command.value(QStringLiteral("width")).toInt();
         const int height = command.value(QStringLiteral("height")).toInt();
@@ -308,6 +313,15 @@ bool TestChannel::clickTarget(const QString &objectName)
     QMouseEvent release(QEvent::MouseButtonRelease, centre, global, Qt::LeftButton, Qt::NoButton,
                         Qt::NoModifier);
     QCoreApplication::sendEvent(m_window, &release);
+    QCoreApplication::processEvents();
+    return true;
+}
+
+bool TestChannel::enterText(const QString &objectName, const QString &text)
+{
+    QQuickItem *item = findItem(m_window, objectName);
+    if (!item || !item->isVisible() || !item->setProperty("text", text))
+        return false;
     QCoreApplication::processEvents();
     return true;
 }
