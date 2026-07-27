@@ -23,6 +23,13 @@ ApplicationWindow {
 
     Component.onCompleted: WorkspaceSession.describeBoard()
 
+    Timer {
+        interval: 100
+        repeat: true
+        running: WorkspaceSession.clockRunning
+        onTriggered: WorkspaceSession.tickClock()
+    }
+
     // Fail-closed Live Store open: the workspace cannot play without it.
     Rectangle {
         anchors.fill: parent
@@ -75,6 +82,20 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            ComboBox {
+                id: clockPicker
+                objectName: "clockPicker"
+                model: [
+                    { text: qsTr("No clock"), milliseconds: 0 },
+                    { text: qsTr("1 second"), milliseconds: 1000 },
+                    { text: qsTr("1 minute"), milliseconds: 60000 },
+                    { text: qsTr("3 minutes"), milliseconds: 180000 }
+                ]
+                textRole: "text"
+                enabled: WorkspaceSession.moveList.length === 0
+                onActivated: WorkspaceSession.configureClock(model[currentIndex].milliseconds)
             }
 
             // Board Theme: follow the Quattro Palette, or pin an Omachess-owned set.
@@ -201,6 +222,29 @@ ApplicationWindow {
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: WorkspaceSession.clockEnabled
+
+                        Label {
+                            objectName: "whiteClockLabel"
+                            Layout.fillWidth: true
+                            text: qsTr("White %1").arg(
+                                (WorkspaceSession.whiteClockMs / 1000).toFixed(1))
+                            font.bold: WorkspaceSession.sideToMove === "white"
+                                       && WorkspaceSession.clockRunning
+                        }
+                        Label {
+                            objectName: "blackClockLabel"
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            text: qsTr("Black %1").arg(
+                                (WorkspaceSession.blackClockMs / 1000).toFixed(1))
+                            font.bold: WorkspaceSession.sideToMove === "black"
+                                       && WorkspaceSession.clockRunning
+                        }
                     }
 
                     Rectangle {
@@ -454,6 +498,64 @@ ApplicationWindow {
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
+                    }
+
+                    Label {
+                        text: qsTr("Game Metadata")
+                        font.bold: true
+                        color: Theme.muted
+                    }
+                    TextField {
+                        id: whitePlayerField
+                        objectName: "metadata:white"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("White player")
+                        text: WorkspaceSession.whitePlayer
+                    }
+                    TextField {
+                        id: blackPlayerField
+                        objectName: "metadata:black"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Black player")
+                        text: WorkspaceSession.blackPlayer
+                    }
+                    TextField {
+                        id: eventField
+                        objectName: "metadata:event"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Event")
+                        text: WorkspaceSession.gameEvent
+                    }
+                    TextField {
+                        id: dateField
+                        objectName: "metadata:date"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Date")
+                        text: WorkspaceSession.gameDate
+                    }
+                    TextField {
+                        id: titleField
+                        objectName: "metadata:title"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Title")
+                        text: WorkspaceSession.gameTitle
+                    }
+                    TextField {
+                        id: tagsField
+                        objectName: "metadata:tags"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Tags")
+                        text: WorkspaceSession.gameTags
+                    }
+                    Button {
+                        objectName: "saveMetadataButton"
+                        Layout.fillWidth: true
+                        enabled: WorkspaceSession.activeRecordId.length > 0
+                        text: qsTr("Save metadata")
+                        onClicked: WorkspaceSession.updateMetadata(
+                            whitePlayerField.text, blackPlayerField.text,
+                            eventField.text, dateField.text,
+                            titleField.text, tagsField.text)
                     }
 
                     ListView {

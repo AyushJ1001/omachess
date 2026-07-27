@@ -14,6 +14,7 @@
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use omachess_store::{
     GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
@@ -21,7 +22,7 @@ use omachess_store::{
 };
 
 use crate::board::Orientation;
-use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove};
+use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
 use crate::rules::Winner;
 
@@ -36,6 +37,39 @@ pub struct Session {
     open_tabs: Vec<String>,
     /// A prior Game Record the player may restore, when residue points at one.
     restore_offer: Option<RestoreOffer>,
+    clock: Option<GameClock>,
+    metadata: GameMetadata,
+}
+
+#[derive(Clone, Default, Debug)]
+struct GameMetadata {
+    white: String,
+    black: String,
+    event: String,
+    date: String,
+    title: String,
+    tags: String,
+}
+
+#[derive(Clone, Debug)]
+struct GameClock {
+    initial_ms: u64,
+    white_ms: u64,
+    black_ms: u64,
+    history: Vec<(u64, u64)>,
+    last_tick: Option<Instant>,
+}
+
+impl GameClock {
+    fn new(initial_ms: u64) -> Self {
+        Self {
+            initial_ms,
+            white_ms: initial_ms,
+            black_ms: initial_ms,
+            history: Vec::new(),
+            last_tick: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +105,8 @@ impl Session {
             record_id: None,
             open_tabs: Vec::new(),
             restore_offer: None,
+            clock: None,
+            metadata: GameMetadata::default(),
         }
     }
 
@@ -122,6 +158,8 @@ impl Session {
             record_id: None,
             open_tabs,
             restore_offer,
+            clock: None,
+            metadata: GameMetadata::default(),
         };
         // Remembered open tabs restore their active board on open. Clocks and
         // engines stay idle — that remains a later ticket's job.
@@ -148,6 +186,9 @@ impl Session {
             "new_game" => self.new_game()?,
             "open_record" => self.open_record(command)?,
             "close_tab" => self.close_tab(command)?,
+            "configure_clock" => self.configure_clock(command)?,
+            "tick_clock" => self.tick_clock()?,
+            "update_metadata" => self.update_metadata(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -174,6 +215,7 @@ impl Session {
     }
 
     fn play_move(&mut self, command: &str) -> Result<(), CommandError> {
+        self.apply_elapsed_clock()?;
         let from = json::read_string_field(command, "from");
         let to = json::read_string_field(command, "to");
         let (Some(from), Some(to)) = (from, to) else {
@@ -187,8 +229,90 @@ impl Session {
                     CommandError::RejectedMove
                 }
             })?;
+        if let Some(clock) = self.clock.as_mut() {
+            clock.history.push((clock.white_ms, clock.black_ms));
+            clock.last_tick = Some(Instant::now());
+        }
         self.persist_current_record()?;
         Ok(())
+    }
+
+    fn configure_clock(&mut self, command: &str) -> Result<(), CommandError> {
+        if !self.game.moves().is_empty() || self.game.outcome().is_over() {
+            return Err(CommandError::RejectedMove);
+        }
+        let Some(milliseconds) = json::read_string_field(command, "milliseconds")
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return Err(CommandError::MalformedCommand);
+        };
+        self.clock = if milliseconds == 0 {
+            None
+        } else {
+            Some(GameClock::new(milliseconds))
+        };
+        Ok(())
+    }
+
+    fn tick_clock(&mut self) -> Result<(), CommandError> {
+        self.apply_elapsed_clock()
+    }
+
+    fn apply_elapsed_clock(&mut self) -> Result<(), CommandError> {
+        if self.game.outcome().is_over() || self.game.reviewing() {
+            if let Some(clock) = self.clock.as_mut() {
+                clock.last_tick = None;
+            }
+            return Ok(());
+        }
+        let Some(clock) = self.clock.as_mut() else {
+            return Ok(());
+        };
+        // A configured clock starts with the first move. Before then the
+        // Played Game is ready, so neither player's time runs.
+        if self.game.moves().is_empty() {
+            clock.last_tick = None;
+            return Ok(());
+        }
+        let now = Instant::now();
+        let Some(last) = clock.last_tick.replace(now) else {
+            return Ok(());
+        };
+        let elapsed = now.duration_since(last).as_millis() as u64;
+        let white_to_move = self.game.white_to_move();
+        let remaining = if white_to_move {
+            &mut clock.white_ms
+        } else {
+            &mut clock.black_ms
+        };
+        *remaining = remaining.saturating_sub(elapsed);
+        if *remaining == 0 {
+            let loser = if white_to_move { Side::White } else { Side::Black };
+            self.game.complete_on_time(loser);
+            clock.history.push((clock.white_ms, clock.black_ms));
+            clock.last_tick = None;
+            self.persist_current_record()?;
+        }
+        Ok(())
+    }
+
+    fn update_metadata(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(id) = self.record_id.clone() else {
+            return Err(CommandError::MalformedCommand);
+        };
+        for (field, destination) in [
+            ("white", &mut self.metadata.white),
+            ("black", &mut self.metadata.black),
+            ("event", &mut self.metadata.event),
+            ("date", &mut self.metadata.date),
+            ("title", &mut self.metadata.title),
+            ("tags", &mut self.metadata.tags),
+        ] {
+            if let Some(value) = json::read_string_field(command, field) {
+                *destination = value;
+            }
+        }
+        self.persist_metadata(&id)
     }
 
     fn navigate(&mut self, command: &str) -> Result<(), CommandError> {
@@ -236,6 +360,8 @@ impl Session {
         self.record_id = None;
         self.orientation = Orientation::WhiteBottom;
         self.restore_offer = None;
+        self.clock = None;
+        self.metadata = GameMetadata::default();
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
@@ -276,6 +402,8 @@ impl Session {
             } else {
                 self.game = Game::standard();
                 self.record_id = None;
+                self.clock = None;
+                self.metadata = GameMetadata::default();
                 if let Some(store) = self.store.as_ref() {
                     let _ = store.workspace().clear_residue("active_record_id");
                 }
@@ -295,6 +423,8 @@ impl Session {
             .get_game_record(id)
             .map_err(|_| CommandError::Store)?
             .ok_or(CommandError::Store)?;
+        let stored_result = record.payload.result.clone();
+        let stored_clock = record.payload.clock.as_deref().and_then(decode_clock);
         let moves = record
             .payload
             .moves
@@ -310,6 +440,23 @@ impl Session {
             })
             .collect();
         self.game = Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        if stored_result.as_ref().is_some_and(|result| result.termination == "time_forfeit") {
+            let loser = if stored_clock.as_ref().is_some_and(|clock| clock.white_ms == 0) {
+                Side::White
+            } else if stored_clock.as_ref().is_some_and(|clock| clock.black_ms == 0)
+                || stored_result.as_ref().is_some_and(|result| result.score == "1-0")
+            {
+                Side::Black
+            } else {
+                Side::White
+            };
+            self.game.complete_on_time(loser);
+        }
+        self.clock = stored_clock;
+        self.metadata = decode_metadata(record.payload.participation.as_deref());
+        if self.metadata.title.is_empty() {
+            self.metadata.title = record.title.clone().unwrap_or_default();
+        }
         self.record_id = Some(record.id);
         Ok(())
     }
@@ -328,7 +475,7 @@ impl Session {
         let id = self
             .record_id
             .clone()
-            .unwrap_or_else(|| new_record_id());
+            .unwrap_or_else(new_record_id);
         let outcome = self.game.outcome();
         let result = if outcome.is_over() {
             Some(RecordResult {
@@ -355,8 +502,8 @@ impl Session {
                 })
                 .collect(),
             result,
-            participation: None,
-            clock: None,
+            participation: Some(encode_metadata(&self.metadata)),
+            clock: self.clock.as_ref().map(encode_clock),
         };
         let created_at = store
             .workspace()
@@ -368,7 +515,7 @@ impl Session {
         let record = GameRecord {
             id: id.clone(),
             kind: GameRecordKind::Played,
-            title: None,
+            title: (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone()),
             result_score,
             ply_count: payload.moves.len() as u32,
             archived: false,
@@ -385,6 +532,24 @@ impl Session {
         self.persist_residue()?;
         // Playing a new game dismisses any prior restore offer.
         self.restore_offer = None;
+        self.emit_library_changed();
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn persist_metadata(&mut self, id: &str) -> Result<(), CommandError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let mut record = store
+            .workspace()
+            .get_game_record(id)
+            .map_err(|_| CommandError::Store)?
+            .ok_or(CommandError::Store)?;
+        record.title = (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone());
+        record.payload.participation = Some(encode_metadata(&self.metadata));
+        record.updated_at = timestamp_now();
+        store.workspace().upsert_game_record(&record).map_err(|_| CommandError::Store)?;
         self.emit_library_changed();
         self.emit_tabs_changed();
         Ok(())
@@ -515,6 +680,45 @@ impl Session {
         out.push_str(",\"reviewing\":");
         out.push_str(if self.game.reviewing() { "true" } else { "false" });
 
+        out.push_str(",\"clock\":");
+        match &self.clock {
+            Some(clock) => {
+                out.push_str("{\"enabled\":true,\"initialMs\":");
+                out.push_str(&clock.initial_ms.to_string());
+                out.push_str(",\"whiteMs\":");
+                out.push_str(&clock.white_ms.to_string());
+                out.push_str(",\"blackMs\":");
+                out.push_str(&clock.black_ms.to_string());
+                out.push_str(",\"running\":");
+                let running = !self.game.moves().is_empty()
+                    && !self.game.outcome().is_over()
+                    && !self.game.reviewing();
+                out.push_str(if running { "true" } else { "false" });
+                out.push('}');
+            }
+            None => out.push_str("{\"enabled\":false}"),
+        }
+        out.push_str(",\"metadata\":{");
+        for (index, (name, value)) in [
+            ("white", &self.metadata.white),
+            ("black", &self.metadata.black),
+            ("event", &self.metadata.event),
+            ("date", &self.metadata.date),
+            ("title", &self.metadata.title),
+            ("tags", &self.metadata.tags),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            json::write_string(&mut out, name);
+            out.push(':');
+            json::write_string(&mut out, value);
+        }
+        out.push('}');
+
         out.push_str(",\"lastMove\":");
         match self.game.last_move() {
             // The move is given by its squares so the workspace can mark them
@@ -544,6 +748,66 @@ impl Session {
         out.push_str("}}");
         out
     }
+}
+
+fn encode_metadata(metadata: &GameMetadata) -> String {
+    [
+        &metadata.white,
+        &metadata.black,
+        &metadata.event,
+        &metadata.date,
+        &metadata.title,
+        &metadata.tags,
+    ]
+    .map(|value| value.replace('\n', " "))
+    .join("\n")
+}
+
+fn decode_metadata(encoded: Option<&str>) -> GameMetadata {
+    let parts: Vec<_> = encoded.unwrap_or("").split('\n').collect();
+    let at = |index: usize| parts.get(index).copied().unwrap_or("").to_owned();
+    GameMetadata {
+        white: at(0),
+        black: at(1),
+        event: at(2),
+        date: at(3),
+        title: at(4),
+        tags: at(5),
+    }
+}
+
+fn encode_clock(clock: &GameClock) -> String {
+    let history = clock
+        .history
+        .iter()
+        .map(|(white, black)| format!("{white}:{black}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{};{};{};{}", clock.initial_ms, clock.white_ms, clock.black_ms, history)
+}
+
+fn decode_clock(encoded: &str) -> Option<GameClock> {
+    let mut fields = encoded.splitn(4, ';');
+    let initial_ms = fields.next()?.parse().ok()?;
+    let white_ms = fields.next()?.parse().ok()?;
+    let black_ms = fields.next()?.parse().ok()?;
+    let history = fields
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let (white, black) = entry.split_once(':')?;
+            Some((white.parse().ok()?, black.parse().ok()?))
+        })
+        .collect();
+    Some(GameClock {
+        initial_ms,
+        white_ms,
+        black_ms,
+        history,
+        last_tick: None,
+    })
 }
 
 fn restore_available_event(offer: &RestoreOffer) -> String {
@@ -675,6 +939,10 @@ impl Default for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        let _ = self.apply_elapsed_clock();
+        if self.record_id.is_some() && !self.game.outcome().is_over() {
+            let _ = self.persist_current_record();
+        }
         let _ = self.persist_residue();
     }
 }
@@ -867,6 +1135,84 @@ mod tests {
             session.submit(r#"{"type":"play_move","from":"e1","to":"f2"}"#),
             Err(CommandError::RejectedMove)
         );
+    }
+
+    #[test]
+    fn a_timed_game_flags_the_side_to_move_and_persists_the_completed_game() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let record_id;
+        {
+            let mut session = Session::open(&path).unwrap();
+            session
+                .submit(r#"{"type":"configure_clock","milliseconds":"5"}"#)
+                .unwrap();
+            play(&mut session, "e2", "e4");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            session.submit(r#"{"type":"tick_clock"}"#).unwrap();
+            let event = session
+                .events
+                .iter()
+                .find(|event| event.contains(r#""type":"board_changed""#))
+                .unwrap();
+            assert!(event.contains(r#""termination":"time_forfeit""#));
+            assert!(event.contains(r#""score":"1-0""#));
+            assert_eq!(
+                session.submit(r#"{"type":"play_move","from":"e7","to":"e5"}"#),
+                Err(CommandError::RejectedMove)
+            );
+            record_id = session.record_id.clone().unwrap();
+        }
+
+        let mut reopened = Session::open(&path).unwrap();
+        reopened
+            .submit(&format!(r#"{{"type":"open_record","id":"{record_id}"}}"#))
+            .unwrap();
+        let event = reopened
+            .events
+            .iter()
+            .find(|event| event.contains(r#""type":"board_changed""#))
+            .unwrap();
+        assert!(event.contains(r#""termination":"time_forfeit""#));
+        assert!(event.contains(r#""whiteMs":"#));
+    }
+
+    #[test]
+    fn completed_game_metadata_remains_correctable_without_changing_moves() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        for (from, to) in [("f2", "f3"), ("e7", "e5"), ("g2", "g4"), ("d8", "h4")] {
+            play(&mut session, from, to);
+        }
+        let immutable_moves = session.game.moves().to_vec();
+        session
+            .submit(
+                r#"{"type":"update_metadata","white":"Ada","black":"Grace","event":"Club","date":"2026-07-27","title":"Corrected title","tags":"casual"}"#,
+            )
+            .unwrap();
+        assert_eq!(session.game.moves(), immutable_moves);
+        assert_eq!(session.metadata.title, "Corrected title");
+        assert_eq!(
+            session.submit(r#"{"type":"play_move","from":"e1","to":"f2"}"#),
+            Err(CommandError::RejectedMove)
+        );
+        let record = session
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .get_game_record(session.record_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.title.as_deref(), Some("Corrected title"));
+        assert_eq!(record.payload.moves.len(), 4);
+        assert_eq!(record.payload.result.unwrap().score, "0-1");
+
+        session.submit(r#"{"type":"new_game"}"#).unwrap();
+        assert!(session.clock.is_none());
+        assert_eq!(session.metadata.title, "");
+        assert_eq!(session.metadata.white, "");
     }
 
     #[test]
