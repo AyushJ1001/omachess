@@ -278,7 +278,8 @@ public:
     Q_INVOKABLE void completeComputerAnalysis(const QString &evaluations);
     // Starts the worker-owned finite pass. Returns false when no session D-Bus
     // is available (the workspace can then keep its existing foreground path).
-    Q_INVOKABLE bool startBackgroundComputerAnalysis();
+    Q_INVOKABLE QString startBackgroundComputerAnalysis();
+    Q_INVOKABLE void cancelBackgroundJob(const QString &id);
     Q_INVOKABLE void designateDefaultAnalysis();
     Q_INVOKABLE void addAnalysisAnnotation(int ply, const QString &text);
     Q_INVOKABLE void addAnalysisSideline(int afterPly, const QString &variation);

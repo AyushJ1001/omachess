@@ -824,7 +824,7 @@ impl<'a> WorkerWriter<'a> {
 
     /// Startup recovery: running work had no orderly shutdown and is never resumed implicitly.
     pub fn interrupt_inflight_jobs(&self, updated_at: &str) -> Result<(), StoreError> {
-        self.conn.execute("UPDATE background_jobs SET state = 'interrupted', updated_at = ?1 WHERE state = 'running'", [updated_at])?;
+        self.conn.execute("UPDATE background_jobs SET state = 'interrupted', controls = 'resume,cancel,dismiss,open', updated_at = ?1 WHERE state = 'running'", [updated_at])?;
         Ok(())
     }
 }
@@ -1616,7 +1616,7 @@ mod tests {
         let job = worker.job("job-1").unwrap().unwrap();
         assert_eq!(job.checkpoint, 3);
         assert_eq!(job.state, BackgroundJobState::Interrupted);
-        assert_eq!(job.controls, vec!["pause", "cancel", "open"]);
+        assert_eq!(job.controls, vec!["resume", "cancel", "dismiss", "open"]);
         assert!(worker.checkpoint("job-1", 3, BackgroundJobState::Running, "resume").is_ok());
         assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Complete, "complete").is_ok());
         assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Running, "bad").is_err());

@@ -122,19 +122,31 @@ void WorkspaceSession::navigate(const QString &destination)
     submit(command(QStringLiteral("navigate"), {{QStringLiteral("to"), destination}}));
 }
 
-bool WorkspaceSession::startBackgroundComputerAnalysis()
+QString WorkspaceSession::startBackgroundComputerAnalysis()
 {
     if (m_activeRecordId.isEmpty() || !gameOver())
-        return false;
+        return {};
     QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
                           QStringLiteral("/BackgroundJobs"),
                           QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
                           QDBusConnection::sessionBus());
     if (!worker.isValid())
-        return false;
+        return {};
     const QDBusReply<QString> reply = worker.call(QStringLiteral("StartComputerAnalysis"),
                                                    m_activeRecordId, moveList().size() + 1);
-    return reply.isValid() && !reply.value().isEmpty();
+    return reply.isValid() ? reply.value() : QString();
+}
+
+void WorkspaceSession::cancelBackgroundJob(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
+                          QStringLiteral("/BackgroundJobs"),
+                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
+                          QDBusConnection::sessionBus());
+    if (worker.isValid())
+        worker.call(QStringLiteral("Cancel"), id);
 }
 
 void WorkspaceSession::restoreRecord()

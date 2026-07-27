@@ -44,6 +44,7 @@ ApplicationWindow {
     property int computerAnalysisTargetPly: 0
     property int computerAnalysisTotal: 0
     property var computerAnalysisResults: []
+    property string backgroundComputerAnalysisId: ""
 
     function requestComputerPosition() {
         EngineManager.clearAnalysis()
@@ -52,7 +53,9 @@ ApplicationWindow {
     }
 
     function startComputerAnalysis() {
-        if (WorkspaceSession.startBackgroundComputerAnalysis()) {
+        const backgroundJobId = WorkspaceSession.startBackgroundComputerAnalysis()
+        if (backgroundJobId !== "") {
+            backgroundComputerAnalysisId = backgroundJobId
             computerAnalysisRunning = true
             computerAnalysisRunState = "Running in background worker"
             computerAnalysisTotal = WorkspaceSession.moveList.length + 1
@@ -69,6 +72,8 @@ ApplicationWindow {
     }
 
     function cancelComputerAnalysis() {
+        WorkspaceSession.cancelBackgroundJob(backgroundComputerAnalysisId)
+        backgroundComputerAnalysisId = ""
         computerAnalysisRunning = false
         computerAnalysisRunState = "Cancelled"
         EngineManager.clearAnalysis()
