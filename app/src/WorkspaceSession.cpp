@@ -149,6 +149,18 @@ void WorkspaceSession::cancelBackgroundJob(const QString &id)
         worker.call(QStringLiteral("Cancel"), id);
 }
 
+QString WorkspaceSession::backgroundJob(const QString &id)
+{
+    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
+                          QStringLiteral("/BackgroundJobs"),
+                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
+                          QDBusConnection::sessionBus());
+    if (!worker.isValid())
+        return {};
+    const QDBusReply<QString> reply = worker.call(QStringLiteral("Job"), id);
+    return reply.isValid() ? reply.value() : QString();
+}
+
 void WorkspaceSession::restoreRecord()
 {
     submit(command(QStringLiteral("restore_record")));

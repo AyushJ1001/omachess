@@ -115,6 +115,7 @@ int32_t omachess_background_job_checkpoint(const char *id, uint32_t checkpoint,
                                            const char *state);
 uint32_t omachess_background_job_checkpoint_value(const char *id);
 uint32_t omachess_background_job_total_value(const char *id);
+char *omachess_background_job_json(const char *id);
 int32_t omachess_background_job_complete(const char *id);
 
 #ifdef __cplusplus

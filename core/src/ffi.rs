@@ -61,6 +61,18 @@ pub unsafe extern "C" fn omachess_background_job_total_value(id: *const c_char) 
         .map_or(u32::MAX, |job| job.total)
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_json(id: *const c_char) -> *mut c_char {
+    if id.is_null() { return std::ptr::null_mut(); }
+    let Ok(id) = CStr::from_ptr(id).to_str() else { return std::ptr::null_mut(); };
+    let Some(job) = LiveStore::open_default().ok().and_then(|store| store.worker().job(id).ok().flatten()) else { return std::ptr::null_mut(); };
+    serde_json::to_string(&serde_json::json!({
+        "id": job.id, "kind": job.kind, "state": match job.state { BackgroundJobState::Queued => "queued", BackgroundJobState::Running => "running", BackgroundJobState::Paused => "paused", BackgroundJobState::Interrupted => "interrupted", BackgroundJobState::Complete => "complete", BackgroundJobState::Cancelled => "cancelled", BackgroundJobState::Failed => "failed", BackgroundJobState::Dismissed => "dismissed" },
+        "recordId": job.record_id, "checkpoint": job.checkpoint, "total": job.total,
+        "controls": job.controls, "payload": job.payload, "updatedAt": job.updated_at
+    })).ok().and_then(|json| CString::new(json).ok()).map_or(std::ptr::null_mut(), CString::into_raw)
+}
+
 /// Commits a worker-owned Computer Analysis result. The worker calls this only
 /// after its final move-boundary checkpoint, so an interrupted job can never
 /// leave an Analysis Record that pretends to be complete.

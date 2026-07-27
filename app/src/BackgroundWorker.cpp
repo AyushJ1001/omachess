@@ -70,6 +70,16 @@ public slots:
         // and returns its stable id so a newly launched workspace can attach.
         return omachess_background_job_checkpoint_value(job.constData()) == UINT_MAX ? QString() : id;
     }
+    QString Job(const QString &id)
+    {
+        const QByteArray job = id.toUtf8();
+        char *json = omachess_background_job_json(job.constData());
+        if (!json)
+            return {};
+        const QString result = QString::fromUtf8(json);
+        omachess_string_free(json);
+        return result;
+    }
 private:
     void startRunner(const QString &id, uint checkpoint, uint total)
     {

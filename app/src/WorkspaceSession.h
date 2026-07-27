@@ -280,6 +280,7 @@ public:
     // is available (the workspace can then keep its existing foreground path).
     Q_INVOKABLE QString startBackgroundComputerAnalysis();
     Q_INVOKABLE void cancelBackgroundJob(const QString &id);
+    Q_INVOKABLE QString backgroundJob(const QString &id);
     Q_INVOKABLE void designateDefaultAnalysis();
     Q_INVOKABLE void addAnalysisAnnotation(int ply, const QString &text);
     Q_INVOKABLE void addAnalysisSideline(int afterPly, const QString &variation);
