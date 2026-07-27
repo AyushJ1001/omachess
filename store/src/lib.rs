@@ -504,6 +504,25 @@ impl<'a> WorkspaceWriter<'a> {
         Ok(())
     }
 
+    /// Purges the library Variant Definition only when no Game Record still
+    /// carries an immutable snapshot compiled from it.
+    pub fn purge_variant_definition(&self) -> Result<(), StoreError> {
+        let bound: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM game_records
+                WHERE json_extract(payload, '$.variant') LIKE 'omachess:v1:%'
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if bound {
+            return Err(StoreError::Message(
+                "the Variant Definition is bound into an existing Variant Snapshot".into(),
+            ));
+        }
+        self.clear_residue("variant_definition_draft")
+    }
+
     pub fn create_study(&self, id: &str, name: &str, created_at: &str) -> Result<(), StoreError> {
         if name.trim().is_empty() {
             return Err(StoreError::Message("a Study needs a name".into()));
