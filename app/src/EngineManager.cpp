@@ -623,6 +623,7 @@ void EngineManager::analyzePosition(const QString &fen, bool ruleValid)
     m_analysisEvaluation.clear();
     m_analysisVariations.clear();
     m_searchVariations.clear();
+    m_analysisDepth = 0;
     m_analysisMessage = ruleValid ? QStringLiteral("Waiting for a Ready engine.")
                                   : QStringLiteral("Engine analysis is not guaranteed for a Freeform Position.");
     if (m_livePlayActive && ruleValid)
@@ -653,6 +654,7 @@ void EngineManager::clearAnalysis()
     m_analysisEvaluation.clear();
     m_analysisVariations.clear();
     m_searchVariations.clear();
+    m_analysisDepth = 0;
     m_analysisMessage.clear();
     emit analysisChanged();
 }
@@ -665,6 +667,7 @@ void EngineManager::startAnalysis()
     m_active = m_readyProfile;
     m_output.clear();
     m_searchVariations.clear();
+    m_analysisDepth = 0;
     m_analysisMessage = QStringLiteral("Analyzing…");
     emit analysisChanged();
     const Profile &profile = m_profiles.at(m_readyProfile);
@@ -848,13 +851,17 @@ void EngineManager::consumeLine(const QString &line)
 
 void EngineManager::consumeAnalysisInfo(const QString &line)
 {
+    static const QRegularExpression depthPattern(QStringLiteral("(?:^| )depth (\\d+)"));
     static const QRegularExpression scorePattern(QStringLiteral("(?:^| )score (cp|mate) (-?\\d+)"));
     static const QRegularExpression pvPattern(QStringLiteral("(?:^| )pv (.+)$"));
     static const QRegularExpression rankPattern(QStringLiteral("(?:^| )multipv (\\d+)"));
     const QRegularExpressionMatch scoreMatch = scorePattern.match(line);
     const QRegularExpressionMatch pvMatch = pvPattern.match(line);
+    const QRegularExpressionMatch depthMatch = depthPattern.match(line);
     if (!scoreMatch.hasMatch() || !pvMatch.hasMatch())
         return;
+    if (depthMatch.hasMatch())
+        m_analysisDepth = qMax(m_analysisDepth, depthMatch.captured(1).toInt());
     const QRegularExpressionMatch rankMatch = rankPattern.match(line);
     const int rank = rankMatch.hasMatch() ? rankMatch.captured(1).toInt() : 1;
     if (rank == 1) {
@@ -868,6 +875,21 @@ void EngineManager::consumeAnalysisInfo(const QString &line)
                     .arg(score / 100.0, 0, 'f', 2);
     }
     m_searchVariations.insert(rank, pvMatch.captured(1));
+}
+
+QString EngineManager::analysisEngine() const
+{
+    if (m_readyProfile < 0 || m_readyProfile >= m_profiles.size())
+        return {};
+    const Profile &profile = m_profiles.at(m_readyProfile);
+    return profile.identity.isEmpty() ? profile.name : profile.identity;
+}
+
+QString EngineManager::analysisSearchContext() const
+{
+    if (m_analysisDepth <= 0)
+        return QStringLiteral("movetime 250 ms");
+    return QStringLiteral("depth %1 · movetime 250 ms").arg(m_analysisDepth);
 }
 
 void EngineManager::finishAnalysis()

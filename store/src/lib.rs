@@ -11,9 +11,10 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
 
 /// Schema version this build of Omachess understands and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Why the Live Store could not be opened for use.
 #[derive(Debug)]
@@ -130,7 +131,7 @@ impl GameRecordKind {
 }
 
 /// One move as a Game Record keeps it.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct MoveEntry {
     pub uci: String,
     pub san: String,
@@ -139,7 +140,7 @@ pub struct MoveEntry {
 }
 
 /// The result of a Game Record, present only when the game has ended.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct RecordResult {
     pub status: String,
     pub termination: String,
@@ -190,6 +191,51 @@ pub struct GameRecord {
     pub created_at: String,
     pub updated_at: String,
     pub payload: GameRecordPayload,
+}
+
+/// Immutable chess content and metadata copied when an Analysis Record is derived.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SourceSnapshot {
+    pub source_id: String,
+    pub variant: String,
+    pub start_fen: String,
+    pub moves: Vec<MoveEntry>,
+    pub result: Option<RecordResult>,
+    pub metadata: Option<String>,
+}
+
+/// A named alternative continuation owned by an Analysis Record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AnalysisSideline {
+    pub after_ply: u32,
+    pub moves: Vec<MoveEntry>,
+}
+
+/// Durable prose attached to a position in an Analysis Record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AnalysisAnnotation {
+    pub ply: u32,
+    pub text: String,
+}
+
+/// One explicitly preserved principal variation from Live Position Analysis.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct PinnedEngineLine {
+    pub position_fen: String,
+    pub evaluation: String,
+    pub variation: String,
+    pub engine: String,
+    pub search_context: String,
+}
+
+/// Analysis-owned content. None of it is shared with the source or sibling derivations.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AnalysisRecordData {
+    pub source_snapshot: SourceSnapshot,
+    pub main_line: Vec<MoveEntry>,
+    pub sidelines: Vec<AnalysisSideline>,
+    pub annotations: Vec<AnalysisAnnotation>,
+    pub pinned_lines: Vec<PinnedEngineLine>,
 }
 
 /// Workspace write partition: Game Records, residue, and other library tables.
@@ -250,6 +296,144 @@ impl<'a> WorkspaceWriter<'a> {
             return Ok(None);
         };
         Ok(Some(row_to_record(row)?))
+    }
+
+    pub fn derive_analysis_record(
+        &self,
+        source_id: &str,
+        derived_id: &str,
+        created_at: &str,
+    ) -> Result<AnalysisRecordData, StoreError> {
+        let source = self
+            .get_game_record(source_id)?
+            .ok_or_else(|| StoreError::Message("source Game Record is unavailable".into()))?;
+        if source.kind != GameRecordKind::Played || source.payload.result.is_none() {
+            return Err(StoreError::Message(
+                "only a Completed Game can produce an Analysis Record".into(),
+            ));
+        }
+        let snapshot = SourceSnapshot {
+            source_id: source.id.clone(),
+            variant: source.payload.variant.clone(),
+            start_fen: source.payload.start_fen.clone(),
+            moves: source.payload.moves.clone(),
+            result: source.payload.result.clone(),
+            metadata: source.payload.participation.clone(),
+        };
+        let data = AnalysisRecordData {
+            source_snapshot: snapshot,
+            main_line: source.payload.moves.clone(),
+            sidelines: Vec::new(),
+            annotations: Vec::new(),
+            pinned_lines: Vec::new(),
+        };
+        let mut payload = source.payload.clone();
+        payload.result = None;
+        payload.clock = None;
+        let record = GameRecord {
+            id: derived_id.to_owned(),
+            kind: GameRecordKind::Analysis,
+            title: source
+                .title
+                .as_ref()
+                .map(|title| format!("Analysis of {title}"))
+                .or_else(|| Some("Analysis Record".into())),
+            result_score: None,
+            ply_count: payload.moves.len() as u32,
+            archived: false,
+            created_at: created_at.to_owned(),
+            updated_at: created_at.to_owned(),
+            payload,
+        };
+        let transaction = self.conn.unchecked_transaction()?;
+        {
+            let writer = WorkspaceWriter::new(&transaction);
+            writer.upsert_game_record(&record)?;
+        }
+        transaction.execute(
+            "INSERT INTO analysis_records (record_id, content) VALUES (?1, ?2)",
+            rusqlite::params![derived_id, serde_json::to_string(&data).map_err(json_error)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO record_edges (source_id, derived_id, edge_type) VALUES (?1, ?2, 'derived_from')",
+            rusqlite::params![source_id, derived_id],
+        )?;
+        transaction.commit()?;
+        Ok(data)
+    }
+
+    pub fn analysis_record(&self, id: &str) -> Result<Option<AnalysisRecordData>, StoreError> {
+        match self.conn.query_row(
+            "SELECT content FROM analysis_records WHERE record_id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(content) => serde_json::from_str(&content).map(Some).map_err(json_error),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn update_analysis(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut AnalysisRecordData),
+    ) -> Result<(), StoreError> {
+        let mut data = self
+            .analysis_record(id)?
+            .ok_or_else(|| StoreError::Message("Analysis Record is unavailable".into()))?;
+        change(&mut data);
+        self.conn.execute(
+            "UPDATE analysis_records SET content = ?2 WHERE record_id = ?1",
+            rusqlite::params![id, serde_json::to_string(&data).map_err(json_error)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_annotation(&self, id: &str, ply: u32, text: &str) -> Result<(), StoreError> {
+        self.update_analysis(id, |data| {
+            data.annotations.push(AnalysisAnnotation {
+                ply,
+                text: text.to_owned(),
+            })
+        })
+    }
+
+    pub fn add_sideline(&self, id: &str, sideline: AnalysisSideline) -> Result<(), StoreError> {
+        self.update_analysis(id, |data| data.sidelines.push(sideline))
+    }
+
+    pub fn pin_engine_line(
+        &self,
+        id: &str,
+        line: &PinnedEngineLine,
+    ) -> Result<(), StoreError> {
+        self.update_analysis(id, |data| data.pinned_lines.push(line.clone()))
+    }
+
+    pub fn derivations_from(&self, id: &str) -> Result<Vec<String>, StoreError> {
+        self.edge_ids(
+            "SELECT derived_id FROM record_edges WHERE source_id = ?1 AND edge_type = 'derived_from' ORDER BY created_at, derived_id",
+            id,
+        )
+    }
+
+    pub fn sources_of(&self, id: &str) -> Result<Vec<String>, StoreError> {
+        self.edge_ids(
+            "SELECT source_id FROM record_edges WHERE derived_id = ?1 AND edge_type = 'derived_from' ORDER BY created_at, source_id",
+            id,
+        )
+    }
+
+    fn edge_ids(&self, sql: &str, id: &str) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.conn.prepare(sql)?;
+        let rows = statement.query_map([id], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn purge_game_record(&self, id: &str) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub fn set_residue(&self, key: &str, value: &str) -> Result<(), StoreError> {
@@ -500,6 +684,10 @@ fn push_json_string(out: &mut String, value: &str) {
         }
     }
     out.push('"');
+}
+
+fn json_error(error: serde_json::Error) -> StoreError {
+    StoreError::Message(format!("unreadable Analysis Record content: {error}"))
 }
 
 fn required_string(input: &str, name: &str) -> Result<String, StoreError> {
@@ -839,6 +1027,14 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 .map_err(|_| format!("unreadable schema version: {version}"))?;
             if parsed == SCHEMA_VERSION {
                 Ok(())
+            } else if parsed == 1 && SCHEMA_VERSION == 2 {
+                create_analysis_schema(conn)?;
+                conn.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    [SCHEMA_VERSION.to_string()],
+                )
+                .map_err(|error| format!("could not record schema version: {error}"))?;
+                Ok(())
             } else if parsed > SCHEMA_VERSION {
                 Err(format!(
                     "Live Store schema version {parsed} is newer than this Omachess understands ({SCHEMA_VERSION})"
@@ -883,15 +1079,138 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
         );
         ",
     )
-    .map_err(|error| format!("could not create schema v1 tables: {error}"))
+    .map_err(|error| format!("could not create base schema tables: {error}"))?;
+    create_analysis_schema(conn)
+}
+
+fn create_analysis_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE analysis_records (
+            record_id TEXT PRIMARY KEY NOT NULL,
+            content TEXT NOT NULL
+        );
+        CREATE TABLE record_edges (
+            source_id TEXT NOT NULL,
+            derived_id TEXT NOT NULL,
+            edge_type TEXT NOT NULL CHECK (edge_type IN ('derived_from')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, derived_id, edge_type)
+        );
+        CREATE INDEX record_edges_by_derived
+            ON record_edges (derived_id, edge_type);
+        ",
+    )
+    .map_err(|error| format!("could not migrate Analysis Record tables: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn completed_record(id: &str, title: &str) -> GameRecord {
+        let mut payload = GameRecordPayload::empty_standard();
+        payload.moves.push(MoveEntry {
+            uci: "e2e4".into(),
+            san: "e4".into(),
+            number: 1,
+            side: "white".into(),
+        });
+        payload.result = Some(RecordResult {
+            status: "white".into(),
+            termination: "checkmate".into(),
+            score: "1-0".into(),
+        });
+        payload.participation = Some("white=Ada\nblack=Grace\nevent=Match".into());
+        GameRecord {
+            id: id.into(),
+            kind: GameRecordKind::Played,
+            title: Some(title.into()),
+            result_score: Some("1-0".into()),
+            ply_count: 1,
+            archived: false,
+            created_at: "2026-07-27T00:00:00Z".into(),
+            updated_at: "2026-07-27T00:00:00Z".into(),
+            payload,
+        }
+    }
+
     #[test]
-    fn opening_a_new_live_store_records_schema_version_one() {
+    fn derivations_have_independent_content_snapshots_and_bidirectional_provenance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        let source = completed_record("played-1", "Original");
+        store.workspace().upsert_game_record(&source).unwrap();
+
+        let first = store
+            .workspace()
+            .derive_analysis_record("played-1", "analysis-1", "2026-07-27T00:01:00Z")
+            .unwrap();
+        let second = store
+            .workspace()
+            .derive_analysis_record("played-1", "analysis-2", "2026-07-27T00:02:00Z")
+            .unwrap();
+        store
+            .workspace()
+            .add_annotation("analysis-1", 1, "Interesting")
+            .unwrap();
+
+        assert_eq!(first.source_snapshot.moves, source.payload.moves);
+        assert_eq!(first.source_snapshot.metadata.as_deref(), source.payload.participation.as_deref());
+        assert!(second.annotations.is_empty());
+        assert_eq!(
+            store.workspace().derivations_from("played-1").unwrap(),
+            vec!["analysis-1".to_string(), "analysis-2".to_string()]
+        );
+        assert_eq!(
+            store.workspace().sources_of("analysis-1").unwrap(),
+            vec!["played-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn source_snapshot_and_pinned_engine_line_survive_source_purge_and_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            store
+                .workspace()
+                .upsert_game_record(&completed_record("played-1", "Original"))
+                .unwrap();
+            store
+                .workspace()
+                .derive_analysis_record("played-1", "analysis-1", "2026-07-27T00:01:00Z")
+                .unwrap();
+            store
+                .workspace()
+                .pin_engine_line(
+                    "analysis-1",
+                    &PinnedEngineLine {
+                        position_fen: GameRecordPayload::STANDARD_START.into(),
+                        evaluation: "+0.22".into(),
+                        variation: "e2e4 e7e5".into(),
+                        engine: "Stockfish 18".into(),
+                        search_context: "depth 8 · movetime 250 ms".into(),
+                    },
+                )
+                .unwrap();
+            store.workspace().purge_game_record("played-1").unwrap();
+        }
+
+        let store = LiveStore::open(&path).unwrap();
+        let analysis = store
+            .workspace()
+            .analysis_record("analysis-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
+        assert_eq!(analysis.pinned_lines[0].engine, "Stockfish 18");
+        assert_eq!(analysis.pinned_lines[0].search_context, "depth 8 · movetime 250 ms");
+    }
+
+    #[test]
+    fn opening_a_new_live_store_records_current_schema_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
         let store = LiveStore::open(&path).expect("a new Live Store should open");

@@ -22,6 +22,8 @@ class EngineManager : public QAbstractListModel
     Q_PROPERTY(QString analysisEvaluation READ analysisEvaluation NOTIFY analysisChanged)
     Q_PROPERTY(QStringList analysisVariations READ analysisVariations NOTIFY analysisChanged)
     Q_PROPERTY(QString analysisMessage READ analysisMessage NOTIFY analysisChanged)
+    Q_PROPERTY(QString analysisEngine READ analysisEngine NOTIFY analysisChanged)
+    Q_PROPERTY(QString analysisSearchContext READ analysisSearchContext NOTIFY analysisChanged)
     Q_PROPERTY(bool livePlayActive READ livePlayActive NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayEngineSide READ livePlayEngineSide NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayStatus READ livePlayStatus NOTIFY livePlayChanged)
@@ -87,6 +89,8 @@ public:
     QString analysisEvaluation() const { return m_analysisEvaluation; }
     QStringList analysisVariations() const { return m_analysisVariations; }
     QString analysisMessage() const { return m_analysisMessage; }
+    QString analysisEngine() const;
+    QString analysisSearchContext() const;
 
 signals:
     void analysisChanged();
@@ -169,6 +173,7 @@ private:
     QString m_analysisEvaluation;
     QStringList m_analysisVariations;
     QString m_analysisMessage;
+    int m_analysisDepth = 0;
     QMap<int, QString> m_searchVariations;
     bool m_livePlayActive = false;
     QString m_livePlayEngineSide;

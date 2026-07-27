@@ -451,6 +451,15 @@ ApplicationWindow {
             }
 
             Button {
+                objectName: "deriveAnalysisButton"
+                visible: WorkspaceSession.activity === "played_game"
+                         && WorkspaceSession.activeRecordId.length > 0
+                         && WorkspaceSession.gameOver
+                text: qsTr("Derive analysis")
+                onClicked: WorkspaceSession.deriveAnalysisRecord()
+            }
+
+            Button {
                 objectName: "autosaveMode"
                 text: qsTr("Autosave Mode")
                 checkable: true
@@ -1438,6 +1447,20 @@ ApplicationWindow {
                                 font.family: "monospace"
                             }
                         }
+                        Button {
+                            objectName: "pinEngineLineButton"
+                            Layout.fillWidth: true
+                            visible: WorkspaceSession.activity === "analysis_record"
+                                     && EngineManager.analysisReady
+                                     && EngineManager.analysisVariations.length > 0
+                            text: qsTr("Pin first line")
+                            onClicked: WorkspaceSession.pinEngineLine(
+                                WorkspaceSession.displayedFen,
+                                EngineManager.analysisEvaluation,
+                                EngineManager.analysisVariations[0].replace(/^[0-9]+\. /, ""),
+                                EngineManager.analysisEngine,
+                                EngineManager.analysisSearchContext)
+                        }
                     }
 
                     Label {
@@ -1645,12 +1668,155 @@ ApplicationWindow {
                         font.bold: true
                         color: Theme.muted
                     }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: WorkspaceSession.activity === "analysis_record"
+                                 || WorkspaceSession.recordDerivations.length > 0
+
+                        Label {
+                            visible: WorkspaceSession.activity === "analysis_record"
+                            text: qsTr("Source Snapshot")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "sourceSnapshotMoves"
+                            visible: WorkspaceSession.activity === "analysis_record"
+                            text: qsTr("%1 moves").arg(
+                                WorkspaceSession.sourceSnapshot.moveCount || 0)
+                        }
+                        Label { text: qsTr("Record Graph"); font.bold: true }
+                        Repeater {
+                            model: WorkspaceSession.recordSources
+                            Button {
+                                required property string modelData
+                                objectName: "recordGraphSource:" + modelData
+                                Layout.fillWidth: true
+                                text: qsTr("Source · %1").arg(modelData)
+                                onClicked: workspace.requestOpenRecord(modelData)
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.recordDerivations
+                            Button {
+                                required property string modelData
+                                objectName: "recordGraphDerivation:" + modelData
+                                Layout.fillWidth: true
+                                text: qsTr("Derivation · %1").arg(modelData)
+                                onClicked: workspace.requestOpenRecord(modelData)
+                            }
+                        }
+                        Label {
+                            objectName: "analysisStructure"
+                            visible: WorkspaceSession.activity === "analysis_record"
+                            text: qsTr("Main line: %1 ply · %2 sidelines · %3 annotations")
+                                  .arg(WorkspaceSession.analysisMainLinePly)
+                                  .arg(WorkspaceSession.analysisSidelineCount)
+                                  .arg(WorkspaceSession.analysisAnnotationCount)
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                        TextField {
+                            id: annotationInput
+                            objectName: "analysisAnnotationInput"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Annotation at displayed position")
+                            visible: WorkspaceSession.activity === "analysis_record"
+                        }
+                        Button {
+                            objectName: "addAnalysisAnnotationButton"
+                            text: qsTr("Add annotation")
+                            enabled: annotationInput.text.trim().length > 0
+                            visible: WorkspaceSession.activity === "analysis_record"
+                            onClicked: {
+                                WorkspaceSession.addAnalysisAnnotation(
+                                    WorkspaceSession.cursor, annotationInput.text)
+                                annotationInput.clear()
+                            }
+                        }
+                        TextField {
+                            id: sidelineInput
+                            objectName: "analysisSidelineInput"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Sideline in UCI moves")
+                            visible: WorkspaceSession.activity === "analysis_record"
+                        }
+                        Button {
+                            objectName: "addAnalysisSidelineButton"
+                            text: qsTr("Add sideline")
+                            enabled: sidelineInput.text.trim().length > 0
+                            visible: WorkspaceSession.activity === "analysis_record"
+                            onClicked: {
+                                WorkspaceSession.addAnalysisSideline(
+                                    WorkspaceSession.cursor, sidelineInput.text)
+                                sidelineInput.clear()
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.analysisAnnotations
+                            Label {
+                                required property int index
+                                required property var modelData
+                                objectName: "analysisAnnotation:" + (index + 1)
+                                Layout.fillWidth: true
+                                text: qsTr("After ply %1 · %2")
+                                      .arg(modelData.ply).arg(modelData.text)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.analysisSidelines
+                            Label {
+                                required property int index
+                                required property var modelData
+                                objectName: "analysisSideline:" + (index + 1)
+                                Layout.fillWidth: true
+                                text: {
+                                    const san = []
+                                    for (const move of modelData.moves)
+                                        san.push(move.san)
+                                    return qsTr("After ply %1 · %2")
+                                           .arg(modelData.afterPly).arg(san.join(" "))
+                                }
+                                wrapMode: Text.WordWrap
+                                font.family: "monospace"
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.pinnedEngineLines
+                            ColumnLayout {
+                                required property int index
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    objectName: "pinnedEngineEvaluation:" + (index + 1)
+                                    text: modelData.evaluation
+                                    font.bold: true
+                                }
+                                Label {
+                                    objectName: "pinnedEngineVariation:" + (index + 1)
+                                    Layout.fillWidth: true
+                                    text: modelData.variation
+                                    wrapMode: Text.WordWrap
+                                    font.family: "monospace"
+                                }
+                                Label {
+                                    objectName: "pinnedEngineName:" + (index + 1)
+                                    text: modelData.engine
+                                }
+                                Label {
+                                    objectName: "pinnedEngineSearch:" + (index + 1)
+                                    text: modelData.searchContext
+                                }
+                            }
+                        }
+                    }
                     TextField {
                         id: whitePlayerField
                         objectName: "metadata:white"
                         Layout.fillWidth: true
                         placeholderText: qsTr("White player")
                         text: WorkspaceSession.whitePlayer
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: blackPlayerField
@@ -1658,6 +1824,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Black player")
                         text: WorkspaceSession.blackPlayer
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: eventField
@@ -1665,6 +1832,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Event")
                         text: WorkspaceSession.gameEvent
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: dateField
@@ -1672,6 +1840,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Date")
                         text: WorkspaceSession.gameDate
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: titleField
@@ -1679,6 +1848,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Title")
                         text: WorkspaceSession.gameTitle
+                        visible: !WorkspaceSession.workshopActive
                     }
                     TextField {
                         id: tagsField
@@ -1686,11 +1856,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         placeholderText: qsTr("Tags")
                         text: WorkspaceSession.gameTags
+                        visible: !WorkspaceSession.workshopActive
                     }
                     Button {
                         objectName: "saveMetadataButton"
                         Layout.fillWidth: true
                         enabled: WorkspaceSession.activeRecordId.length > 0
+                        visible: !WorkspaceSession.workshopActive
                         text: qsTr("Save metadata")
                         onClicked: WorkspaceSession.updateMetadata(
                             whitePlayerField.text, blackPlayerField.text,
@@ -1707,6 +1879,7 @@ ApplicationWindow {
                         clip: true
                         model: WorkspaceSession.moveList
                         visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
                         // Follow play, and follow the player while they navigate.
                         currentIndex: WorkspaceSession.cursor - 1
                         onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
@@ -1730,6 +1903,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 4
                         visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
 
                         Button {
                             objectName: "startButton"
@@ -1764,7 +1938,9 @@ ApplicationWindow {
                     Label {
                         objectName: "reviewLabel"
                         Layout.fillWidth: true
-                        visible: !WorkspaceSession.positionSetup && WorkspaceSession.reviewing
+                        visible: !WorkspaceSession.positionSetup
+                                 && !WorkspaceSession.workshopActive
+                                 && WorkspaceSession.reviewing
                         wrapMode: Text.WordWrap
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
