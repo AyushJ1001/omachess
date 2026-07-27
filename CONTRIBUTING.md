@@ -103,11 +103,8 @@ app/qml/         the workspace: how a game looks
   pieces/        Piece Set artwork
 packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
-<<<<<<< HEAD
-docs/backup.md   which XDG paths a player should copy
-=======
 tests/packaging/ the same, against a staged installation
->>>>>>> origin/main
+docs/backup.md   which XDG paths a player should copy
 ```
 
 ## The Rules Authority
