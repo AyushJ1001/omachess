@@ -419,6 +419,19 @@ class Workspace:
     def resize(self, width: int, height: int) -> None:
         self._request({"command": "resize", "width": width, "height": height})
 
+    def close_window(self) -> None:
+        """Ask the window manager to close the workspace."""
+        self._request({"command": "close_window"})
+
+    def wait_until_closed(self, *, timeout: float = 10.0) -> None:
+        """Wait until an accepted workspace-close request exits the app."""
+        if self._process is None:
+            raise JourneyError("the workspace is not running")
+        try:
+            self._process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise JourneyError("the workspace did not close") from error
+
     def set_board_theme(self, theme_id: str) -> None:
         """Pin or unpin the Board Theme the way a player does from the chrome."""
         self.click(f"boardTheme:{theme_id}")

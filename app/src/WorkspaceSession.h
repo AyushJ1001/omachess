@@ -66,6 +66,9 @@ class WorkspaceSession : public QObject
     // Open record tabs and the active Game Record id.
     Q_PROPERTY(QVariantList openTabs READ openTabs NOTIFY tabsChanged)
     Q_PROPERTY(QString activeRecordId READ activeRecordId NOTIFY tabsChanged)
+    Q_PROPERTY(QString saveMode READ saveMode NOTIFY boardChanged)
+    Q_PROPERTY(bool dirty READ dirty NOTIFY boardChanged)
+    Q_PROPERTY(bool needsUnsavedDecision READ needsUnsavedDecision NOTIFY boardChanged)
 
     // Shown when a prior Game Record can be restored after restart.
     Q_PROPERTY(bool restoreAvailable READ restoreAvailable NOTIFY restoreChanged)
@@ -112,6 +115,12 @@ public:
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }
     QString activeRecordId() const { return m_activeRecordId; }
+    QString saveMode() const { return field(QStringLiteral("saveMode")); }
+    bool dirty() const { return m_state.value(QStringLiteral("dirty")).toBool(); }
+    bool needsUnsavedDecision() const
+    {
+        return m_state.value(QStringLiteral("needsUnsavedDecision")).toBool();
+    }
 
     bool restoreAvailable() const { return m_restoreAvailable; }
     QString restoreLabel() const { return m_restoreLabel; }
@@ -148,6 +157,9 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void setSaveMode(const QString &mode);
+    Q_INVOKABLE void saveRecord();
+    Q_INVOKABLE void discardChanges();
     Q_INVOKABLE void configureClock(int milliseconds);
     Q_INVOKABLE void tickClock();
     Q_INVOKABLE void updateMetadata(const QString &white, const QString &black,

@@ -42,6 +42,8 @@ class CommandPaletteJourney(unittest.TestCase):
         expected = {
             ("Command palette", "Ctrl+K"),
             ("New game", "Ctrl+N"),
+            ("Save Game Record", "Ctrl+S"),
+            ("Close workspace", "Ctrl+Q"),
             ("Flip board", "F"),
             ("First position", "Home"),
             ("Previous position", "Left"),

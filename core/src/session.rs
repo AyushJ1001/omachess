@@ -13,8 +13,8 @@
 //! residue so a later session can offer restore.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
@@ -40,6 +40,23 @@ pub struct Session {
     clock: Option<GameClock>,
     metadata: GameMetadata,
     setup: Option<PositionSetup>,
+    save_mode: SaveMode,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveMode {
+    Autosave,
+    Manual,
+}
+
+impl SaveMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Autosave => "autosave",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -117,6 +134,8 @@ impl Session {
             clock: None,
             metadata: GameMetadata::default(),
             setup: None,
+            save_mode: SaveMode::Autosave,
+            dirty: false,
         }
     }
 
@@ -131,6 +150,10 @@ impl Session {
     }
 
     fn open_store(store: LiveStore) -> Result<Self, SessionOpenError> {
+        let save_mode = match store.workspace().residue("save_mode") {
+            Ok(Some(mode)) if mode == "manual" => SaveMode::Manual,
+            _ => SaveMode::Autosave,
+        };
         let open_tabs = match store.workspace().residue("open_tab_ids") {
             Ok(Some(encoded)) => decode_tab_ids(&encoded),
             _ => Vec::new(),
@@ -171,6 +194,8 @@ impl Session {
             clock: None,
             metadata: GameMetadata::default(),
             setup: None,
+            save_mode,
+            dirty: false,
         };
         // Remembered open tabs restore their active board on open. Clocks and
         // engines stay idle — that remains a later ticket's job.
@@ -205,6 +230,9 @@ impl Session {
             "place_setup_piece" => self.place_setup_piece(command)?,
             "relocate_setup_piece" => self.relocate_setup_piece(command)?,
             "start_setup_game" => self.start_setup_game()?,
+            "set_save_mode" => self.set_save_mode(command)?,
+            "save_record" => self.save_record()?,
+            "discard_changes" => self.discard_changes()?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -241,6 +269,9 @@ impl Session {
             return Err(CommandError::MalformedCommand);
         };
         let promotion = json::read_string_field(command, "promotion");
+        if self.save_mode == SaveMode::Manual && self.record_id.is_none() {
+            self.persist_current_record()?;
+        }
         self.game
             .play(&from, &to, promotion.as_deref())
             .map_err(|rejection| match rejection {
@@ -252,8 +283,63 @@ impl Session {
             clock.history.push((clock.white_ms, clock.black_ms));
             clock.last_tick = Some(Instant::now());
         }
-        self.persist_current_record()?;
+        self.record_changed()?;
         Ok(())
+    }
+
+    fn set_save_mode(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(mode) = json::read_string_field(command, "mode") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let next = match mode.as_str() {
+            "autosave" => SaveMode::Autosave,
+            "manual" => SaveMode::Manual,
+            _ => return Err(CommandError::MalformedCommand),
+        };
+        if next == SaveMode::Autosave && self.dirty {
+            self.persist_current_record()?;
+            self.dirty = false;
+        }
+        self.save_mode = next;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .workspace()
+                .set_residue("save_mode", self.save_mode.name())
+                .map_err(|_| CommandError::Store)?;
+        }
+        Ok(())
+    }
+
+    fn save_record(&mut self) -> Result<(), CommandError> {
+        if self.record_id.is_some() {
+            self.persist_current_record()?;
+        }
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn discard_changes(&mut self) -> Result<(), CommandError> {
+        if self.dirty {
+            let Some(id) = self.record_id.clone() else {
+                return Err(CommandError::MalformedCommand);
+            };
+            self.load_record(&id)?;
+        }
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn record_changed(&mut self) -> Result<(), CommandError> {
+        if self.save_mode == SaveMode::Manual {
+            self.dirty = true;
+            Ok(())
+        } else {
+            self.persist_current_record()
+        }
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.save_mode == SaveMode::Manual && self.dirty
     }
 
     fn configure_clock(&mut self, command: &str) -> Result<(), CommandError> {
@@ -306,11 +392,15 @@ impl Session {
         };
         *remaining = remaining.saturating_sub(elapsed);
         if *remaining == 0 {
-            let loser = if white_to_move { Side::White } else { Side::Black };
+            let loser = if white_to_move {
+                Side::White
+            } else {
+                Side::Black
+            };
             self.game.complete_on_time(loser);
             clock.history.push((clock.white_ms, clock.black_ms));
             clock.last_tick = None;
-            self.persist_current_record()?;
+            self.record_changed()?;
         }
         Ok(())
     }
@@ -331,7 +421,12 @@ impl Session {
                 *destination = value;
             }
         }
-        self.persist_metadata(&id)
+        if self.save_mode == SaveMode::Manual {
+            self.dirty = true;
+            Ok(())
+        } else {
+            self.persist_metadata(&id)
+        }
     }
 
     fn navigate(&mut self, command: &str) -> Result<(), CommandError> {
@@ -375,6 +470,9 @@ impl Session {
     }
 
     fn new_game(&mut self) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
         // The previous Game Record stays in the Live Store; this only clears
         // the board so the next move starts a new record.
         self.game = Game::standard();
@@ -384,6 +482,7 @@ impl Session {
         self.clock = None;
         self.metadata = GameMetadata::default();
         self.setup = None;
+        self.dirty = false;
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
@@ -401,7 +500,10 @@ impl Session {
         self.setup = Some(PositionSetup {
             position,
             fen: fen.clone(),
-            fen_suffix: fen.split_once(' ').map_or("w - - 0 1", |(_, suffix)| suffix).into(),
+            fen_suffix: fen
+                .split_once(' ')
+                .map_or("w - - 0 1", |(_, suffix)| suffix)
+                .into(),
             rule_valid: true,
             error: String::new(),
         });
@@ -424,8 +526,7 @@ impl Session {
             return Ok(());
         }
         if fields[2] != "-"
-            && (fields[2].chars().any(|c| !"KQkq".contains(c))
-                || fields[2].chars().count() > 4)
+            && (fields[2].chars().any(|c| !"KQkq".contains(c)) || fields[2].chars().count() > 4)
         {
             setup.error = "FEN castling rights must use K, Q, k, q, or “-”.".into();
             return Ok(());
@@ -435,11 +536,16 @@ impl Session {
                 && matches!(fields[3].as_bytes()[0], b'a'..=b'h')
                 && matches!(fields[3].as_bytes()[1], b'3' | b'6'))
         {
-            setup.error = "FEN en-passant target must be a third- or sixth-rank square, or “-”.".into();
+            setup.error =
+                "FEN en-passant target must be a third- or sixth-rank square, or “-”.".into();
             return Ok(());
         }
         if fields[4].parse::<u32>().is_err()
-            || fields[5].parse::<u32>().ok().filter(|number| *number > 0).is_none()
+            || fields[5]
+                .parse::<u32>()
+                .ok()
+                .filter(|number| *number > 0)
+                .is_none()
         {
             setup.error =
                 "FEN move counters must be a non-negative halfmove and positive fullmove number."
@@ -512,6 +618,9 @@ impl Session {
     }
 
     fn open_record(&mut self, command: &str) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
         let Some(id) = json::read_string_field(command, "id") else {
             return Err(CommandError::MalformedCommand);
         };
@@ -582,12 +691,23 @@ impl Session {
                 },
             })
             .collect();
-        self.game = Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
-        if stored_result.as_ref().is_some_and(|result| result.termination == "time_forfeit") {
-            let loser = if stored_clock.as_ref().is_some_and(|clock| clock.white_ms == 0) {
+        self.game =
+            Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        if stored_result
+            .as_ref()
+            .is_some_and(|result| result.termination == "time_forfeit")
+        {
+            let loser = if stored_clock
+                .as_ref()
+                .is_some_and(|clock| clock.white_ms == 0)
+            {
                 Side::White
-            } else if stored_clock.as_ref().is_some_and(|clock| clock.black_ms == 0)
-                || stored_result.as_ref().is_some_and(|result| result.score == "1-0")
+            } else if stored_clock
+                .as_ref()
+                .is_some_and(|clock| clock.black_ms == 0)
+                || stored_result
+                    .as_ref()
+                    .is_some_and(|result| result.score == "1-0")
             {
                 Side::Black
             } else {
@@ -602,6 +722,7 @@ impl Session {
         }
         self.setup = None;
         self.record_id = Some(record.id);
+        self.dirty = false;
         Ok(())
     }
 
@@ -616,10 +737,7 @@ impl Session {
             return Ok(());
         };
         let now = timestamp_now();
-        let id = self
-            .record_id
-            .clone()
-            .unwrap_or_else(new_record_id);
+        let id = self.record_id.clone().unwrap_or_else(new_record_id);
         let outcome = self.game.outcome();
         let result = if outcome.is_over() {
             Some(RecordResult {
@@ -693,7 +811,10 @@ impl Session {
         record.title = (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone());
         record.payload.participation = Some(encode_metadata(&self.metadata));
         record.updated_at = timestamp_now();
-        store.workspace().upsert_game_record(&record).map_err(|_| CommandError::Store)?;
+        store
+            .workspace()
+            .upsert_game_record(&record)
+            .map_err(|_| CommandError::Store)?;
         self.emit_library_changed();
         self.emit_tabs_changed();
         Ok(())
@@ -880,6 +1001,20 @@ impl Session {
         } else {
             "false"
         });
+        out.push_str(",\"saveMode\":");
+        json::write_string(&mut out, self.save_mode.name());
+        out.push_str(",\"dirty\":");
+        out.push_str(if self.has_unsaved_changes() {
+            "true"
+        } else {
+            "false"
+        });
+        out.push_str(",\"needsUnsavedDecision\":");
+        out.push_str(if self.has_unsaved_changes() {
+            "true"
+        } else {
+            "false"
+        });
 
         out.push_str(",\"clock\":");
         match &self.clock {
@@ -984,7 +1119,10 @@ fn encode_clock(clock: &GameClock) -> String {
         .map(|(white, black)| format!("{white}:{black}"))
         .collect::<Vec<_>>()
         .join(",");
-    format!("{};{};{};{}", clock.initial_ms, clock.white_ms, clock.black_ms, history)
+    format!(
+        "{};{};{};{}",
+        clock.initial_ms, clock.white_ms, clock.black_ms, history
+    )
 }
 
 fn decode_clock(encoded: &str) -> Option<GameClock> {
@@ -1154,7 +1292,8 @@ impl Default for Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.apply_elapsed_clock();
-        if self.record_id.is_some() && !self.game.outcome().is_over() {
+        if self.record_id.is_some() && !self.game.outcome().is_over() && !self.has_unsaved_changes()
+        {
             let _ = self.persist_current_record();
         }
         let _ = self.persist_residue();
@@ -1482,6 +1621,58 @@ mod tests {
         assert!(event.contains(r#""san":"Nf3"#));
         assert!(event.contains(r#""cursor":3"#));
         assert!(event.contains(r#""piece":"white_knight""#) && event.contains(r#""name":"f3""#));
+    }
+
+    #[test]
+    fn manual_save_mode_keeps_changes_dirty_until_saved_and_discard_restores_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+
+        session
+            .submit(r#"{"type":"set_save_mode","mode":"manual"}"#)
+            .unwrap();
+        play(&mut session, "e2", "e4");
+        let dirty = describe(&mut session);
+        assert!(dirty.contains(r#""saveMode":"manual""#));
+        assert!(dirty.contains(r#""dirty":true"#));
+        assert_eq!(
+            session.submit(r#"{"type":"new_game"}"#),
+            Err(CommandError::RejectedMove)
+        );
+        assert_eq!(
+            session.submit(r#"{"type":"open_record","id":"another"}"#),
+            Err(CommandError::RejectedMove)
+        );
+
+        session.submit(r#"{"type":"discard_changes"}"#).unwrap();
+        let discarded = describe(&mut session);
+        assert!(discarded.contains(r#""moveList":[]"#));
+        assert!(discarded.contains(r#""dirty":false"#));
+
+        play(&mut session, "d2", "d4");
+        session.submit(r#"{"type":"save_record"}"#).unwrap();
+        let saved = describe(&mut session);
+        assert!(saved.contains(r#""san":"d4"#));
+        assert!(saved.contains(r#""dirty":false"#));
+    }
+
+    #[test]
+    fn only_a_dirty_game_record_in_manual_save_mode_requires_an_unsaved_close_decision() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+
+        play(&mut session, "e2", "e4");
+        assert!(!describe(&mut session).contains(r#""dirty":true"#));
+
+        session
+            .submit(r#"{"type":"set_save_mode","mode":"manual"}"#)
+            .unwrap();
+        play(&mut session, "e7", "e5");
+        let board = describe(&mut session);
+        assert!(board.contains(r#""dirty":true"#));
+        assert!(board.contains(r#""needsUnsavedDecision":true"#));
     }
 
     #[test]
