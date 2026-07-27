@@ -39,11 +39,25 @@ ApplicationWindow {
     title: qsTr("Omachess")
     color: Theme.background
     property var selectedLibraryIds: []
+    property bool showArchivedRecords: false
     property bool computerAnalysisRunning: false
     property string computerAnalysisRunState: ""
     property int computerAnalysisTargetPly: 0
     property int computerAnalysisTotal: 0
     property var computerAnalysisResults: []
+
+    function visibleLibraryRecords() {
+        return WorkspaceSession.libraryRecords.filter(function(record) {
+            return showArchivedRecords || !record.archived
+        })
+    }
+
+    function askPurge(kind, id, label) {
+        permanentPurgeDialog.kind = kind
+        permanentPurgeDialog.targetId = id
+        permanentPurgeDialog.targetLabel = label
+        permanentPurgeDialog.open()
+    }
 
     function requestComputerPosition() {
         EngineManager.clearAnalysis()
@@ -718,18 +732,33 @@ ApplicationWindow {
                     anchors.fill: parent
                     spacing: 0
 
-                    Label {
-                        objectName: "libraryHeading"
+                    RowLayout {
                         Layout.fillWidth: true
+                        Layout.topMargin: 8
                         Layout.leftMargin: 12
-                        Layout.rightMargin: 12
-                        Layout.topMargin: 10
-                        Layout.bottomMargin: 8
-                        text: qsTr("Personal Library")
-                        font.bold: true
-                        font.pixelSize: 11
-                        font.capitalization: Font.AllUppercase
-                        color: Theme.muted
+                        Layout.rightMargin: 8
+                        Layout.bottomMargin: 6
+                        Label {
+                            objectName: "libraryHeading"
+                            Layout.fillWidth: true
+                            text: qsTr("Personal Library")
+                            font.bold: true
+                            font.pixelSize: 11
+                            font.capitalization: Font.AllUppercase
+                            color: Theme.muted
+                        }
+                        Button {
+                            objectName: "toggleArchivedView"
+                            text: showArchivedRecords ? qsTr("All") : qsTr("Archived")
+                            ToolTip.text: showArchivedRecords
+                                         ? qsTr("Show default records")
+                                         : qsTr("Show archived records")
+                            onClicked: {
+                                showArchivedRecords = !showArchivedRecords
+                                WorkspaceSession.setLibraryView(
+                                    showArchivedRecords ? "archived" : "default")
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -811,12 +840,21 @@ ApplicationWindow {
                             required property int index
                             width: studiesList.width
                             spacing: 2
-                            Label {
-                                objectName: "studyTitle:" + modelData.id
+                            RowLayout {
                                 Layout.fillWidth: true
-                                Layout.leftMargin: 10
-                                text: modelData.name
-                                font.bold: true
+                                Label {
+                                    objectName: "studyTitle:" + modelData.id
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 10
+                                    text: modelData.name
+                                    font.bold: true
+                                }
+                                Button {
+                                    objectName: "purgeStudy:" + modelData.id
+                                    text: qsTr("Purge")
+                                    onClicked: workspace.askPurge(
+                                                   "study", modelData.id, modelData.name)
+                                }
                             }
                             Repeater {
                                 model: modelData.recordIds
@@ -866,7 +904,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
-                        model: WorkspaceSession.libraryRecords
+                        model: workspace.visibleLibraryRecords()
 
                         delegate: ItemDelegate {
                             required property var modelData
@@ -913,8 +951,12 @@ ApplicationWindow {
                             Row {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                width: 102
+                                spacing: 0
                                 CheckBox {
                                     objectName: "selectRecord:" + modelData.id
+                                    width: 18
+                                    implicitWidth: 18
                                     checked: workspace.selectedLibraryIds.indexOf(modelData.id) >= 0
                                     onClicked: {
                                         let ids = workspace.selectedLibraryIds.slice()
@@ -928,8 +970,37 @@ ApplicationWindow {
                                 }
                                 Button {
                                     objectName: "exportRecord:" + modelData.id
-                                    text: qsTr("Export")
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: qsTr("↗")
+                                    ToolTip.text: qsTr("Export")
+                                    ToolTip.visible: hovered
                                     onClicked: WorkspaceSession.exportPgn([modelData.id])
+                                }
+                                Button {
+                                    objectName: (modelData.archived ? "unarchiveRecord:" : "archiveRecord:")
+                                                 + modelData.id
+                                    visible: modelData.kind !== "variant"
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: modelData.archived ? qsTr("R") : qsTr("A")
+                                    ToolTip.text: modelData.archived
+                                                 ? qsTr("Restore") : qsTr("Archive")
+                                    ToolTip.visible: hovered
+                                    onClicked: modelData.archived
+                                              ? WorkspaceSession.unarchiveRecord(modelData.id)
+                                              : WorkspaceSession.archiveRecord(modelData.id)
+                                }
+                                Button {
+                                    objectName: "purgeVariantDefinitionRow:" + modelData.id
+                                    visible: modelData.kind === "variant"
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: qsTr("P")
+                                    ToolTip.text: qsTr("Permanent purge")
+                                    ToolTip.visible: hovered
+                                    onClicked: workspace.askPurge(
+                                                   "variant", modelData.id, modelData.title)
                                 }
                             }
 
@@ -1914,6 +1985,26 @@ ApplicationWindow {
                         font.bold: true
                         color: Theme.muted
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !WorkspaceSession.workshopActive
+                                 && WorkspaceSession.activeRecordId.length > 0
+                        Button {
+                            objectName: "archiveActiveRecordButton"
+                            Layout.fillWidth: true
+                            text: qsTr("Archive active")
+                            onClicked: WorkspaceSession.archiveRecord(
+                                           WorkspaceSession.activeRecordId)
+                        }
+                        Button {
+                            objectName: "purgeRecord:" + WorkspaceSession.activeRecordId
+                            Layout.fillWidth: true
+                            text: qsTr("Purge active")
+                            onClicked: workspace.askPurge(
+                                           "record", WorkspaceSession.activeRecordId,
+                                           WorkspaceSession.gameTitle)
+                        }
+                    }
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: WorkspaceSession.activity === "analysis_record"
@@ -2243,6 +2334,61 @@ ApplicationWindow {
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
                     }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: permanentPurgeDialog
+        objectName: "permanentPurgeDialog"
+        anchors.centerIn: parent
+        width: Math.min(520, workspace.width - 40)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Permanent purge")
+
+        property string kind: "record"
+        property string targetId: ""
+        property string targetLabel: ""
+
+        function confirmPurge() {
+            if (kind === "record")
+                WorkspaceSession.purgeRecord(targetId)
+            else if (kind === "study")
+                WorkspaceSession.purgeStudy(targetId)
+            else
+                WorkspaceSession.purgeVariantDefinition()
+            close()
+        }
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "permanentPurgeTarget"
+                Layout.fillWidth: true
+                text: qsTr("Permanently purge “%1”? ").arg(permanentPurgeDialog.targetLabel)
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                objectName: "permanentPurgeWarning"
+                Layout.fillWidth: true
+                text: qsTr("This is irreversible. Omachess offers no in-app undelete.")
+                color: Theme.danger
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    objectName: "cancelPermanentPurge"
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: permanentPurgeDialog.close()
+                }
+                Button {
+                    objectName: "confirmPermanentPurge"
+                    Layout.fillWidth: true
+                    text: qsTr("Permanently purge")
+                    onClicked: permanentPurgeDialog.confirmPurge()
                 }
             }
         }

@@ -499,8 +499,57 @@ impl<'a> WorkspaceWriter<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn archive_game_record(&self, id: &str) -> Result<(), StoreError> {
+        self.set_game_record_archived(id, true)
+    }
+
+    pub fn unarchive_game_record(&self, id: &str) -> Result<(), StoreError> {
+        self.set_game_record_archived(id, false)
+    }
+
+    fn set_game_record_archived(&self, id: &str, archived: bool) -> Result<(), StoreError> {
+        let changed = self.conn.execute(
+            "UPDATE game_records SET archived = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            rusqlite::params![id, if archived { 1 } else { 0 }],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Message("Game Record is unavailable".into()));
+        }
+        Ok(())
+    }
+
+    /// Permanently removes a Game Record and its owned analysis content.
+    ///
+    /// Derived Analysis Records carry their own Source Snapshot, so deleting
+    /// a source record does not delete or rewrite any derived record. The
+    /// provenance edge to the unavailable source is removed because the
+    /// source node no longer exists; the snapshot's source_id remains the
+    /// durable provenance pointer.
     pub fn purge_game_record(&self, id: &str) -> Result<(), StoreError> {
-        self.conn.execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM game_records WHERE id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(StoreError::Message("Game Record is unavailable".into()));
+        }
+        transaction.execute("DELETE FROM analysis_records WHERE record_id = ?1", [id])?;
+        transaction.execute(
+            "DELETE FROM record_edges WHERE source_id = ?1 OR derived_id = ?1",
+            [id],
+        )?;
+        transaction.execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn purge_study(&self, id: &str) -> Result<(), StoreError> {
+        let changed = self.conn.execute("DELETE FROM studies WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StoreError::Message("Study is unavailable".into()));
+        }
         Ok(())
     }
 
@@ -1458,6 +1507,71 @@ mod tests {
         assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
         assert_eq!(analysis.pinned_lines[0].engine, "Stockfish 18");
         assert_eq!(analysis.pinned_lines[0].search_context, "depth 8 · movetime 250 ms");
+    }
+
+    #[test]
+    fn archive_status_survives_restart_and_record_updates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            let mut record = completed_record("played-1", "Original");
+            store.workspace().upsert_game_record(&record).unwrap();
+            store.workspace().archive_game_record("played-1").unwrap();
+            assert!(store.workspace().get_game_record("played-1").unwrap().unwrap().archived);
+
+            record.title = Some("Renamed".into());
+            record.archived = true;
+            store.workspace().upsert_game_record(&record).unwrap();
+        }
+
+        let store = LiveStore::open(&path).unwrap();
+        let record = store.workspace().get_game_record("played-1").unwrap().unwrap();
+        assert!(record.archived);
+        assert_eq!(record.title.as_deref(), Some("Renamed"));
+        store.workspace().unarchive_game_record("played-1").unwrap();
+        assert!(!store.workspace().get_game_record("played-1").unwrap().unwrap().archived);
+    }
+
+    #[test]
+    fn purging_a_study_and_record_removes_membership_but_keeps_source_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        store.workspace().upsert_game_record(&completed_record("played-1", "Original")).unwrap();
+        store.workspace().derive_analysis_record("played-1", "analysis-1", "now").unwrap();
+        store.workspace().create_study("study-1", "Review", "now").unwrap();
+        store.workspace().add_study_record("study-1", "played-1").unwrap();
+        store.workspace().add_study_record("study-1", "analysis-1").unwrap();
+
+        store.workspace().purge_study("study-1").unwrap();
+        assert!(store.workspace().study("study-1").unwrap().is_none());
+        assert!(store.workspace().get_game_record("played-1").unwrap().is_some());
+
+        store.workspace().purge_game_record("played-1").unwrap();
+        assert!(store.workspace().get_game_record("played-1").unwrap().is_none());
+        let analysis = store.workspace().analysis_record("analysis-1").unwrap().unwrap();
+        assert_eq!(analysis.source_snapshot.source_id, "played-1");
+        assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
+        assert!(store.workspace().sources_of("analysis-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn variant_definition_purge_is_allowed_until_a_snapshot_binds_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        store.workspace().set_residue("variant_definition_draft", "draft").unwrap();
+        store.workspace().purge_variant_definition().unwrap();
+        assert!(store.workspace().residue("variant_definition_draft").unwrap().is_none());
+
+        let mut bound = completed_record("played-1", "Bound");
+        bound.payload.variant = "omachess:v1:immutable-snapshot".into();
+        store.workspace().upsert_game_record(&bound).unwrap();
+        store.workspace().set_residue("variant_definition_draft", "draft").unwrap();
+        assert!(store.workspace().purge_variant_definition().is_err());
+        assert_eq!(
+            store.workspace().residue("variant_definition_draft").unwrap().as_deref(),
+            Some("draft")
+        );
     }
 
     #[test]

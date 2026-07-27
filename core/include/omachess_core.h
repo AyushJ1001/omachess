@@ -25,10 +25,27 @@
  *   {"type":"close_tab","id":"..."}
  *                              close a tab without removing the Game Record
  *                              from the Personal Library
+ *   {"type":"archive_record","id":"..."}
+ *                              reversibly hide a Game Record from the default
+ *                              Personal Library view
+ *   {"type":"unarchive_record","id":"..."}
+ *                              restore a Game Record to the default view
+ *   {"type":"set_library_view","view":"default|archived"}
+ *                              choose whether archived records are listed
+ *   {"type":"purge_record","id":"...",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove a Game Record
+ *   {"type":"purge_study","study_id":"...",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove a Study
+ *   {"type":"purge_variant_definition",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove an unbound draft Variant
+ *                              Definition
  *
  * Events:
  *   {"type":"board_changed",...}
- *   {"type":"library_changed","records":[{id,kind,title,plyCount,resultScore}]}
+ *   {"type":"library_changed","records":[{id,kind,title,plyCount,resultScore,archived}]}
  *                              Personal Library listing from the Live Store
  *   {"type":"tabs_changed","openTabs":[{id,title}],"activeId":"..."}
  *                              open record tabs and the active tab id

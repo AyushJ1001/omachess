@@ -155,6 +155,41 @@ void WorkspaceSession::closeTab(const QString &id)
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
 }
 
+void WorkspaceSession::archiveRecord(const QString &id)
+{
+    submit(command(QStringLiteral("archive_record"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::unarchiveRecord(const QString &id)
+{
+    submit(command(QStringLiteral("unarchive_record"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::setLibraryView(const QString &view)
+{
+    submit(command(QStringLiteral("set_library_view"), {{QStringLiteral("view"), view}}));
+}
+
+void WorkspaceSession::purgeRecord(const QString &id)
+{
+    submit(command(QStringLiteral("purge_record"),
+                   {{QStringLiteral("id"), id},
+                    {QStringLiteral("confirmation"), QStringLiteral("PERMANENTLY_PURGE")}}));
+}
+
+void WorkspaceSession::purgeStudy(const QString &studyId)
+{
+    submit(command(QStringLiteral("purge_study"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("confirmation"), QStringLiteral("PERMANENTLY_PURGE")}}));
+}
+
+void WorkspaceSession::purgeVariantDefinition()
+{
+    submit(command(QStringLiteral("purge_variant_definition"),
+                   {{QStringLiteral("confirmation"), QStringLiteral("PERMANENTLY_PURGE")}}));
+}
+
 void WorkspaceSession::createStudy(const QString &name)
 {
     if (!name.trimmed().isEmpty())
@@ -501,6 +536,7 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
                 {QStringLiteral("kind"), record.value(QStringLiteral("kind")).toString()},
                 {QStringLiteral("title"), record.value(QStringLiteral("title")).toString()},
                 {QStringLiteral("plyCount"), record.value(QStringLiteral("plyCount")).toInt()},
+                {QStringLiteral("archived"), record.value(QStringLiteral("archived")).toBool()},
             };
             const QJsonValue score = record.value(QStringLiteral("resultScore"));
             entry.insert(QStringLiteral("resultScore"),
@@ -565,6 +601,16 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
     }
     if (type == QStringLiteral("variant_library_changed")) {
         const QString id = event.value(QStringLiteral("id")).toString();
+        if (event.value(QStringLiteral("removed")).toBool()) {
+            for (int index = 0; index < m_libraryRecords.size(); ++index) {
+                if (m_libraryRecords.at(index).toMap().value(QStringLiteral("id")).toString() == id) {
+                    m_libraryRecords.removeAt(index);
+                    emit libraryChanged();
+                    return;
+                }
+            }
+            return;
+        }
         for (int index = 0; index < m_libraryRecords.size(); ++index) {
             QVariantMap record = m_libraryRecords.at(index).toMap();
             if (record.value(QStringLiteral("id")).toString() == id) {

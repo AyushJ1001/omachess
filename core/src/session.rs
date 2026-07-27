@@ -43,6 +43,8 @@ pub struct Session {
     open_tabs: Vec<String>,
     /// A prior Game Record the player may restore, when residue points at one.
     restore_offer: Option<RestoreOffer>,
+    /// Whether the Personal Library view includes archived records.
+    show_archived: bool,
     clock: Option<GameClock>,
     /// Suspended Games are fully loaded but inert until the player resumes.
     suspended: bool,
@@ -191,6 +193,7 @@ impl Session {
             record_id: None,
             open_tabs: Vec::new(),
             restore_offer: None,
+            show_archived: false,
             clock: None,
             suspended: false,
             metadata: GameMetadata::default(),
@@ -259,6 +262,7 @@ impl Session {
             record_id: None,
             open_tabs,
             restore_offer,
+            show_archived: false,
             clock: None,
             suspended: false,
             metadata: GameMetadata::default(),
@@ -298,6 +302,12 @@ impl Session {
             "new_game" => self.new_game()?,
             "open_record" => self.open_record(command)?,
             "close_tab" => self.close_tab(command)?,
+            "archive_record" => self.archive_record(command, true)?,
+            "unarchive_record" => self.archive_record(command, false)?,
+            "set_library_view" => self.set_library_view(command)?,
+            "purge_record" => self.purge_record(command)?,
+            "purge_study" => self.purge_study(command)?,
+            "purge_variant_definition" => self.purge_variant_definition(command)?,
             "configure_clock" => self.configure_clock(command)?,
             "tick_clock" => self.tick_clock()?,
             "update_metadata" => self.update_metadata(command)?,
@@ -384,6 +394,125 @@ impl Session {
             .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
+    }
+
+    fn archive_record(&mut self, command: &str, archived: bool) -> Result<(), CommandError> {
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        if archived {
+            store
+                .workspace()
+                .archive_game_record(&id)
+                .map_err(|_| CommandError::Store)?;
+        } else {
+            store
+                .workspace()
+                .unarchive_game_record(&id)
+                .map_err(|_| CommandError::Store)?;
+        }
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn set_library_view(&mut self, command: &str) -> Result<(), CommandError> {
+        self.show_archived = match json::read_string_field(command, "view").as_deref() {
+            Some("archived") => true,
+            Some("default") => false,
+            _ => return Err(CommandError::MalformedCommand),
+        };
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn purge_record(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        if self.record_id.as_deref() == Some(id.as_str()) && self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_game_record(&id)
+            .map_err(|_| CommandError::Store)?;
+
+        let removed_index = self.open_tabs.iter().position(|tab| tab == &id);
+        self.open_tabs.retain(|tab| tab != &id);
+        if self.record_id.as_deref() == Some(id.as_str()) {
+            let next = removed_index
+                .and_then(|index| self.open_tabs.get(index).cloned().or_else(|| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|previous| self.open_tabs.get(previous).cloned())
+                }));
+            if let Some(next) = next {
+                self.load_record(&next)?;
+            } else {
+                self.game = Game::standard();
+                self.record_id = None;
+                self.clock = None;
+                self.suspended = false;
+                self.metadata = GameMetadata::default();
+                self.setup = None;
+                self.variant_active = false;
+                self.variant_snapshot = None;
+                self.store
+                    .as_ref()
+                    .ok_or(CommandError::Store)?
+                    .workspace()
+                    .clear_residue("active_record_id")
+                    .map_err(|_| CommandError::Store)?;
+            }
+            self.restore_offer = None;
+        }
+        self.persist_residue()?;
+        self.emit_library_changed();
+        self.emit_studies_changed();
+        self.emit_tabs_changed();
+        self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn purge_study(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        let id = json::read_string_field(command, "study_id")
+            .ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_study(&id)
+            .map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn purge_variant_definition(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_variant_definition()
+            .map_err(|_| CommandError::RejectedMove)?;
+        self.workshop = None;
+        self.variant_active = false;
+        self.variant_snapshot = None;
+        self.game = Game::standard();
+        self.record_id = None;
+        self.metadata = GameMetadata::default();
+        self.emit_variant_library_removed();
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn emit_variant_library_removed(&mut self) {
+        self.events.push(
+            "{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"removed\":true}"
+                .into(),
+        );
     }
 
     fn add_study_record(&mut self, command: &str) -> Result<(), CommandError> {
@@ -1686,13 +1815,14 @@ impl Session {
             .as_ref()
             .map(|record| record.created_at.clone())
             .unwrap_or_else(|| now.clone());
+        let archived = existing.as_ref().is_some_and(|record| record.archived);
         let record = GameRecord {
             id: id.clone(),
             kind,
             title: (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone()),
             result_score,
             ply_count: payload.moves.len() as u32,
-            archived: false,
+            archived,
             created_at,
             updated_at: now,
             payload,
@@ -1740,7 +1870,10 @@ impl Session {
             return;
         };
         // Archived records stay out of the default Personal Library view.
-        let visible: Vec<_> = summaries.into_iter().filter(|s| !s.archived).collect();
+        let visible: Vec<_> = summaries
+            .into_iter()
+            .filter(|summary| self.show_archived || !summary.archived)
+            .collect();
         self.events.push(library_changed_event(&visible));
     }
 
@@ -2648,10 +2781,20 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
             Some(score) => json::write_string(&mut out, score),
             None => out.push_str("null"),
         }
+        out.push_str(",\"archived\":");
+        out.push_str(if record.archived { "true" } else { "false" });
         out.push('}');
     }
     out.push_str("]}");
     out
+}
+
+fn require_purge_confirmation(command: &str) -> Result<(), CommandError> {
+    match json::read_string_field(command, "confirmation").as_deref() {
+        Some("PERMANENTLY_PURGE") => Ok(()),
+        Some(_) => Err(CommandError::RejectedMove),
+        None => Err(CommandError::MalformedCommand),
+    }
 }
 
 fn studies_changed_event(studies: &[Study]) -> String {
@@ -3413,6 +3556,92 @@ mod tests {
         assert!(event.contains(r#""kind":"played""#));
         assert!(event.contains(r#""plyCount":2"#));
         assert!(event.contains(r#""id":"gr_"#));
+    }
+
+    #[test]
+    fn archiving_hides_a_record_by_default_and_unarchiving_restores_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        play(&mut session, "e2", "e4");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed"#) {
+                library = event;
+            }
+        }
+        let id = library_ids(&library).into_iter().next().unwrap();
+
+        session
+            .submit(&format!(r#"{{"type":"archive_record","id":"{id}"}}"#))
+            .unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| session.poll_event()).collect();
+        let default_library = events
+            .iter()
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(!default_library.contains(&id));
+
+        session.submit(r#"{"type":"set_library_view","view":"archived"}"#).unwrap();
+        let archived_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(archived_library.contains(&id));
+        assert!(archived_library.contains(r#""archived":true"#));
+
+        session
+            .submit(&format!(r#"{{"type":"unarchive_record","id":"{id}"}}"#))
+            .unwrap();
+        let restored_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(restored_library.contains(&id));
+        assert!(!restored_library.contains(r#""archived":true"#));
+    }
+
+    #[test]
+    fn permanent_purge_requires_the_explicit_confirmation_phrase() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        play(&mut session, "e2", "e4");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed"#) {
+                library = event;
+            }
+        }
+        let id = library_ids(&library).into_iter().next().unwrap();
+
+        assert_eq!(
+            session.submit(&format!(r#"{{"type":"purge_record","id":"{id}"}}"#)),
+            Err(CommandError::MalformedCommand)
+        );
+        assert_eq!(
+            session.submit(&format!(
+                r#"{{"type":"purge_record","id":"{id}","confirmation":"PURGE"}}"#
+            )),
+            Err(CommandError::RejectedMove)
+        );
+        session
+            .submit(&format!(
+                r#"{{"type":"purge_record","id":"{id}","confirmation":"PERMANENTLY_PURGE"}}"#
+            ))
+            .unwrap();
+        assert!(session
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .residue("active_record_id")
+            .unwrap()
+            .is_none());
+        let purged_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(purged_library.contains(r#""records":[]"#));
     }
 
     #[test]
