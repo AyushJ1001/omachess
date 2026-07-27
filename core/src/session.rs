@@ -13,9 +13,12 @@
 //! residue so a later session can offer restore.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
@@ -82,6 +85,8 @@ struct VariantDefinition {
     mandatory_capture: bool,
     drops: bool,
     error: String,
+    playable: bool,
+    validation_message: String,
     step: u8,
 }
 
@@ -104,6 +109,8 @@ impl Default for VariantDefinition {
             mandatory_capture: false,
             drops: false,
             error: String::new(),
+            playable: false,
+            validation_message: String::new(),
             step: 1,
         }
     }
@@ -298,9 +305,24 @@ impl Session {
             "set_custom_piece" => self.set_custom_piece(command)?,
             "place_workshop_piece" => self.place_workshop_piece(command)?,
             "toggle_variant_rule" => self.toggle_variant_rule(command)?,
+            "validate_variant_definition" => self.validate_variant_definition()?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
             _ => return Err(CommandError::UnknownCommand),
+        }
+        if matches!(
+            kind.as_str(),
+            "select_board_preset"
+                | "toggle_builtin_piece"
+                | "set_custom_piece"
+                | "place_workshop_piece"
+                | "toggle_variant_rule"
+        ) {
+            if let Some(definition) = self.workshop.as_mut() {
+                definition.playable = false;
+                definition.validation_message.clear();
+            }
+            self.persist_variant_definition()?;
         }
         let event = self.board_changed_event();
         self.events.push(event);
@@ -315,8 +337,12 @@ impl Session {
         }
         if self.workshop.is_some() {
             self.events.push(self.workshop_changed_event());
-            self.events.push(String::from(
-                "{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"kind\":\"variant\",\"title\":\"Untitled Variant\"}",
+            let playable = self
+                .workshop
+                .as_ref()
+                .is_some_and(|definition| definition.playable);
+            self.events.push(format!(
+                "{{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"kind\":\"variant\",\"title\":\"Untitled Variant\",\"playable\":{playable}}}"
             ));
         }
         Ok(())
@@ -466,6 +492,69 @@ impl Session {
         definition.custom_name = name;
         definition.custom_letter = letter;
         definition.custom_betza = betza;
+        self.persist_variant_definition()
+    }
+
+    fn validate_variant_definition(&mut self) -> Result<(), CommandError> {
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.playable = false;
+        let failure = if !definition.error.is_empty() {
+            let message = format!("Pieces step — {}", definition.error);
+            definition.error.clear();
+            Some(message)
+        } else if definition.extinction {
+            Some("Rules step — Royal checkmate and Extinction both decide how the game ends. Choose one win condition.".into())
+        } else {
+            let adapter = compile_variant_adapter(definition);
+            if adapter != compile_variant_adapter(definition) {
+                Some(
+                    "Rules step — the Variant Definition did not compile deterministically.".into(),
+                )
+            } else {
+                let fen = draft_variant_fen(definition);
+                let (max_files, max_ranks) = engine_geometry();
+                if definition.files > max_files || definition.ranks > max_ranks {
+                    Some(format!("Board step — the detected Fairy-Stockfish build supports boards up to {max_files}×{max_ranks}."))
+                } else {
+                    let payload = format!(
+                        "{}\n--OMACHESS-FEN--\n{fen}",
+                        String::from_utf8_lossy(&adapter)
+                    );
+                    match run_isolated_validation("consistency", &payload) {
+                    Err(IsolatedFailure::Deadline) => Some("Validate step — Fairy-Stockfish consistency check exceeded its deadline.".into()),
+                    Err(IsolatedFailure::Rejected) => Some("Rules step — Fairy-Stockfish could not consistently load these rules.".into()),
+                    Ok(()) => {
+                        match run_isolated_validation("smoke", &payload) {
+                                Err(IsolatedFailure::Deadline) => Some("Validate step — the bounded engine smoke test exceeded its deadline.".into()),
+                                Err(IsolatedFailure::Rejected) => Some("Starting position step — make the position Rule-valid so the engine can load it, generate legal moves, and complete a bounded search.".into()),
+                                Ok(()) => None,
+                        }
+                    }
+                  }
+                }
+            }
+        };
+        match failure {
+            Some(message) => {
+                definition.step = if message.starts_with("Board step") {
+                    1
+                } else if message.starts_with("Pieces step") {
+                    2
+                } else if message.starts_with("Starting position step") {
+                    3
+                } else {
+                    4
+                };
+                definition.validation_message = message;
+            }
+            None => {
+                definition.playable = true;
+                definition.validation_message = "Playable — every validation stage passed.".into();
+            }
+        }
         self.persist_variant_definition()
     }
 
@@ -1608,6 +1697,10 @@ impl Session {
                 ""
             },
         );
+        out.push_str(",\"playable\":");
+        out.push_str(if definition.playable { "true" } else { "false" });
+        out.push_str(",\"validationMessage\":");
+        json::write_string(&mut out, &definition.validation_message);
         for (key, value) in [
             ("customName", &definition.custom_name),
             ("customLetter", &definition.custom_letter),
@@ -1792,7 +1885,8 @@ fn engine_geometry() -> (u8, u8) {
     match std::env::var("OMACHESS_FAIRY_STOCKFISH_CAPABILITIES").as_deref() {
         Ok("largeboards") => (12, 10),
         Ok("none") => (0, 0),
-        _ => (8, 8),
+        Ok("stock") => (8, 8),
+        _ => (12, 10),
     }
 }
 
@@ -1817,6 +1911,8 @@ fn encode_variant_definition(definition: &VariantDefinition) -> String {
         ("goal", bool_name(definition.goal)),
         ("mandatoryCapture", bool_name(definition.mandatory_capture)),
         ("drops", bool_name(definition.drops)),
+        ("playable", bool_name(definition.playable)),
+        ("validationMessage", definition.validation_message.as_str()),
     ] {
         out.push(',');
         json::write_string(&mut out, key);
@@ -1875,8 +1971,9 @@ fn workshop_piece_id(definition: &VariantDefinition, code: &str) -> Option<Strin
         "B" => "bishop",
         "N" => "knight",
         "P" => "pawn",
-        selected if definition.pieces.contains(selected)
-            || definition.custom_letter.eq_ignore_ascii_case(selected) =>
+        selected
+            if definition.pieces.contains(selected)
+                || definition.custom_letter.eq_ignore_ascii_case(selected) =>
         {
             return Some(format!(
                 "{}_fairy_{selected}",
@@ -1911,17 +2008,12 @@ fn rule_footprint(definition: &VariantDefinition, square: &str) -> &'static str 
     }
     let file = square.as_bytes()[0];
     let rank = square[1..].parse::<u8>().unwrap_or_default();
-    if definition.castling
-        && matches!(file, b'c' | b'g')
-        && (rank == 1 || rank == definition.ranks)
+    if definition.castling && matches!(file, b'c' | b'g') && (rank == 1 || rank == definition.ranks)
     {
         "castling"
     } else if definition.promotion && (rank == 1 || rank == definition.ranks) {
         "promotion"
-    } else if definition.goal
-        && matches!(file, b'd' | b'e')
-        && matches!(rank, 4 | 5)
-    {
+    } else if definition.goal && matches!(file, b'd' | b'e') && matches!(rank, 4 | 5) {
         "goal"
     } else {
         ""
@@ -1989,8 +2081,83 @@ fn decode_variant_definition(value: &str) -> Option<VariantDefinition> {
         mandatory_capture: read_bool(value, "mandatoryCapture", false),
         drops: read_bool(value, "drops", false),
         error: String::new(),
+        playable: read_bool(value, "playable", false),
+        validation_message: json::read_string_field(value, "validationMessage").unwrap_or_default(),
         step: 1,
     })
+}
+
+fn compile_variant_adapter(definition: &VariantDefinition) -> Vec<u8> {
+    let mut adapter = format!(
+        "[omachess:chess]\nmaxFile = {}\nmaxRank = {}\nstartFen = {}\ncastling = {}\ndoubleStep = {}\nmustCapture = {}\npieceDrops = {}\ncapturesToHand = {}\n",
+        definition.files,
+        definition.ranks,
+        draft_variant_fen(definition),
+        definition.castling,
+        definition.double_step,
+        definition.mandatory_capture,
+        definition.drops,
+        definition.drops,
+    );
+    if !definition.promotion {
+        adapter.push_str("promotionPawnTypes =\npromotionPieceTypes =\n");
+    }
+    if !definition.custom_letter.is_empty() {
+        adapter.push_str(&format!(
+            "customPiece1 = {}:{}\n",
+            definition.custom_letter.to_ascii_lowercase(),
+            definition.custom_betza
+        ));
+    }
+    if definition.goal {
+        adapter.push_str(
+            "flagPiece = k\nflagRegionWhite = d4 e4 d5 e5\nflagRegionBlack = d4 e4 d5 e5\n",
+        );
+    }
+    adapter.into_bytes()
+}
+
+#[derive(Clone, Copy)]
+enum IsolatedFailure {
+    Deadline,
+    Rejected,
+}
+
+fn run_isolated_validation(stage: &str, fen: &str) -> Result<(), IsolatedFailure> {
+    let executable = std::env::current_exe().map_err(|_| IsolatedFailure::Rejected)?;
+    let mut child = Command::new(executable)
+        .arg("--variant-validation-worker")
+        .arg(stage)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| IsolatedFailure::Rejected)?;
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut input| input.write_all(fen.as_bytes()).is_ok());
+    if !written {
+        let _ = child.kill();
+        return Err(IsolatedFailure::Rejected);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return status
+                    .success()
+                    .then_some(())
+                    .ok_or(IsolatedFailure::Rejected)
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(IsolatedFailure::Deadline);
+            }
+        }
+    }
 }
 
 fn library_changed_event(records: &[GameRecordSummary]) -> String {
@@ -2218,6 +2385,15 @@ mod tests {
     }
 
     #[test]
+    fn compiling_a_variant_definition_is_byte_identical() {
+        let definition = VariantDefinition::default();
+        let first = compile_variant_adapter(&definition);
+        let second = compile_variant_adapter(&definition);
+        assert_eq!(first, second);
+        assert!(first.starts_with(b"[omachess:chess]\nmaxFile = 8\n"));
+    }
+
+    #[test]
     fn describing_the_board_answers_with_the_starting_position() {
         let mut session = Session::new();
         session.submit(r#"{"type":"describe_board"}"#).unwrap();
@@ -2287,9 +2463,9 @@ mod tests {
         let event = session.poll_event().unwrap();
         assert!(event.contains(r#"{"name":"e4","light":true,"piece":"white_pawn"}"#));
         assert!(event.contains(r#"{"name":"e2","light":true,"piece":null}"#));
-        assert!(event.contains(
-            r#""moveList":[{"number":1,"side":"white","san":"e4","uci":"e2e4"}]"#
-        ));
+        assert!(
+            event.contains(r#""moveList":[{"number":1,"side":"white","san":"e4","uci":"e2e4"}]"#)
+        );
         assert!(event.contains(r#""lastMove":{"from":"e2","to":"e4"}"#));
         assert!(event.contains(r#""sideToMove":"black""#));
     }

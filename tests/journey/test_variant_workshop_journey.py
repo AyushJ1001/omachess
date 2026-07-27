@@ -150,6 +150,82 @@ class VariantWorkshopJourney(unittest.TestCase):
                 "Choose one win condition.",
             )
 
+    def test_validate_reports_staged_failures_then_makes_the_definition_playable(self):
+        with Workspace(executable_under_test()) as workspace:
+            workspace.click("newVariantButton")
+            workspace.click("workshopContinue")
+            workspace.enter_text("customPieceName", "Other king")
+            workspace.enter_text("customPieceLetter", "K")
+            workspace.enter_text("customPieceBetza", "K")
+            workspace.click("saveCustomPiece")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.click("validateVariant")
+            screen = workspace.screen_when(
+                lambda s: "Pieces step" in s.labels.get("variantValidationMessage", "")
+            )
+            self.assertEqual(screen.labels["workshopStatus"], "Draft Variant Definition · v1")
+            self.assertIn("Piece letter K is already in use", screen.labels["variantValidationMessage"])
+
+            workspace.click("workshopContinue")
+            workspace.click("workshopTray:K")
+            workspace.click_square("e1")
+            workspace.click("workshopTray:k")
+            workspace.click_square("e8")
+            workspace.click("workshopContinue")
+            workspace.click("rule:extinction")
+            workspace.click("validateVariant")
+            screen = workspace.screen_when(
+                lambda s: "Rules step" in s.labels.get("variantValidationMessage", "")
+            )
+            self.assertIn("Choose one win condition", screen.labels["variantValidationMessage"])
+
+            workspace.click("resolveRuleConflict")
+            workspace.screen_when(lambda s: "validateVariant" in s.labels)
+            workspace.click("validateVariant")
+            screen = workspace.screen_when(
+                lambda s: s.labels.get("workshopStatus")
+                == "Playable Variant Definition · v1"
+            )
+            self.assertEqual(
+                screen.labels["variantValidationMessage"],
+                "Playable — every validation stage passed.",
+            )
+            self.assertEqual(
+                screen.labels["libraryMeta:variant-draft"],
+                "Playable Variant Definition",
+            )
+
+    def test_validate_routes_a_non_rule_valid_start_to_starting_position(self):
+        with Workspace(executable_under_test()) as workspace:
+            self.open_starting_position(workspace)
+            workspace.click("workshopContinue")
+            workspace.click("validateVariant")
+            screen = workspace.screen_when(
+                lambda s: "Starting position step"
+                in s.labels.get("variantValidationMessage", "")
+            )
+            self.assertEqual(screen.labels["workshopStatus"], "Draft Variant Definition · v1")
+            self.assertIn("Rule-valid", screen.labels["variantValidationMessage"])
+
+    def test_validate_capability_gate_is_actionable_after_a_build_change(self):
+        with Workspace(
+            executable_under_test(),
+            environment={"OMACHESS_FAIRY_STOCKFISH_CAPABILITIES": "none"},
+        ) as workspace:
+            workspace.click("newVariantButton")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.click("validateVariant")
+            screen = workspace.screen_when(
+                lambda s: "Board step" in s.labels.get("variantValidationMessage", "")
+            )
+            self.assertIn(
+                "detected Fairy-Stockfish build",
+                screen.labels["variantValidationMessage"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

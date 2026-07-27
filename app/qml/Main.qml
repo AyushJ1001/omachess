@@ -709,7 +709,9 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     text: {
                                         const kind = modelData.kind === "variant"
-                                                   ? qsTr("Draft Variant Definition")
+                                                   ? (modelData.variantPlayable
+                                                      ? qsTr("Playable Variant Definition")
+                                                      : qsTr("Draft Variant Definition"))
                                                    : modelData.kind === "analysis"
                                                    ? qsTr("Analysis") : qsTr("Played")
                                         const score = modelData.resultScore
@@ -1458,7 +1460,9 @@ ApplicationWindow {
 
                         Label {
                             objectName: "workshopStatus"
-                            text: qsTr("Draft Variant Definition · v1")
+                            text: WorkspaceSession.variantPlayable
+                                  ? qsTr("Playable Variant Definition · v1")
+                                  : qsTr("Draft Variant Definition · v1")
                             font.bold: true
                         }
                         Label {
@@ -1586,10 +1590,10 @@ ApplicationWindow {
                                 Repeater {
                                     model: [
                                         { id: "drops", label: qsTr("Capture-to-hand drops") },
+                                        { id: "extinction", label: qsTr("Extinction win") },
                                         { id: "promotion", label: qsTr("Promotion") },
                                         { id: "castling", label: qsTr("Castling") },
                                         { id: "doubleStep", label: qsTr("Double step & en passant") },
-                                        { id: "extinction", label: qsTr("Extinction win") },
                                         { id: "goal", label: qsTr("Goal squares") },
                                         { id: "mandatoryCapture", label: qsTr("Mandatory capture") }
                                     ]
@@ -1629,13 +1633,34 @@ ApplicationWindow {
                                                WorkspaceSession.workshopStep - 1)
                             }
                             Button {
-                                objectName: "workshopContinue"
+                                objectName: WorkspaceSession.workshopStep < 4
+                                            ? "workshopContinue" : "validateVariant"
                                 Layout.fillWidth: true
-                                text: qsTr("Continue")
-                                enabled: WorkspaceSession.workshopStep < 4
-                                onClicked: WorkspaceSession.setWorkshopStep(
-                                               WorkspaceSession.workshopStep + 1)
+                                text: WorkspaceSession.workshopStep < 4
+                                      ? qsTr("Continue") : qsTr("Validate")
+                                onClicked: {
+                                    if (WorkspaceSession.workshopStep < 4)
+                                        WorkspaceSession.setWorkshopStep(
+                                            WorkspaceSession.workshopStep + 1)
+                                    else
+                                        WorkspaceSession.validateVariantDefinition()
+                                }
                             }
+                            Button {
+                                objectName: "resolveRuleConflict"
+                                visible: WorkspaceSession.workshopStep === 4
+                                         && WorkspaceSession.ruleConflict.length > 0
+                                text: qsTr("Use Royal")
+                                onClicked: WorkspaceSession.toggleVariantRule("extinction")
+                            }
+                        }
+                        Label {
+                            objectName: "variantValidationMessage"
+                            visible: WorkspaceSession.variantValidationMessage.length > 0
+                            text: WorkspaceSession.variantValidationMessage
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            color: WorkspaceSession.variantPlayable ? Theme.success : Theme.danger
                         }
                     }
 
