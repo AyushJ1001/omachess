@@ -91,6 +91,33 @@ void WorkspaceSession::closeTab(const QString &id)
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
 }
 
+void WorkspaceSession::beginPositionSetup()
+{
+    submit(command(QStringLiteral("begin_position_setup")));
+}
+
+void WorkspaceSession::setSetupFen(const QString &fen)
+{
+    submit(command(QStringLiteral("set_setup_fen"), {{QStringLiteral("fen"), fen}}));
+}
+
+void WorkspaceSession::placeSetupPiece(const QString &square, const QString &piece)
+{
+    submit(command(QStringLiteral("place_setup_piece"),
+                   {{QStringLiteral("square"), square}, {QStringLiteral("piece"), piece}}));
+}
+
+void WorkspaceSession::relocateSetupPiece(const QString &from, const QString &to)
+{
+    submit(command(QStringLiteral("relocate_setup_piece"),
+                   {{QStringLiteral("from"), from}, {QStringLiteral("to"), to}}));
+}
+
+void WorkspaceSession::startSetupGame()
+{
+    submit(command(QStringLiteral("start_setup_game")));
+}
+
 QVariantList WorkspaceSession::moveList() const
 {
     QVariantList moves;

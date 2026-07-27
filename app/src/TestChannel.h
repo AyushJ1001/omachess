@@ -42,6 +42,7 @@ private:
     QJsonObject snapshot() const;
     bool sendKey(const QString &key);
     bool clickTarget(const QString &objectName);
+    bool enterText(const QString &objectName, const QString &text);
 
     QLocalServer m_server;
     QQuickWindow *m_window;
