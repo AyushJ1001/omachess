@@ -54,3 +54,11 @@ target_link_libraries(omachess PRIVATE
 install(TARGETS omachess RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.desktop"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+
+# The launcher entry names this icon, so the two travel together.
+install(FILES "${CMAKE_SOURCE_DIR}/packaging/icons/com.omachess.Omachess.svg"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+
+# Backup, export, and removal guidance ships with the package.
+install(FILES "${CMAKE_SOURCE_DIR}/docs/install.md"
+  DESTINATION "${CMAKE_INSTALL_DOCDIR}")
