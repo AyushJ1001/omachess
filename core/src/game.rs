@@ -72,6 +72,8 @@ pub struct MoveOffer {
 pub struct Game {
     /// The Rules Authority, positioned at the Displayed Position.
     rules: Rules,
+    /// The starting position this Game Record began from.
+    start_fen: String,
     moves: Vec<PlayedMove>,
     /// How many moves have been applied to the Displayed Position.
     cursor: usize,
@@ -85,7 +87,37 @@ impl Game {
     pub fn standard() -> Self {
         let mut rules = Rules::standard();
         let outcome = rules.outcome();
-        Game { rules, moves: Vec::new(), cursor: 0, outcome }
+        let start_fen = rules.fen();
+        Game {
+            rules,
+            start_fen,
+            moves: Vec::new(),
+            cursor: 0,
+            outcome,
+        }
+    }
+
+    /// Rebuilds a Game Record from its starting position and played moves.
+    pub fn from_history(start_fen: &str, moves: Vec<PlayedMove>) -> Option<Self> {
+        let mut rules = Rules::new("standard", Some(start_fen))?;
+        for played in &moves {
+            if !rules.push(&played.uci) {
+                return None;
+            }
+        }
+        let outcome = rules.outcome();
+        let cursor = moves.len();
+        Some(Game {
+            rules,
+            start_fen: start_fen.to_owned(),
+            moves,
+            cursor,
+            outcome,
+        })
+    }
+
+    pub fn start_fen(&self) -> &str {
+        &self.start_fen
     }
 
     /// The position the player is looking at.
@@ -434,6 +466,13 @@ impl Game {
     fn new_from(fen: &str) -> Self {
         let mut rules = Rules::new("standard", Some(fen)).expect("a usable test position");
         let outcome = rules.outcome();
-        Game { rules, moves: Vec::new(), cursor: 0, outcome }
+        let start_fen = rules.fen();
+        Game {
+            rules,
+            start_fen,
+            moves: Vec::new(),
+            cursor: 0,
+            outcome,
+        }
     }
 }

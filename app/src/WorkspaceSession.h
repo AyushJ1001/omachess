@@ -46,6 +46,11 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString resultScore READ resultScore NOTIFY boardChanged)
     Q_PROPERTY(bool gameOver READ gameOver NOTIFY boardChanged)
 
+    // Shown when a prior Game Record can be restored after restart.
+    Q_PROPERTY(bool restoreAvailable READ restoreAvailable NOTIFY restoreChanged)
+    Q_PROPERTY(QString restoreLabel READ restoreLabel NOTIFY restoreChanged)
+    Q_PROPERTY(QString storeError READ storeError CONSTANT)
+
 public:
     explicit WorkspaceSession(QObject *parent = nullptr);
     ~WorkspaceSession() override;
@@ -68,6 +73,10 @@ public:
     QString resultScore() const { return result(QStringLiteral("score")); }
     bool gameOver() const;
 
+    bool restoreAvailable() const { return m_restoreAvailable; }
+    QString restoreLabel() const { return m_restoreLabel; }
+    QString storeError() const { return m_storeError; }
+
     // Asks the core to describe the board it owns. Called once at startup so
     // the first frame is drawn from core-owned state.
     Q_INVOKABLE void describeBoard();
@@ -84,6 +93,12 @@ public:
     // Player intent: show a different position of this game. `destination` is
     // "backward", "forward", "start", or "end".
     Q_INVOKABLE void navigate(const QString &destination);
+
+    // Player intent: restore the Game Record offered after restart.
+    Q_INVOKABLE void restoreRecord();
+
+    // Player intent: decline the restore offer and keep the fresh board.
+    Q_INVOKABLE void dismissRestore();
 
     // --- What the core said a player may do -------------------------------
     //
@@ -111,6 +126,7 @@ public:
 
 signals:
     void boardChanged();
+    void restoreChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -129,4 +145,7 @@ private:
     // The last board_changed event, kept whole so every property answers from
     // one core-owned snapshot.
     QJsonObject m_state;
+    bool m_restoreAvailable = false;
+    QString m_restoreLabel;
+    QString m_storeError;
 };

@@ -29,11 +29,18 @@ WorkspaceSession::WorkspaceSession(QObject *parent)
     : QObject(parent)
     , m_session(omachess_session_new())
 {
+    if (!m_session) {
+        const char *message = omachess_last_error();
+        m_storeError = message ? QString::fromUtf8(message)
+                               : QStringLiteral("The Live Store could not be opened.");
+        qCCritical(lcSession) << m_storeError;
+    }
 }
 
 WorkspaceSession::~WorkspaceSession()
 {
-    omachess_session_free(m_session);
+    if (m_session)
+        omachess_session_free(m_session);
 }
 
 void WorkspaceSession::describeBoard()
@@ -57,6 +64,16 @@ void WorkspaceSession::playMove(const QString &from, const QString &to, const QS
 void WorkspaceSession::navigate(const QString &destination)
 {
     submit(command(QStringLiteral("navigate"), {{QStringLiteral("to"), destination}}));
+}
+
+void WorkspaceSession::restoreRecord()
+{
+    submit(command(QStringLiteral("restore_record")));
+}
+
+void WorkspaceSession::dismissRestore()
+{
+    submit(command(QStringLiteral("dismiss_restore")));
 }
 
 QVariantList WorkspaceSession::moveList() const
@@ -163,6 +180,11 @@ QString WorkspaceSession::lastMoveSquare(const QString &name) const
 
 void WorkspaceSession::submit(const QByteArray &commandJson)
 {
+    if (!m_session) {
+        qCWarning(lcSession) << "no Live Store session; ignoring" << commandJson;
+        return;
+    }
+
     const int32_t status = omachess_session_submit(m_session, commandJson.constData());
     if (status != OMACHESS_OK) {
         // A refused move is an ordinary answer rather than a fault: the player
@@ -193,14 +215,26 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
 
     const QJsonObject event = document.object();
     const QString type = event.value(QStringLiteral("type")).toString();
-    if (type != QStringLiteral("board_changed")) {
-        // Later tickets add event types; ignoring unknown ones keeps an older
-        // workspace usable against a newer core.
-        qCDebug(lcSession) << "ignoring unhandled core event" << type;
+    if (type == QStringLiteral("board_changed")) {
+        m_state = event;
+        m_board.applySquares(event.value(QStringLiteral("squares")).toArray());
+        emit boardChanged();
+        return;
+    }
+    if (type == QStringLiteral("restore_available")) {
+        m_restoreAvailable = true;
+        m_restoreLabel = event.value(QStringLiteral("label")).toString();
+        emit restoreChanged();
+        return;
+    }
+    if (type == QStringLiteral("restore_cleared")) {
+        m_restoreAvailable = false;
+        m_restoreLabel.clear();
+        emit restoreChanged();
         return;
     }
 
-    m_state = event;
-    m_board.applySquares(event.value(QStringLiteral("squares")).toArray());
-    emit boardChanged();
+    // Later tickets add event types; ignoring unknown ones keeps an older
+    // workspace usable against a newer core.
+    qCDebug(lcSession) << "ignoring unhandled core event" << type;
 }

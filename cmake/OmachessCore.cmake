@@ -36,13 +36,14 @@ set_target_properties(omachess_core PROPERTIES
   IMPORTED_LOCATION "${_omachess_core_library}"
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/core/include")
 # The Rust standard library needs these from the host system.
-target_link_libraries(omachess_core INTERFACE pthread dl m)
+find_package(SQLite3 REQUIRED)
+target_link_libraries(omachess_core INTERFACE pthread dl m SQLite3::SQLite3)
 
 add_library(omachess::core ALIAS omachess_core)
 
-# `cargo test` covers the core's own behaviour; ctest runs it alongside the
+# `cargo test` covers the core and Live Store; ctest runs them alongside the
 # journey tests.
 add_test(NAME core_unit_tests
-  COMMAND "${CARGO_EXECUTABLE}" test --package omachess-core
+  COMMAND "${CARGO_EXECUTABLE}" test --workspace
           --target-dir "${_omachess_cargo_target_dir}"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

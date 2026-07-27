@@ -21,6 +21,23 @@ ApplicationWindow {
 
     Component.onCompleted: WorkspaceSession.describeBoard()
 
+    // Fail-closed Live Store open: the workspace cannot play without it.
+    Rectangle {
+        anchors.fill: parent
+        visible: WorkspaceSession.storeError.length > 0
+        z: 10
+        color: palette.window
+
+        Label {
+            objectName: "storeErrorLabel"
+            anchors.centerIn: parent
+            width: parent.width * 0.8
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            text: WorkspaceSession.storeError
+        }
+    }
+
     header: ToolBar {
         RowLayout {
             anchors.fill: parent
@@ -95,18 +112,56 @@ ApplicationWindow {
 
             // The board takes the space the move list leaves, and stays
             // square inside it.
-            Item {
-                id: boardArea
+            ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                spacing: 12
 
-                Board {
-                    id: board
-                    anchors.centerIn: parent
-                    side: Math.max(0, Math.min(boardArea.width, boardArea.height))
+                // Offered after restart when a prior Game Record can be restored.
+                // Clocks and engines are not resumed automatically.
+                Frame {
+                    objectName: "restoreCard"
+                    visible: WorkspaceSession.restoreAvailable
+                    Layout.fillWidth: true
 
-                    onPromotionRequested: function (from, to, roles) {
-                        promotion.ask(from, to, roles)
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 12
+
+                        Label {
+                            objectName: "restoreLabel"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: WorkspaceSession.restoreLabel
+                        }
+
+                        Button {
+                            objectName: "restoreButton"
+                            text: qsTr("Restore")
+                            onClicked: WorkspaceSession.restoreRecord()
+                        }
+
+                        Button {
+                            objectName: "dismissRestoreButton"
+                            text: qsTr("Dismiss")
+                            onClicked: WorkspaceSession.dismissRestore()
+                        }
+                    }
+                }
+
+                Item {
+                    id: boardArea
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    Board {
+                        id: board
+                        anchors.centerIn: parent
+                        side: Math.max(0, Math.min(boardArea.width, boardArea.height))
+
+                        onPromotionRequested: function (from, to, roles) {
+                            promotion.ask(from, to, roles)
+                        }
                     }
                 }
             }

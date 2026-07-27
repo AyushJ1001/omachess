@@ -9,7 +9,7 @@ On Omarchy (Arch), everything is in the official repositories:
 
 ```bash
 sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative \
-  qt6-svg python
+  qt6-svg python sqlite
 ```
 
 | Tool | Why |
@@ -19,6 +19,7 @@ sudo pacman -S --needed base-devel cmake ninja rust qt6-base qt6-declarative \
 | A C++ toolchain | builds vendored Fairy-Stockfish, which the core links |
 | Qt 6.5+ Quick and Quick Controls | the workspace window |
 | Qt 6 SVG | draws the vector Piece Set artwork |
+| SQLite 3 | system library linked by the Live Store (`rusqlite`) |
 | Python 3.11+ | runs the journey tests |
 
 ## Build and run
@@ -35,8 +36,8 @@ module. There is no separate cargo step to remember.
 
 The core's own `build.rs` compiles vendored Fairy-Stockfish and the rules
 bridge, so the first build spends a minute or two on the engine and then reuses
-it. Nothing is downloaded: the engine source is in the repository and the core
-has no crate dependencies.
+it. Nothing is downloaded: the engine source is in the repository. The core
+depends on the Live Store crate, which links against system SQLite.
 
 For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
 (`cmake --install build`) puts `omachess` on the path and installs the launcher
@@ -56,6 +57,9 @@ app ID, and it is **fixed permanently for v0.1**. Changing it breaks every
 player's window rules and keybindings, so it is not a refactor. `docs/install.md`
 is the player-facing install, backup, export, and removal guidance and ships
 inside the package.
+
+Backup paths for the Live Store and preferences are documented in
+[`docs/backup.md`](docs/backup.md).
 
 ## Tests
 
@@ -93,12 +97,17 @@ vendor/          Fairy-Stockfish, the Rules Authority
 core/            the Rust core: owns all chess state
   rules/         the C bridge to the Rules Authority
   include/       the command-and-event C ABI header
+store/           the Live Store: SQLite Personal Library persistence
 app/src/         the workspace: C++ glue around the ABI
 app/qml/         the workspace: how a game looks
   pieces/        Piece Set artwork
 packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
+<<<<<<< HEAD
+docs/backup.md   which XDG paths a player should copy
+=======
 tests/packaging/ the same, against a staged installation
+>>>>>>> origin/main
 ```
 
 ## The Rules Authority
