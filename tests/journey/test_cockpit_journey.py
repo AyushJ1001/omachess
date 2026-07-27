@@ -113,8 +113,13 @@ class CockpitJourney(unittest.TestCase):
             lambda s: cockpit_chrome_is_up(s)
             and set(library_ids(s)) == {first_id, second_id}
             and first_id in open_tab_ids(s)
+            and "restoreButton" in s.labels
         )
         self.assertNotIn(second_id, open_tab_ids(screen))
+        self.workspace.click("restoreButton")
+        screen = self.workspace.screen_when(
+            lambda s: s.moves() == ["1. e4", "1... e5"]
+        )
         self.assertEqual(screen.moves(), ["1. e4", "1... e5"])
         self.assertEqual(screen.pieces().get("e4"), "white_pawn")
         self.assertEqual(screen.pieces().get("e5"), "black_pawn")

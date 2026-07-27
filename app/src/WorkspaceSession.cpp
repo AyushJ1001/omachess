@@ -100,6 +100,16 @@ void WorkspaceSession::restoreRecord()
     submit(command(QStringLiteral("restore_record")));
 }
 
+void WorkspaceSession::suspendGame()
+{
+    submit(command(QStringLiteral("suspend_game")));
+}
+
+void WorkspaceSession::resumeGame()
+{
+    submit(command(QStringLiteral("resume_game")));
+}
+
 void WorkspaceSession::dismissRestore()
 {
     submit(command(QStringLiteral("dismiss_restore")));

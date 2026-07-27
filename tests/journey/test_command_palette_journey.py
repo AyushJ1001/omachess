@@ -57,6 +57,7 @@ class CommandPaletteJourney(unittest.TestCase):
             ("Open " + screen.labels[f"libraryTitle:{record_id}"], "Alt+1"),
             ("Switch to " + screen.labels[f"tabTitle:{record_id}"], "Ctrl+1"),
             ("Close " + screen.labels[f"tabTitle:{record_id}"], "Ctrl+W"),
+            ("Suspend Played Game", "Ctrl+Shift+S"),
         }
         self.workspace.press_key("ctrl+k")
         palette = self.workspace.screen_when(lambda s: "commandPaletteTitle" in s.labels)

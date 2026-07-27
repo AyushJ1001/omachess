@@ -18,7 +18,8 @@ def unavailable_presets(screen):
 class VariantWorkshopJourney(unittest.TestCase):
     def test_capable_build_offers_all_presets_and_geometry_changes_immediately(self):
         with Workspace(
-            executable_under_test(), engine_capabilities="largeboards"
+            executable_under_test(),
+            environment={"OMACHESS_FAIRY_STOCKFISH_CAPABILITIES": "largeboards"},
         ) as workspace:
             workspace.click("newVariantButton")
             screen = workspace.screen_when(
@@ -45,7 +46,10 @@ class VariantWorkshopJourney(unittest.TestCase):
             self.assertEqual(screen.labels["workshopStatus"], "Draft Variant Definition · v1")
 
     def test_stock_build_visibly_gates_every_large_board(self):
-        with Workspace(executable_under_test(), engine_capabilities="stock") as workspace:
+        with Workspace(
+            executable_under_test(),
+            environment={"OMACHESS_FAIRY_STOCKFISH_CAPABILITIES": "stock"},
+        ) as workspace:
             workspace.click("newVariantButton")
             screen = workspace.screen_when(
                 lambda s: len(unavailable_presets(s)) == 3
