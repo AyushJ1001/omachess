@@ -77,6 +77,7 @@ class Screen:
     squares: tuple[SquareOnScreen, ...]
     # The text of every named item that shows any, by item name.
     labels: dict[str, str]
+    active_focus: str
 
     def square(self, name: str) -> SquareOnScreen:
         for square in self.squares:
@@ -456,6 +457,7 @@ class Workspace:
             theme_name=raw["themeName"],
             board_theme_id=raw["boardThemeId"],
             piece_set_id=raw["pieceSetId"],
+            active_focus=raw["activeFocus"],
             labels=dict(raw["labels"]),
             squares=tuple(
                 SquareOnScreen(
