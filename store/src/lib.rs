@@ -1077,24 +1077,10 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
         );
-
-        CREATE TABLE analysis_records (
-            record_id TEXT PRIMARY KEY NOT NULL,
-            content TEXT NOT NULL
-        );
-
-        CREATE TABLE record_edges (
-            source_id TEXT NOT NULL,
-            derived_id TEXT NOT NULL,
-            edge_type TEXT NOT NULL CHECK (edge_type IN ('derived_from')),
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, derived_id, edge_type)
-        );
-        CREATE INDEX record_edges_by_derived
-            ON record_edges (derived_id, edge_type);
         ",
     )
-    .map_err(|error| format!("could not create schema tables: {error}"))
+    .map_err(|error| format!("could not create base schema tables: {error}"))?;
+    create_analysis_schema(conn)
 }
 
 fn create_analysis_schema(conn: &Connection) -> Result<(), String> {

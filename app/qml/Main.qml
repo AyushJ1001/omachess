@@ -1671,24 +1671,43 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: WorkspaceSession.activity === "analysis_record"
+                                 || WorkspaceSession.recordDerivations.length > 0
 
                         Label {
+                            visible: WorkspaceSession.activity === "analysis_record"
                             text: qsTr("Source Snapshot")
                             font.bold: true
                         }
                         Label {
                             objectName: "sourceSnapshotMoves"
+                            visible: WorkspaceSession.activity === "analysis_record"
                             text: qsTr("%1 moves").arg(
                                 WorkspaceSession.sourceSnapshot.moveCount || 0)
                         }
-                        Label {
-                            objectName: "recordGraphSource"
-                            text: WorkspaceSession.recordSources.length > 0
-                                  ? WorkspaceSession.recordSources[0]
-                                  : WorkspaceSession.sourceSnapshot.sourceId || ""
+                        Label { text: qsTr("Record Graph"); font.bold: true }
+                        Repeater {
+                            model: WorkspaceSession.recordSources
+                            Button {
+                                required property string modelData
+                                objectName: "recordGraphSource:" + modelData
+                                Layout.fillWidth: true
+                                text: qsTr("Source · %1").arg(modelData)
+                                onClicked: workspace.requestOpenRecord(modelData)
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.recordDerivations
+                            Button {
+                                required property string modelData
+                                objectName: "recordGraphDerivation:" + modelData
+                                Layout.fillWidth: true
+                                text: qsTr("Derivation · %1").arg(modelData)
+                                onClicked: workspace.requestOpenRecord(modelData)
+                            }
                         }
                         Label {
                             objectName: "analysisStructure"
+                            visible: WorkspaceSession.activity === "analysis_record"
                             text: qsTr("Main line: %1 ply · %2 sidelines · %3 annotations")
                                   .arg(WorkspaceSession.analysisMainLinePly)
                                   .arg(WorkspaceSession.analysisSidelineCount)
@@ -1701,11 +1720,13 @@ ApplicationWindow {
                             objectName: "analysisAnnotationInput"
                             Layout.fillWidth: true
                             placeholderText: qsTr("Annotation at displayed position")
+                            visible: WorkspaceSession.activity === "analysis_record"
                         }
                         Button {
                             objectName: "addAnalysisAnnotationButton"
                             text: qsTr("Add annotation")
                             enabled: annotationInput.text.trim().length > 0
+                            visible: WorkspaceSession.activity === "analysis_record"
                             onClicked: {
                                 WorkspaceSession.addAnalysisAnnotation(
                                     WorkspaceSession.cursor, annotationInput.text)
@@ -1717,15 +1738,47 @@ ApplicationWindow {
                             objectName: "analysisSidelineInput"
                             Layout.fillWidth: true
                             placeholderText: qsTr("Sideline in UCI moves")
+                            visible: WorkspaceSession.activity === "analysis_record"
                         }
                         Button {
                             objectName: "addAnalysisSidelineButton"
                             text: qsTr("Add sideline")
                             enabled: sidelineInput.text.trim().length > 0
+                            visible: WorkspaceSession.activity === "analysis_record"
                             onClicked: {
                                 WorkspaceSession.addAnalysisSideline(
                                     WorkspaceSession.cursor, sidelineInput.text)
                                 sidelineInput.clear()
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.analysisAnnotations
+                            Label {
+                                required property int index
+                                required property var modelData
+                                objectName: "analysisAnnotation:" + (index + 1)
+                                Layout.fillWidth: true
+                                text: qsTr("After ply %1 · %2")
+                                      .arg(modelData.ply).arg(modelData.text)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Repeater {
+                            model: WorkspaceSession.analysisSidelines
+                            Label {
+                                required property int index
+                                required property var modelData
+                                objectName: "analysisSideline:" + (index + 1)
+                                Layout.fillWidth: true
+                                text: {
+                                    const san = []
+                                    for (const move of modelData.moves)
+                                        san.push(move.san)
+                                    return qsTr("After ply %1 · %2")
+                                           .arg(modelData.afterPly).arg(san.join(" "))
+                                }
+                                wrapMode: Text.WordWrap
+                                font.family: "monospace"
                             }
                         }
                         Repeater {

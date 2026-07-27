@@ -72,6 +72,8 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(int analysisMainLinePly READ analysisMainLinePly NOTIFY analysisRecordChanged)
     Q_PROPERTY(int analysisSidelineCount READ analysisSidelineCount NOTIFY analysisRecordChanged)
     Q_PROPERTY(int analysisAnnotationCount READ analysisAnnotationCount NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QVariantList analysisAnnotations READ analysisAnnotations NOTIFY analysisRecordChanged)
+    Q_PROPERTY(QVariantList analysisSidelines READ analysisSidelines NOTIFY analysisRecordChanged)
     Q_PROPERTY(QVariantList pinnedEngineLines READ pinnedEngineLines NOTIFY analysisRecordChanged)
 
     // Personal Library summaries from the Live Store.
@@ -155,6 +157,8 @@ public:
     int analysisMainLinePly() const { return m_analysisMainLinePly; }
     int analysisSidelineCount() const { return m_analysisSidelineCount; }
     int analysisAnnotationCount() const { return m_analysisAnnotationCount; }
+    QVariantList analysisAnnotations() const { return m_analysisAnnotations; }
+    QVariantList analysisSidelines() const { return m_analysisSidelines; }
     QVariantList pinnedEngineLines() const { return m_pinnedEngineLines; }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
@@ -334,5 +338,7 @@ private:
     int m_analysisMainLinePly = 0;
     int m_analysisSidelineCount = 0;
     int m_analysisAnnotationCount = 0;
+    QVariantList m_analysisAnnotations;
+    QVariantList m_analysisSidelines;
     QVariantList m_pinnedEngineLines;
 };

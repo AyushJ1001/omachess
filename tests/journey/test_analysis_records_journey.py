@@ -34,11 +34,25 @@ class AnalysisRecordsJourney(unittest.TestCase):
                 and screen.labels.get("sourceSnapshotMoves") == "4 moves"
             )
             first_id = next(iter(library_ids(first) - {source_id}))
-            self.assertEqual(first.labels["recordGraphSource"], source_id)
+            self.assertIn(f"recordGraphSource:{source_id}", first.labels)
             workspace.enter_text("metadata:title", "First exploration")
             workspace.click("saveMetadataButton")
+            workspace.click("startButton")
+            workspace.enter_text("analysisSidelineInput", "d2d4")
+            workspace.click("addAnalysisSidelineButton")
+            workspace.screen_when(
+                lambda screen: screen.labels.get("analysisSideline:1")
+                == "After ply 0 · d4"
+            )
+            workspace.click("endButton")
+            workspace.enter_text("analysisAnnotationInput", "First branch")
+            workspace.click("addAnalysisAnnotationButton")
+            workspace.screen_when(
+                lambda screen: screen.labels.get("analysisAnnotation:1")
+                == "After ply 4 · First branch"
+            )
 
-            workspace.click(f"library:{source_id}")
+            workspace.click(f"recordGraphSource:{source_id}")
             workspace.enter_text("metadata:title", "Corrected source")
             workspace.click("saveMetadataButton")
             workspace.click("deriveAnalysisButton")
@@ -46,13 +60,29 @@ class AnalysisRecordsJourney(unittest.TestCase):
             second_id = next(iter(library_ids(second) - {source_id, first_id}))
             self.assertNotEqual(first_id, second_id)
             self.assertEqual(second.labels["sourceSnapshotMoves"], "4 moves")
+            workspace.enter_text("analysisAnnotationInput", "Second branch")
+            workspace.click("addAnalysisAnnotationButton")
+            workspace.screen_when(
+                lambda screen: screen.labels.get("analysisAnnotation:1")
+                == "After ply 4 · Second branch"
+            )
 
-            workspace.click(f"library:{first_id}")
+            workspace.click(f"recordGraphSource:{source_id}")
+            source = workspace.screen_when(
+                lambda screen: f"recordGraphDerivation:{first_id}" in screen.labels
+                and f"recordGraphDerivation:{second_id}" in screen.labels
+            )
+            self.assertEqual(source.labels["metadata:title"], "Corrected source")
+            workspace.click(f"recordGraphDerivation:{first_id}")
             reopened = workspace.screen_when(
                 lambda screen: screen.labels.get("metadata:title") == "First exploration"
             )
-            self.assertEqual(reopened.labels["recordGraphSource"], source_id)
+            self.assertIn(f"recordGraphSource:{source_id}", reopened.labels)
             self.assertEqual(reopened.labels["sourceSnapshotMoves"], "4 moves")
+            self.assertEqual(
+                reopened.labels["analysisAnnotation:1"], "After ply 4 · First branch"
+            )
+            self.assertEqual(reopened.labels["analysisSideline:1"], "After ply 0 · d4")
 
     def test_pinned_line_and_engine_context_survive_restart(self) -> None:
         root = tempfile.TemporaryDirectory(prefix="omachess-analysis-record-")

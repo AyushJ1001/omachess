@@ -320,6 +320,7 @@ impl Session {
             if let Some(offer) = &self.restore_offer {
                 self.events.push(restore_available_event(offer));
             }
+            self.emit_record_graph_changed();
             self.emit_analysis_record_changed();
         }
         if self.workshop.is_some() {
@@ -348,6 +349,7 @@ impl Session {
         self.persist_residue()?;
         self.emit_library_changed();
         self.emit_tabs_changed();
+        self.emit_record_graph_changed();
         self.emit_analysis_record_changed();
         Ok(())
     }
@@ -472,6 +474,19 @@ impl Session {
         let derivations = store.workspace().derivations_from(&id).unwrap_or_default();
         self.events
             .push(analysis_record_changed_event(&data, &sources, &derivations));
+    }
+
+    fn emit_record_graph_changed(&mut self) {
+        let Some(id) = self.record_id.as_ref() else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let sources = store.workspace().sources_of(id).unwrap_or_default();
+        let derivations = store.workspace().derivations_from(id).unwrap_or_default();
+        self.events
+            .push(record_graph_changed_event(&sources, &derivations));
     }
 
     fn persist_variant_definition(&self) -> Result<(), CommandError> {
@@ -983,6 +998,7 @@ impl Session {
         self.events
             .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
+        self.emit_record_graph_changed();
         self.emit_analysis_record_changed();
         Ok(())
     }
@@ -1193,6 +1209,7 @@ impl Session {
         self.events
             .push(String::from("{\"type\":\"restore_cleared\"}"));
         self.emit_tabs_changed();
+        self.emit_record_graph_changed();
         self.emit_analysis_record_changed();
         Ok(())
     }
@@ -2225,7 +2242,38 @@ fn analysis_record_changed_event(
     out.push_str(&data.sidelines.len().to_string());
     out.push_str(",\"annotationCount\":");
     out.push_str(&data.annotations.len().to_string());
-    out.push_str(",\"pinnedLines\":[");
+    out.push_str(",\"annotations\":[");
+    for (index, annotation) in data.annotations.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"ply\":");
+        out.push_str(&annotation.ply.to_string());
+        out.push_str(",\"text\":");
+        json::write_string(&mut out, &annotation.text);
+        out.push('}');
+    }
+    out.push_str("],\"sidelines\":[");
+    for (index, sideline) in data.sidelines.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"afterPly\":");
+        out.push_str(&sideline.after_ply.to_string());
+        out.push_str(",\"moves\":[");
+        for (move_index, played) in sideline.moves.iter().enumerate() {
+            if move_index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"uci\":");
+            json::write_string(&mut out, &played.uci);
+            out.push_str(",\"san\":");
+            json::write_string(&mut out, &played.san);
+            out.push('}');
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"pinnedLines\":[");
     for (index, line) in data.pinned_lines.iter().enumerate() {
         if index > 0 {
             out.push(',');
@@ -2241,6 +2289,25 @@ fn analysis_record_changed_event(
         out.push_str(",\"searchContext\":");
         json::write_string(&mut out, &line.search_context);
         out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn record_graph_changed_event(sources: &[String], derivations: &[String]) -> String {
+    let mut out = String::from("{\"type\":\"record_graph_changed\",\"sources\":[");
+    for (index, id) in sources.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        json::write_string(&mut out, id);
+    }
+    out.push_str("],\"derivations\":[");
+    for (index, id) in derivations.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        json::write_string(&mut out, id);
     }
     out.push_str("]}");
     out

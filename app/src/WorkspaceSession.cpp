@@ -471,9 +471,25 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_analysisMainLinePly = event.value(QStringLiteral("mainLinePly")).toInt();
         m_analysisSidelineCount = event.value(QStringLiteral("sidelineCount")).toInt();
         m_analysisAnnotationCount = event.value(QStringLiteral("annotationCount")).toInt();
+        m_analysisAnnotations.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("annotations")).toArray())
+            m_analysisAnnotations.append(value.toObject().toVariantMap());
+        m_analysisSidelines.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("sidelines")).toArray())
+            m_analysisSidelines.append(value.toObject().toVariantMap());
         m_pinnedEngineLines.clear();
         for (const QJsonValue &value : event.value(QStringLiteral("pinnedLines")).toArray())
             m_pinnedEngineLines.append(value.toObject().toVariantMap());
+        emit analysisRecordChanged();
+        return;
+    }
+    if (type == QStringLiteral("record_graph_changed")) {
+        m_recordSources.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("sources")).toArray())
+            m_recordSources.append(value.toString());
+        m_recordDerivations.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("derivations")).toArray())
+            m_recordDerivations.append(value.toString());
         emit analysisRecordChanged();
         return;
     }
