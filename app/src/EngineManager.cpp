@@ -75,6 +75,7 @@ EngineManager::EngineManager(QObject *parent)
         profile.rating = settings.value(QStringLiteral("engines/%1/displayRating").arg(profile.key),
                                         profile.rating)
                              .toInt();
+    loadCustomEngine();
 
     m_deadline.setSingleShot(true);
     connect(&m_deadline, &QTimer::timeout, this, [this] {
@@ -113,6 +114,8 @@ EngineManager::EngineManager(QObject *parent)
                         finishReady();
                     else
                         fail(QStringLiteral("unclean shutdown"));
+                } else if (m_stage != Stage::Idle) {
+                    fail(QStringLiteral("engine exited before completing the UCI probe"));
                 }
             });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -149,6 +152,11 @@ QVariant EngineManager::data(const QModelIndex &index, int role) const
             && (profile.state == QStringLiteral("Consent required")
                 || profile.state == QStringLiteral("Consent granted — probe required"));
     case InstallOfferedRole: return !profile.detectOnly;
+    case ExecutablePathRole: return profile.path;
+    case LaunchArgumentsRole: return profile.arguments;
+    case LaunchWorkingDirectoryRole: return profile.workingDirectory;
+    case CapabilitiesRole: return profile.capabilities.join(QStringLiteral(", "));
+    case CustomRole: return profile.custom;
     default: return {};
     }
 }
@@ -166,13 +174,89 @@ QHash<int, QByteArray> EngineManager::roleNames() const
             {ArtworkProvenanceRole, "artworkProvenance"},
             {FoundRole, "found"},
             {ConsentRequiredRole, "consentRequired"},
-            {InstallOfferedRole, "installOffered"}};
+            {InstallOfferedRole, "installOffered"},
+            {ExecutablePathRole, "executablePath"},
+            {LaunchArgumentsRole, "launchArguments"},
+            {LaunchWorkingDirectoryRole, "launchWorkingDirectory"},
+            {CapabilitiesRole, "capabilities"},
+            {CustomRole, "custom"}};
+}
+
+void EngineManager::loadCustomEngine()
+{
+    QSettings settings;
+    const QString path = settings.value(QStringLiteral("engines/custom/path")).toString();
+    if (path.isEmpty())
+        return;
+    Profile profile;
+    profile.key = QStringLiteral("custom");
+    profile.name = QStringLiteral("Custom Engine");
+    profile.state = QStringLiteral("Not found");
+    profile.path = path;
+    profile.arguments = settings.value(QStringLiteral("engines/custom/arguments")).toString();
+    profile.workingDirectory =
+        settings.value(QStringLiteral("engines/custom/workingDirectory")).toString();
+    profile.custom = true;
+    profile.found = QFileInfo(path).isFile() && QFileInfo(path).isExecutable();
+    if (profile.found) {
+        const QString consentKey =
+            QStringLiteral("engines/custom/consent/%1").arg(profile.path);
+        profile.state = settings.value(consentKey, false).toBool()
+            ? QStringLiteral("Consent granted — probe required")
+            : QStringLiteral("Consent required");
+    }
+    m_profiles.prepend(profile);
+}
+
+void EngineManager::saveCustomEngine(const Profile &profile)
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("engines/custom/path"), profile.path);
+    settings.setValue(QStringLiteral("engines/custom/arguments"), profile.arguments);
+    settings.setValue(QStringLiteral("engines/custom/workingDirectory"), profile.workingDirectory);
+}
+
+void EngineManager::registerCustomEngine(const QUrl &selectedFile,
+                                         const QString &arguments,
+                                         const QString &workingDirectory)
+{
+    const QString path = selectedFile.toLocalFile();
+    if (m_active >= 0 || path.isEmpty())
+        return;
+    const int existing = indexOf(QStringLiteral("custom"));
+    if (existing >= 0) {
+        beginRemoveRows({}, existing, existing);
+        m_profiles.removeAt(existing);
+        endRemoveRows();
+    }
+
+    Profile profile;
+    profile.key = QStringLiteral("custom");
+    profile.name = QStringLiteral("Custom Engine");
+    profile.path = path;
+    profile.arguments = arguments;
+    profile.workingDirectory = workingDirectory;
+    profile.custom = true;
+    const QFileInfo executable(path);
+    profile.found = executable.isFile() && executable.isExecutable();
+    const bool consented =
+        QSettings().value(QStringLiteral("engines/custom/consent/%1").arg(path), false).toBool();
+    profile.state = !profile.found
+        ? QStringLiteral("Probe failed — path is not executable")
+        : consented ? QStringLiteral("Consent granted — probe required")
+                    : QStringLiteral("Consent required");
+    saveCustomEngine(profile);
+    beginInsertRows({}, 0, 0);
+    m_profiles.prepend(profile);
+    endInsertRows();
 }
 
 void EngineManager::discover()
 {
     for (int index = 0; index < m_profiles.size(); ++index) {
         Profile &profile = m_profiles[index];
+        if (profile.custom)
+            continue;
         profile.path = discoverPath(profile);
         profile.found = !profile.path.isEmpty();
         if (!profile.found)
@@ -252,7 +336,8 @@ void EngineManager::startProbe(int index)
     emit dataChanged(this->index(index), this->index(index));
 
     m_process.setProgram(profile.path);
-    m_process.setArguments({});
+    m_process.setArguments(QProcess::splitCommand(profile.arguments));
+    m_process.setWorkingDirectory(profile.workingDirectory);
     m_process.setProcessChannelMode(QProcess::SeparateChannels);
     m_process.start();
     advance(Stage::Starting, deadline(3000));
@@ -328,14 +413,35 @@ void EngineManager::consumeLine(const QString &line)
                 return;
             }
             profile.identityMismatch = !identityMatches(profile);
+            profile.capabilities.clear();
             QByteArray defaults;
-            if (!profile.identityMismatch) {
+            if (!profile.identityMismatch || profile.custom) {
                 for (const QVariant &value : profile.options) {
-                    const QString name = value.toMap().value(QStringLiteral("name")).toString();
-                    if (name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0)
+                    const QVariantMap option = value.toMap();
+                    const QString name = option.value(QStringLiteral("name")).toString();
+                    const QString type = option.value(QStringLiteral("type")).toString();
+                    const bool hasBounds = option.contains(QStringLiteral("min"))
+                        && option.contains(QStringLiteral("max"));
+                    const qlonglong minimum = option.value(QStringLiteral("min")).toLongLong();
+                    const qlonglong maximum = option.value(QStringLiteral("max")).toLongLong();
+                    if (name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0
+                        && type == QStringLiteral("spin") && hasBounds && minimum <= 1
+                        && maximum >= 1) {
+                        profile.capabilities.append(QStringLiteral("Threads"));
                         defaults += "setoption name " + name.toUtf8() + " value 1\n";
-                    else if (name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0)
+                    } else if (name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0
+                               && type == QStringLiteral("spin") && hasBounds && minimum <= 16
+                               && maximum >= 16) {
+                        profile.capabilities.append(QStringLiteral("Hash"));
                         defaults += "setoption name " + name.toUtf8() + " value 16\n";
+                    } else if (name.compare(QStringLiteral("MultiPV"), Qt::CaseInsensitive) == 0
+                               && type == QStringLiteral("spin") && hasBounds && maximum >= 2) {
+                        profile.capabilities.append(QStringLiteral("MultiPV"));
+                    } else if (name.compare(QStringLiteral("UCI_Variant"), Qt::CaseInsensitive) == 0
+                               && type == QStringLiteral("combo")
+                               && !option.value(QStringLiteral("variants")).toStringList().isEmpty()) {
+                        profile.capabilities.append(QStringLiteral("UCI_Variant"));
+                    }
                 }
             }
             send(defaults + "isready\n");
@@ -395,6 +501,8 @@ void EngineManager::finishReady()
 
 bool EngineManager::identityMatches(const Profile &profile) const
 {
+    if (profile.custom)
+        return true;
     const QString identity = profile.identity.toLower();
     for (const QString &alias : profile.identityAliases)
         if (identity.startsWith(alias))
