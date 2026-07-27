@@ -78,6 +78,7 @@ class WorkspaceSession : public QObject
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
+    Q_PROPERTY(QVariantList studies READ studies NOTIFY studiesChanged)
     // Open record tabs and the active Game Record id.
     Q_PROPERTY(QVariantList openTabs READ openTabs NOTIFY tabsChanged)
     Q_PROPERTY(QString activeRecordId READ activeRecordId NOTIFY tabsChanged)
@@ -164,6 +165,7 @@ public:
     QVariantList pinnedEngineLines() const { return m_pinnedEngineLines; }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
+    QVariantList studies() const { return m_studies; }
     QVariantList openTabs() const { return m_openTabs; }
     QString activeRecordId() const { return m_activeRecordId; }
     QString saveMode() const { return field(QStringLiteral("saveMode")); }
@@ -228,6 +230,11 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void createStudy(const QString &name);
+    Q_INVOKABLE void addStudyRecord(const QString &studyId, const QString &recordId);
+    Q_INVOKABLE void removeStudyRecord(const QString &studyId, const QString &recordId);
+    Q_INVOKABLE void reorderStudyRecord(const QString &studyId, const QString &recordId,
+                                        int position);
     Q_INVOKABLE void setSaveMode(const QString &mode);
     Q_INVOKABLE void saveRecord();
     Q_INVOKABLE void discardChanges();
@@ -291,6 +298,7 @@ signals:
     void workshopChanged();
     void pgnImportResultsChanged();
     void analysisRecordChanged();
+    void studiesChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -312,6 +320,7 @@ private:
     // one core-owned snapshot.
     QJsonObject m_state;
     QVariantList m_libraryRecords;
+    QVariantList m_studies;
     QVariantList m_boardPresets;
     QVariantList m_pieceCatalogue;
     QVariantList m_openTabs;
