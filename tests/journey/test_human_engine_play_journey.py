@@ -112,6 +112,18 @@ class HumanEnginePlayJourney(unittest.TestCase):
             )
             self.assertIn("1 move", restored.labels["restoreLabel"])
 
+    def test_illegal_engine_move_is_reported_and_not_applied(self) -> None:
+        with self.ready_workspace(["a1a1"]) as workspace:
+            self.consent(workspace)
+            workspace.click("playWhite:stockfish")
+            workspace.play("f2f3")
+            failed = workspace.screen_when(
+                lambda screen: "illegal or malformed" in screen.labels.get(
+                    "livePlayStatus", ""
+                )
+            )
+            self.assertEqual(failed.moves(), ["1. f3"])
+
 
 if __name__ == "__main__":
     unittest.main()

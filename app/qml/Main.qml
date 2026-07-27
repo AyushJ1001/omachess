@@ -203,6 +203,15 @@ ApplicationWindow {
     Connections {
         target: EngineManager
         function onLiveMove(from, to, promotion) {
+            const destinations = WorkspaceSession.destinationsFrom(from)
+            const promotions = WorkspaceSession.promotionsFor(from, to)
+            const promotionValid = promotions.length === 0
+                                   ? promotion.length === 0
+                                   : promotions.indexOf(promotion) >= 0
+            if (destinations.indexOf(to) < 0 || !promotionValid) {
+                EngineManager.rejectLiveMove()
+                return
+            }
             WorkspaceSession.playMove(from, to, promotion)
         }
     }

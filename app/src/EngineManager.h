@@ -47,6 +47,7 @@ public:
     Q_INVOKABLE void startLivePlay(const QString &key, const QString &humanSide);
     Q_INVOKABLE void updateLivePosition(const QString &moves, const QString &sideToMove,
                                         bool gameOver, int whiteMs, int blackMs);
+    Q_INVOKABLE void rejectLiveMove();
     Q_INVOKABLE void stopLivePlay();
 
     bool livePlayActive() const { return m_livePlayActive; }

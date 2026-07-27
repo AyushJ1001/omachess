@@ -325,6 +325,11 @@ void EngineManager::updateLivePosition(const QString &moves, const QString &side
     requestLiveMove();
 }
 
+void EngineManager::rejectLiveMove()
+{
+    failLivePlay(QStringLiteral("returned an illegal or malformed move"));
+}
+
 void EngineManager::stopLivePlay()
 {
     if (!m_livePlayActive)
