@@ -18,6 +18,7 @@ Item {
 
     // The width and height of the whole board.
     property real side: 640
+    property bool inputEnabled: true
     property int files: WorkspaceSession.workshopActive ? WorkspaceSession.boardFiles : 8
     property int ranks: WorkspaceSession.workshopActive ? WorkspaceSession.boardRanks : 8
 
@@ -142,6 +143,7 @@ Item {
 
     MouseArea {
         anchors.fill: parent
+        enabled: board.inputEnabled
         acceptedButtons: Qt.LeftButton
 
         onPressed: function (mouse) {

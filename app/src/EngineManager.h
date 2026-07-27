@@ -16,6 +16,9 @@ class EngineManager : public QAbstractListModel
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
+    Q_PROPERTY(bool livePlayActive READ livePlayActive NOTIFY livePlayChanged)
+    Q_PROPERTY(QString livePlayEngineSide READ livePlayEngineSide NOTIFY livePlayChanged)
+    Q_PROPERTY(QString livePlayStatus READ livePlayStatus NOTIFY livePlayChanged)
 
 public:
     enum Role {
@@ -48,6 +51,25 @@ public:
     Q_INVOKABLE void install(const QString &key);
     Q_INVOKABLE void cancelInstall(const QString &key);
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
+    Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
+    Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
+    Q_INVOKABLE void setLivePlayClock(const QString &key, int milliseconds);
+    Q_INVOKABLE int livePlayClock(const QString &key) const;
+    Q_INVOKABLE void startLivePlay(const QString &key, const QString &humanSide);
+    Q_INVOKABLE void updateLivePosition(const QString &moves, const QString &sideToMove,
+                                        bool gameOver, int whiteMs, int blackMs);
+    Q_INVOKABLE void rejectLiveMove();
+    Q_INVOKABLE void stopLivePlay();
+
+    bool livePlayActive() const { return m_livePlayActive; }
+    QString livePlayEngineSide() const { return m_livePlayEngineSide; }
+    QString livePlayStatus() const { return m_livePlayStatus; }
+
+signals:
+    void livePlayChanged();
+    void liveMove(const QString &from, const QString &to, const QString &promotion);
+
+public:
     Q_INVOKABLE void registerCustomEngine(const QUrl &path,
                                           const QString &arguments,
                                           const QString &workingDirectory);
@@ -77,7 +99,18 @@ private:
         QString upstreamUrl;
     };
 
-    enum class Stage { Idle, Starting, Uci, Ready, Search, Shutdown };
+    enum class Stage {
+        Idle,
+        Starting,
+        Uci,
+        Ready,
+        Search,
+        Shutdown,
+        LiveStarting,
+        LiveUci,
+        LiveReady,
+        LiveSearch
+    };
 
     void discover();
     void loadCustomEngine();
@@ -97,6 +130,8 @@ private:
     void failInstall(const QString &reason);
     QString storeDirectory(const Profile &profile) const;
     int deadline(int productionMs) const;
+    void failLivePlay(const QString &reason);
+    void requestLiveMove();
 
     QList<Profile> m_profiles;
     QProcess m_process;
@@ -106,6 +141,14 @@ private:
     int m_active = -1;
     bool m_registrationRequired = false;
     bool m_sawMalformedHandshake = false;
+    bool m_livePlayActive = false;
+    QString m_livePlayEngineSide;
+    QString m_livePlayStatus;
+    QString m_liveMoves;
+    QString m_liveSideToMove;
+    int m_liveWhiteMs = 0;
+    int m_liveBlackMs = 0;
+    int m_liveSearchTimeMs = 250;
     QNetworkAccessManager m_network;
     QNetworkReply *m_download = nullptr;
     QFile m_downloadFile;

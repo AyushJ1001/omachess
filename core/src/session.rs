@@ -1364,6 +1364,8 @@ impl Session {
             json::write_string(&mut out, played.side);
             out.push_str(",\"san\":");
             json::write_string(&mut out, &played.san);
+            out.push_str(",\"uci\":");
+            json::write_string(&mut out, &played.uci);
             out.push('}');
         }
         out.push(']');
@@ -2004,7 +2006,9 @@ mod tests {
         let event = session.poll_event().unwrap();
         assert!(event.contains(r#"{"name":"e4","light":true,"piece":"white_pawn"}"#));
         assert!(event.contains(r#"{"name":"e2","light":true,"piece":null}"#));
-        assert!(event.contains(r#""moveList":[{"number":1,"side":"white","san":"e4"}]"#));
+        assert!(event.contains(
+            r#""moveList":[{"number":1,"side":"white","san":"e4","uci":"e2e4"}]"#
+        ));
         assert!(event.contains(r#""lastMove":{"from":"e2","to":"e4"}"#));
         assert!(event.contains(r#""sideToMove":"black""#));
     }
