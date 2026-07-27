@@ -1,8 +1,9 @@
 # Installing, backing up, and removing Omachess
 
 Omachess is an Omarchy 4 (Quattro) application. It is local-first: it needs no
-account and no hosted backend, and once installed it runs entirely offline.
-Installing itself downloads the signed source tarball, as any package does.
+account and no service to sign up for, your library lives on your own machine,
+and playing chess never leaves it. Installing downloads the signed source
+tarball, as any package does.
 
 ## Install
 
