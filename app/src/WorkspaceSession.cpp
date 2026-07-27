@@ -4,6 +4,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QFile>
+#include <QFileDialog>
+#include <QStandardPaths>
 
 extern "C" {
 #include "omachess_core.h"
@@ -41,6 +44,35 @@ WorkspaceSession::~WorkspaceSession()
 {
     if (m_session)
         omachess_session_free(m_session);
+}
+
+void WorkspaceSession::newVariantDefinition()
+{
+    submit(command(QStringLiteral("new_variant_definition")));
+}
+
+void WorkspaceSession::selectBoardPreset(const QString &id)
+{
+    submit(command(QStringLiteral("select_board_preset"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::setWorkshopStep(int step)
+{
+    submit(command(QStringLiteral("set_workshop_step"),
+                   {{QStringLiteral("step"), QString::number(step)}}));
+}
+
+void WorkspaceSession::toggleBuiltinPiece(const QString &code)
+{
+    submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
+}
+
+void WorkspaceSession::setCustomPiece(const QString &name, const QString &letter,
+                                      const QString &betza)
+{
+    submit(command(QStringLiteral("set_custom_piece"),
+                   {{QStringLiteral("name"), name}, {QStringLiteral("letter"), letter},
+                    {QStringLiteral("betza"), betza}}));
 }
 
 void WorkspaceSession::describeBoard()
@@ -165,6 +197,40 @@ void WorkspaceSession::relocateSetupPiece(const QString &from, const QString &to
 void WorkspaceSession::startSetupGame()
 {
     submit(command(QStringLiteral("start_setup_game")));
+}
+
+void WorkspaceSession::importPgn()
+{
+    QString path = qEnvironmentVariable("OMACHESS_TEST_IMPORT_PGN");
+    if (path.isEmpty()) {
+        path = QFileDialog::getOpenFileName(nullptr, tr("Import PGN"), QString(),
+                                            tr("Portable Game Notation (*.pgn)"));
+    }
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qCWarning(lcSession) << "cannot read PGN" << path << file.errorString();
+        return;
+    }
+    submit(command(QStringLiteral("import_pgn"),
+                   {{QStringLiteral("pgn"), QString::fromUtf8(file.readAll())}}));
+}
+
+void WorkspaceSession::exportPgn(const QStringList &recordIds)
+{
+    if (recordIds.isEmpty())
+        return;
+    m_exportPath = qEnvironmentVariable("OMACHESS_TEST_EXPORT_PGN");
+    if (m_exportPath.isEmpty()) {
+        m_exportPath = QFileDialog::getSaveFileName(nullptr, tr("Export PGN"),
+                                                    QStringLiteral("omachess.pgn"),
+                                                    tr("Portable Game Notation (*.pgn)"));
+    }
+    if (m_exportPath.isEmpty())
+        return;
+    submit(command(QStringLiteral("export_pgn"),
+                   {{QStringLiteral("ids"), recordIds.join(',')}}));
 }
 
 QVariantList WorkspaceSession::moveList() const
@@ -341,6 +407,42 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         emit libraryChanged();
         return;
     }
+    if (type == QStringLiteral("variant_library_changed")) {
+        const QString id = event.value(QStringLiteral("id")).toString();
+        for (const QVariant &record : std::as_const(m_libraryRecords))
+            if (record.toMap().value(QStringLiteral("id")).toString() == id)
+                return;
+        m_libraryRecords.prepend(QVariantMap{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("kind"), event.value(QStringLiteral("kind")).toString()},
+            {QStringLiteral("title"), event.value(QStringLiteral("title")).toString()},
+            {QStringLiteral("resultScore"), QString()},
+            {QStringLiteral("plyCount"), 0},
+        });
+        emit libraryChanged();
+        return;
+    }
+    if (type == QStringLiteral("workshop_changed")) {
+        m_workshopActive = event.value(QStringLiteral("active")).toBool();
+        m_workshopStep = event.value(QStringLiteral("step")).toInt();
+        m_boardFiles = event.value(QStringLiteral("files")).toInt();
+        m_boardRanks = event.value(QStringLiteral("ranks")).toInt();
+        m_selectedPieces.clear();
+        for (QChar code : event.value(QStringLiteral("selectedPieces")).toString())
+            m_selectedPieces.append(code);
+        m_customPieceName = event.value(QStringLiteral("customName")).toString();
+        m_customPieceLetter = event.value(QStringLiteral("customLetter")).toString();
+        m_customPieceBetza = event.value(QStringLiteral("customBetza")).toString();
+        m_betzaError = event.value(QStringLiteral("error")).toString();
+        m_boardPresets.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("presets")).toArray())
+            m_boardPresets.append(value.toObject().toVariantMap());
+        m_pieceCatalogue.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("pieces")).toArray())
+            m_pieceCatalogue.append(value.toObject().toVariantMap());
+        emit workshopChanged();
+        return;
+    }
     if (type == QStringLiteral("tabs_changed")) {
         m_openTabs.clear();
         const QJsonArray tabs = event.value(QStringLiteral("openTabs")).toArray();
@@ -366,6 +468,24 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_restoreAvailable = false;
         m_restoreLabel.clear();
         emit restoreChanged();
+        return;
+    }
+    if (type == QStringLiteral("pgn_import_results")) {
+        m_pgnImportResults.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("entries")).toArray())
+            m_pgnImportResults.append(value.toObject().toVariantMap());
+        emit pgnImportResultsChanged();
+        return;
+    }
+    if (type == QStringLiteral("pgn_export_ready")) {
+        QFile file(m_exportPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            qCWarning(lcSession) << "cannot write PGN" << m_exportPath << file.errorString();
+            return;
+        }
+        file.write(event.value(QStringLiteral("pgn")).toString().toUtf8());
+        file.close();
+        m_exportPath.clear();
         return;
     }
 

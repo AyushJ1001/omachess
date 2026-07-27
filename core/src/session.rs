@@ -24,6 +24,7 @@ use omachess_store::{
 use crate::board::{Orientation, Piece, Position};
 use crate::game::{result_label, Destination, Game, MoveRejected, PlayedMove, Side};
 use crate::json;
+use crate::pgn::{self, ImportEntry, ImportReport, PgnGame};
 use crate::rules::Winner;
 
 pub struct Session {
@@ -44,6 +45,7 @@ pub struct Session {
     setup: Option<PositionSetup>,
     save_mode: SaveMode,
     dirty: bool,
+    workshop: Option<VariantDefinition>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,35 @@ impl SaveMode {
         match self {
             Self::Autosave => "autosave",
             Self::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct VariantDefinition {
+    preset: String,
+    files: u8,
+    ranks: u8,
+    pieces: String,
+    custom_name: String,
+    custom_letter: String,
+    custom_betza: String,
+    error: String,
+    step: u8,
+}
+
+impl Default for VariantDefinition {
+    fn default() -> Self {
+        Self {
+            preset: "standard-8x8".into(),
+            files: 8,
+            ranks: 8,
+            pieces: "KQRBNP".into(),
+            custom_name: String::new(),
+            custom_letter: String::new(),
+            custom_betza: String::new(),
+            error: String::new(),
+            step: 1,
         }
     }
 }
@@ -139,6 +170,7 @@ impl Session {
             setup: None,
             save_mode: SaveMode::Autosave,
             dirty: false,
+            workshop: None,
         }
     }
 
@@ -180,6 +212,12 @@ impl Session {
             _ => None,
         };
 
+        let workshop = store
+            .workspace()
+            .residue("variant_definition_draft")
+            .ok()
+            .flatten()
+            .and_then(|value| decode_variant_definition(&value));
         let mut session = Session {
             game: Game::standard(),
             orientation: Orientation::WhiteBottom,
@@ -194,6 +232,7 @@ impl Session {
             setup: None,
             save_mode,
             dirty: false,
+            workshop,
         };
         // Completed records may reopen directly. Unfinished Played Games are
         // offered for restore and remain unloaded until the player chooses it.
@@ -235,6 +274,13 @@ impl Session {
             "set_save_mode" => self.set_save_mode(command)?,
             "save_record" => self.save_record()?,
             "discard_changes" => self.discard_changes()?,
+            "new_variant_definition" => self.new_variant_definition()?,
+            "select_board_preset" => self.select_board_preset(command)?,
+            "set_workshop_step" => self.set_workshop_step(command)?,
+            "toggle_builtin_piece" => self.toggle_builtin_piece(command)?,
+            "set_custom_piece" => self.set_custom_piece(command)?,
+            "import_pgn" => self.import_pgn(command)?,
+            "export_pgn" => self.export_pgn(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
@@ -248,6 +294,269 @@ impl Session {
                 self.events.push(restore_available_event(offer));
             }
         }
+        if self.workshop.is_some() {
+            self.events.push(self.workshop_changed_event());
+            self.events.push(String::from(
+                "{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"kind\":\"variant\",\"title\":\"Untitled Variant\"}",
+            ));
+        }
+        Ok(())
+    }
+
+    fn persist_variant_definition(&self) -> Result<(), CommandError> {
+        let (Some(store), Some(definition)) = (&self.store, &self.workshop) else {
+            return Ok(());
+        };
+        store
+            .workspace()
+            .set_residue(
+                "variant_definition_draft",
+                &encode_variant_definition(definition),
+            )
+            .map_err(|_| CommandError::Store)
+    }
+
+    fn new_variant_definition(&mut self) -> Result<(), CommandError> {
+        self.workshop = Some(VariantDefinition::default());
+        self.persist_variant_definition()
+    }
+
+    fn select_board_preset(&mut self, command: &str) -> Result<(), CommandError> {
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        let (files, ranks) = preset_geometry(&id).ok_or(CommandError::MalformedCommand)?;
+        let (max_files, max_ranks) = engine_geometry();
+        if files > max_files || ranks > max_ranks {
+            return Err(CommandError::RejectedMove);
+        }
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.preset = id;
+        definition.files = files;
+        definition.ranks = ranks;
+        self.persist_variant_definition()
+    }
+
+    fn set_workshop_step(&mut self, command: &str) -> Result<(), CommandError> {
+        let step = json::read_string_field(command, "step")
+            .and_then(|value| value.parse::<u8>().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        self.workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?
+            .step = step.clamp(1, 2);
+        Ok(())
+    }
+
+    fn toggle_builtin_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let code =
+            json::read_string_field(command, "code").ok_or(CommandError::MalformedCommand)?;
+        if matches!(code.as_str(), "K" | "P") {
+            return Ok(());
+        }
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        if definition.pieces.contains(&code) {
+            definition.pieces = definition.pieces.replace(&code, "");
+        } else {
+            definition.pieces.push_str(&code);
+        }
+        self.persist_variant_definition()
+    }
+
+    fn set_custom_piece(&mut self, command: &str) -> Result<(), CommandError> {
+        let name = json::read_string_field(command, "name").unwrap_or_default();
+        let letter = json::read_string_field(command, "letter").unwrap_or_default();
+        let betza = json::read_string_field(command, "betza").unwrap_or_default();
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.error.clear();
+        if let Some(offending) = betza.chars().find(|c| {
+            !(if c.is_ascii_uppercase() {
+                "WFDNACZGBRQKHX".contains(*c)
+            } else {
+                "fblrmcipgshe0123456789".contains(*c)
+            })
+        }) {
+            definition.error = format!("Unsupported Betza atom: {offending}");
+            return Ok(());
+        }
+        if name.is_empty()
+            || letter.len() != 1
+            || betza.is_empty()
+            || !betza.chars().any(|c| c.is_ascii_uppercase())
+        {
+            definition.error =
+                "Custom piece needs a name, one letter, and a Betza movement atom.".into();
+            return Ok(());
+        }
+        let letter = letter.to_ascii_uppercase();
+        if definition.pieces.contains(&letter) {
+            definition.error = format!("Piece letter {letter} is already in use.");
+            return Ok(());
+        }
+        definition.custom_name = name;
+        definition.custom_letter = letter;
+        definition.custom_betza = betza;
+        self.persist_variant_definition()
+    }
+
+    fn import_pgn(&mut self, command: &str) -> Result<(), CommandError> {
+        let text = json::read_string_field(command, "pgn").ok_or(CommandError::MalformedCommand)?;
+        let Some(store) = self.store.as_ref() else {
+            return Err(CommandError::Store);
+        };
+        let mut results = Vec::new();
+        for (index, entry) in pgn::import(&text).into_iter().enumerate() {
+            match entry {
+                ImportEntry::Imported(imported) => {
+                    let now = timestamp_now();
+                    let id = new_record_id();
+                    let title = pgn::tag_value_from(&imported.tags, "Event");
+                    let metadata = GameMetadata {
+                        white: pgn::tag_value_from(&imported.tags, "White"),
+                        black: pgn::tag_value_from(&imported.tags, "Black"),
+                        event: title.clone(),
+                        date: pgn::tag_value_from(&imported.tags, "Date"),
+                        title: title.clone(),
+                        tags: pgn::encode_tags(&imported.tags),
+                    };
+                    let result = Game::from_history(&imported.start_fen, imported.moves.clone())
+                        .and_then(|game| {
+                            let outcome = game.outcome();
+                            (outcome.is_over() && outcome.winner.score() == imported.result).then(
+                                || RecordResult {
+                                    status: status_name(outcome.winner).to_owned(),
+                                    termination: outcome.termination.name().to_owned(),
+                                    score: outcome.winner.score().to_owned(),
+                                },
+                            )
+                        });
+                    let record = GameRecord {
+                        id: id.clone(),
+                        kind: GameRecordKind::Played,
+                        title: (!title.is_empty()).then_some(title.clone()),
+                        result_score: result.as_ref().map(|value| value.score.clone()),
+                        ply_count: imported.moves.len() as u32,
+                        archived: false,
+                        created_at: now.clone(),
+                        updated_at: now,
+                        payload: GameRecordPayload {
+                            variant: "standard".into(),
+                            start_fen: imported.start_fen,
+                            moves: imported
+                                .moves
+                                .into_iter()
+                                .map(|played| MoveEntry {
+                                    uci: played.uci,
+                                    san: played.san,
+                                    number: played.number,
+                                    side: played.side.into(),
+                                })
+                                .collect(),
+                            result,
+                            participation: Some(encode_metadata(&metadata)),
+                            clock: None,
+                        },
+                    };
+                    store
+                        .workspace()
+                        .upsert_game_record(&record)
+                        .map_err(|_| CommandError::Store)?;
+                    results.push(ImportReport::Imported {
+                        entry: index + 1,
+                        title,
+                        id,
+                    });
+                }
+                ImportEntry::Failed(failure) => {
+                    results.push(ImportReport::Failed(failure));
+                }
+            }
+        }
+        self.events.push(import_results_event(&results));
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn export_pgn(&mut self, command: &str) -> Result<(), CommandError> {
+        let ids = json::read_string_field(command, "ids").ok_or(CommandError::MalformedCommand)?;
+        let Some(store) = self.store.as_ref() else {
+            return Err(CommandError::Store);
+        };
+        let mut documents = Vec::new();
+        for id in ids.split(',').filter(|id| !id.is_empty()) {
+            let record = store
+                .workspace()
+                .get_game_record(id)
+                .map_err(|_| CommandError::Store)?
+                .ok_or(CommandError::Store)?;
+            if record.payload.variant != "standard" {
+                continue;
+            }
+            let metadata = decode_metadata(record.payload.participation.as_deref());
+            let mut tags = pgn::decode_tags(&metadata.tags);
+            let site = existing_tag_or(&tags, "Site", "?").to_owned();
+            let round = existing_tag_or(&tags, "Round", "?").to_owned();
+            set_pgn_tag(&mut tags, "Event", value_or_unknown(&metadata.event));
+            set_pgn_tag(&mut tags, "Site", &site);
+            set_pgn_tag(
+                &mut tags,
+                "Date",
+                if metadata.date.is_empty() {
+                    "????.??.??"
+                } else {
+                    &metadata.date
+                },
+            );
+            set_pgn_tag(&mut tags, "Round", &round);
+            set_pgn_tag(&mut tags, "White", value_or_unknown(&metadata.white));
+            set_pgn_tag(&mut tags, "Black", value_or_unknown(&metadata.black));
+            let result = record
+                .payload
+                .result
+                .as_ref()
+                .map(|value| value.score.as_str())
+                .or_else(|| {
+                    tags.iter()
+                        .find(|(name, _)| name == "Result")
+                        .map(|(_, value)| value.as_str())
+                })
+                .unwrap_or("*")
+                .to_owned();
+            set_pgn_tag(&mut tags, "Result", &result);
+            if record.payload.start_fen != GameRecordPayload::STANDARD_START {
+                set_pgn_tag(&mut tags, "SetUp", "1");
+                set_pgn_tag(&mut tags, "FEN", &record.payload.start_fen);
+            }
+            documents.push(pgn::export(&PgnGame {
+                tags,
+                start_fen: record.payload.start_fen,
+                moves: record
+                    .payload
+                    .moves
+                    .into_iter()
+                    .map(|entry| PlayedMove {
+                        uci: entry.uci,
+                        san: entry.san,
+                        number: entry.number,
+                        side: if entry.side == "black" {
+                            "black"
+                        } else {
+                            "white"
+                        },
+                    })
+                    .collect(),
+                result,
+            }));
+        }
+        self.events
+            .push(pgn_export_ready_event(&documents.join("\n")));
         Ok(())
     }
 
@@ -923,6 +1232,28 @@ impl Session {
         json::write_string(&mut out, self.orientation.name());
 
         out.push_str(",\"squares\":[");
+        if let Some(definition) = &self.workshop {
+            let mut index = 0;
+            for rank in (1..=definition.ranks).rev() {
+                for file in 0..definition.files {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    index += 1;
+                    out.push_str("{\"name\":");
+                    json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
+                    out.push_str(",\"light\":");
+                    out.push_str(if (rank + file) % 2 == 1 {
+                        "true"
+                    } else {
+                        "false"
+                    });
+                    out.push_str(",\"piece\":null}");
+                }
+            }
+            out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
+            return out;
+        }
         let position = self.setup.as_ref().map(|setup| &setup.position);
         let game_position;
         let position = match position {
@@ -1137,6 +1468,100 @@ impl Session {
         out.push_str("}}");
         out
     }
+
+    fn workshop_changed_event(&self) -> String {
+        let definition = self
+            .workshop
+            .as_ref()
+            .expect("workshop event needs a definition");
+        let (max_files, max_ranks) = engine_geometry();
+        let mut out = String::from("{\"type\":\"workshop_changed\",\"active\":true,\"step\":");
+        out.push_str(&definition.step.to_string());
+        out.push_str(",\"files\":");
+        out.push_str(&definition.files.to_string());
+        out.push_str(",\"ranks\":");
+        out.push_str(&definition.ranks.to_string());
+        out.push_str(",\"selectedPieces\":");
+        json::write_string(&mut out, &definition.pieces);
+        for (key, value) in [
+            ("customName", &definition.custom_name),
+            ("customLetter", &definition.custom_letter),
+            ("customBetza", &definition.custom_betza),
+            ("error", &definition.error),
+        ] {
+            out.push(',');
+            json::write_string(&mut out, key);
+            out.push(':');
+            json::write_string(&mut out, value);
+        }
+        out.push_str(",\"presets\":[");
+        for (index, (id, name, files, ranks)) in [
+            ("standard-8x8", "Standard 8×8", 8, 8),
+            ("grand-10x8", "Grand 10×8", 10, 8),
+            ("wide-10x10", "Wide 10×10", 10, 10),
+            ("max-12x10", "Max 12×10", 12, 10),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            let available = *files <= max_files && *ranks <= max_ranks;
+            out.push_str("{\"id\":");
+            json::write_string(&mut out, id);
+            out.push_str(",\"name\":");
+            json::write_string(&mut out, name);
+            out.push_str(",\"available\":");
+            out.push_str(if available { "true" } else { "false" });
+            out.push_str(",\"reason\":");
+            json::write_string(
+                &mut out,
+                if available {
+                    ""
+                } else if max_files == 0 {
+                    "No Fairy-Stockfish build detected"
+                } else {
+                    "Detected build supports boards up to 8×8"
+                },
+            );
+            out.push('}');
+        }
+        out.push_str("]}");
+        out.pop();
+        out.push_str(",\"pieces\":[");
+        for (index, (code, name, betza)) in [
+            ("K", "King", "K"),
+            ("Q", "Queen", "Q"),
+            ("R", "Rook", "R"),
+            ("B", "Bishop", "B"),
+            ("N", "Knight", "N"),
+            ("P", "Pawn", "fmWfceF"),
+            ("A", "Archbishop", "BN"),
+            ("C", "Chancellor", "RN"),
+            ("M", "Amazon", "QN"),
+            ("F", "Ferz", "F"),
+            ("W", "Wazir", "W"),
+            ("G", "Grasshopper", "gQ"),
+            ("O", "Cannon", "mRcpR"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"code\":");
+            json::write_string(&mut out, code);
+            out.push_str(",\"name\":");
+            json::write_string(&mut out, name);
+            out.push_str(",\"betza\":");
+            json::write_string(&mut out, betza);
+            out.push('}');
+        }
+        out.push_str("]}");
+        out
+    }
 }
 
 fn encode_metadata(metadata: &GameMetadata) -> String {
@@ -1228,6 +1653,63 @@ fn restore_available_event(offer: &RestoreOffer) -> String {
     out
 }
 
+fn preset_geometry(id: &str) -> Option<(u8, u8)> {
+    match id {
+        "standard-8x8" => Some((8, 8)),
+        "grand-10x8" => Some((10, 8)),
+        "wide-10x10" => Some((10, 10)),
+        "max-12x10" => Some((12, 10)),
+        _ => None,
+    }
+}
+
+fn engine_geometry() -> (u8, u8) {
+    match std::env::var("OMACHESS_FAIRY_STOCKFISH_CAPABILITIES").as_deref() {
+        Ok("largeboards") => (12, 10),
+        Ok("none") => (0, 0),
+        _ => (8, 8),
+    }
+}
+
+fn encode_variant_definition(definition: &VariantDefinition) -> String {
+    let mut out = String::from("{\"schemaVersion\":\"1\"");
+    let files = definition.files.to_string();
+    let ranks = definition.ranks.to_string();
+    for (key, value) in [
+        ("preset", definition.preset.as_str()),
+        ("files", files.as_str()),
+        ("ranks", ranks.as_str()),
+        ("pieces", definition.pieces.as_str()),
+        ("customName", definition.custom_name.as_str()),
+        ("customLetter", definition.custom_letter.as_str()),
+        ("customBetza", definition.custom_betza.as_str()),
+    ] {
+        out.push(',');
+        json::write_string(&mut out, key);
+        out.push(':');
+        json::write_string(&mut out, value);
+    }
+    out.push('}');
+    out
+}
+
+fn decode_variant_definition(value: &str) -> Option<VariantDefinition> {
+    if json::read_string_field(value, "schemaVersion").as_deref() != Some("1") {
+        return None;
+    }
+    Some(VariantDefinition {
+        preset: json::read_string_field(value, "preset")?,
+        files: json::read_string_field(value, "files")?.parse().ok()?,
+        ranks: json::read_string_field(value, "ranks")?.parse().ok()?,
+        pieces: json::read_string_field(value, "pieces")?,
+        custom_name: json::read_string_field(value, "customName")?,
+        custom_letter: json::read_string_field(value, "customLetter")?,
+        custom_betza: json::read_string_field(value, "customBetza")?,
+        error: String::new(),
+        step: 1,
+    })
+}
+
 fn library_changed_event(records: &[GameRecordSummary]) -> String {
     let mut out = String::from("{\"type\":\"library_changed\",\"records\":[");
     for (index, record) in records.iter().enumerate() {
@@ -1254,6 +1736,76 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
     }
     out.push_str("]}");
     out
+}
+
+fn import_results_event(results: &[ImportReport]) -> String {
+    let mut out = String::from("{\"type\":\"pgn_import_results\",\"entries\":[");
+    for (index, result) in results.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let (entry, title, id, reason) = match result {
+            ImportReport::Imported { entry, title, id } => {
+                (*entry, title.as_str(), Some(id.as_str()), None)
+            }
+            ImportReport::Failed(failure) => (
+                failure.entry,
+                failure.title.as_str(),
+                None,
+                Some(failure.reason.as_str()),
+            ),
+        };
+        out.push_str("{\"entry\":");
+        out.push_str(&entry.to_string());
+        out.push_str(",\"title\":");
+        json::write_string(&mut out, title);
+        out.push_str(",\"status\":");
+        json::write_string(&mut out, if id.is_some() { "imported" } else { "failed" });
+        if let Some(id) = id {
+            out.push_str(",\"id\":");
+            json::write_string(&mut out, id);
+        }
+        if let Some(reason) = reason {
+            out.push_str(",\"reason\":");
+            json::write_string(&mut out, reason);
+        }
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn pgn_export_ready_event(pgn: &str) -> String {
+    let mut out = String::from("{\"type\":\"pgn_export_ready\",\"pgn\":");
+    json::write_string(&mut out, pgn);
+    out.push('}');
+    out
+}
+
+fn set_pgn_tag(tags: &mut Vec<(String, String)>, name: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    if let Some((_, existing)) = tags.iter_mut().find(|(key, _)| key == name) {
+        *existing = value.to_owned();
+    } else {
+        tags.push((name.to_owned(), value.to_owned()));
+    }
+}
+
+fn value_or_unknown(value: &str) -> &str {
+    if value.is_empty() {
+        "?"
+    } else {
+        value
+    }
+}
+
+fn existing_tag_or<'a>(tags: &'a [(String, String)], name: &str, fallback: &'a str) -> &'a str {
+    tags.iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+        .unwrap_or(fallback)
 }
 
 fn tabs_changed_event(open_tabs: &[String], active_id: Option<&str>, titles: &[String]) -> String {

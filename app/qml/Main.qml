@@ -20,6 +20,7 @@ ApplicationWindow {
     visible: true
     title: qsTr("Omachess")
     color: Theme.background
+    property var selectedLibraryIds: []
 
     property string pendingCloseRecordId: ""
     property bool pendingWorkspaceClose: false
@@ -86,6 +87,48 @@ ApplicationWindow {
     Component.onCompleted: {
         WorkspaceSession.describeBoard()
         actionSource.rebuild()
+    }
+
+    Connections {
+        target: WorkspaceSession
+        function onPgnImportResultsChanged() { pgnImportResultsDialog.open() }
+    }
+
+    Dialog {
+        id: pgnImportResultsDialog
+        objectName: "pgnImportResultsDialog"
+        title: qsTr("PGN import results")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, parent.width - 40)
+        standardButtons: Dialog.Close
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "pgnImportSummary"
+                text: {
+                    let imported = 0
+                    let failed = 0
+                    for (const entry of WorkspaceSession.pgnImportResults)
+                        entry.status === "imported" ? imported++ : failed++
+                    return qsTr("%1 imported · %2 failed").arg(imported).arg(failed)
+                }
+                font.bold: true
+            }
+            Repeater {
+                model: WorkspaceSession.pgnImportResults
+                Label {
+                    required property var modelData
+                    objectName: "pgnImportEntry:" + modelData.entry
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: modelData.status === "imported"
+                          ? qsTr("Entry %1 — %2: imported").arg(modelData.entry).arg(modelData.title)
+                          : qsTr("Entry %1 — %2: failed — %3")
+                                .arg(modelData.entry).arg(modelData.title).arg(modelData.reason)
+                }
+            }
+        }
     }
 
     function focusPane(delta) {
@@ -363,6 +406,11 @@ ApplicationWindow {
                 text: qsTr("Save")
                 onClicked: WorkspaceSession.saveRecord()
             }
+            Button {
+                objectName: "newVariantButton"
+                text: qsTr("New variant")
+                onClicked: WorkspaceSession.newVariantDefinition()
+            }
 
             Button {
                 objectName: WorkspaceSession.gameSuspended ? "resumeGameButton"
@@ -521,6 +569,22 @@ ApplicationWindow {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 8
+                        Button {
+                            objectName: "importPgnButton"
+                            text: qsTr("Import PGN…")
+                            onClicked: WorkspaceSession.importPgn()
+                        }
+                        Button {
+                            objectName: "exportPgnButton"
+                            text: qsTr("Export selected…")
+                            enabled: workspace.selectedLibraryIds.length > 0
+                            onClicked: WorkspaceSession.exportPgn(workspace.selectedLibraryIds)
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
@@ -563,7 +627,9 @@ ApplicationWindow {
                                     objectName: "libraryMeta:" + modelData.id
                                     Layout.fillWidth: true
                                     text: {
-                                        const kind = modelData.kind === "analysis"
+                                        const kind = modelData.kind === "variant"
+                                                   ? qsTr("Draft Variant Definition")
+                                                   : modelData.kind === "analysis"
                                                    ? qsTr("Analysis") : qsTr("Played")
                                         const score = modelData.resultScore
                                         return score && score.length > 0
@@ -572,6 +638,29 @@ ApplicationWindow {
                                     }
                                     color: Theme.muted
                                     font.pixelSize: 11
+                                }
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                CheckBox {
+                                    objectName: "selectRecord:" + modelData.id
+                                    checked: workspace.selectedLibraryIds.indexOf(modelData.id) >= 0
+                                    onClicked: {
+                                        let ids = workspace.selectedLibraryIds.slice()
+                                        const at = ids.indexOf(modelData.id)
+                                        if (checked && at < 0)
+                                            ids.push(modelData.id)
+                                        else if (!checked && at >= 0)
+                                            ids.splice(at, 1)
+                                        workspace.selectedLibraryIds = ids
+                                    }
+                                }
+                                Button {
+                                    objectName: "exportRecord:" + modelData.id
+                                    text: qsTr("Export")
+                                    onClicked: WorkspaceSession.exportPgn([modelData.id])
                                 }
                             }
 
@@ -962,14 +1051,128 @@ ApplicationWindow {
 
                     Label {
                         objectName: "rightRailHeading"
-                        text: WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
+                        text: WorkspaceSession.workshopActive ? qsTr("Variant Workshop")
+                              : WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
                         font.bold: true
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
                     }
 
+                    ColumnLayout {
+                        visible: WorkspaceSession.workshopActive
+                        z: 2
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+
+                        Label {
+                            objectName: "workshopStatus"
+                            text: qsTr("Draft Variant Definition · v1")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "workshopStepHeading"
+                            text: WorkspaceSession.workshopStep === 1
+                                  ? qsTr("1. Board") : qsTr("2. Pieces")
+                            font.bold: true
+                        }
+                        ColumnLayout {
+                            visible: WorkspaceSession.workshopStep === 1
+                            Repeater {
+                                model: WorkspaceSession.boardPresets
+                                Button {
+                                    required property var modelData
+                                    objectName: "boardPreset:" + modelData.id
+                                    Layout.fillWidth: true
+                                    enabled: modelData.available
+                                    text: modelData.name + (modelData.available
+                                          ? "" : " — Unavailable: " + modelData.reason)
+                                    onClicked: WorkspaceSession.selectBoardPreset(modelData.id)
+                                }
+                            }
+                        }
+                        Flickable {
+                            visible: WorkspaceSession.workshopStep === 2
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentHeight: pieceControls.implicitHeight
+                            clip: true
+                            ColumnLayout {
+                                id: pieceControls
+                                width: parent.width
+                                Repeater {
+                                    model: WorkspaceSession.pieceCatalogue
+                                    CheckBox {
+                                        required property var modelData
+                                        objectName: "piece:" + modelData.code
+                                        text: modelData.name + " · " + modelData.betza
+                                        checked: WorkspaceSession.selectedPieces.indexOf(modelData.code) >= 0
+                                        enabled: modelData.code !== "K" && modelData.code !== "P"
+                                        onClicked: WorkspaceSession.toggleBuiltinPiece(modelData.code)
+                                    }
+                                }
+                                Label { text: qsTr("One custom Betza piece"); font.bold: true }
+                                TextField {
+                                    id: customName
+                                    objectName: "customPieceName"
+                                    placeholderText: qsTr("Name")
+                                    text: WorkspaceSession.customPieceName
+                                }
+                                TextField {
+                                    id: customLetter
+                                    objectName: "customPieceLetter"
+                                    placeholderText: qsTr("Letter")
+                                    text: WorkspaceSession.customPieceLetter
+                                }
+                                TextField {
+                                    id: customBetza
+                                    objectName: "customPieceBetza"
+                                    placeholderText: qsTr("Betza movement")
+                                    text: WorkspaceSession.customPieceBetza
+                                    onTextChanged: {
+                                        if (customName.text.length > 0
+                                                && customLetter.text.length > 0
+                                                && text.length > 0)
+                                            WorkspaceSession.setCustomPiece(
+                                                customName.text, customLetter.text, text)
+                                    }
+                                }
+                                Button {
+                                    objectName: "saveCustomPiece"
+                                    text: qsTr("Use custom piece")
+                                    onClicked: WorkspaceSession.setCustomPiece(
+                                                   customName.text, customLetter.text, customBetza.text)
+                                }
+                                Label {
+                                    objectName: "betzaErrorLabel"
+                                    visible: WorkspaceSession.betzaError.length > 0
+                                    text: WorkspaceSession.betzaError
+                                    color: Theme.red
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button {
+                                objectName: "workshopBack"
+                                text: qsTr("Back")
+                                enabled: WorkspaceSession.workshopStep > 1
+                                onClicked: WorkspaceSession.setWorkshopStep(
+                                               WorkspaceSession.workshopStep - 1)
+                            }
+                            Button {
+                                objectName: "workshopContinue"
+                                Layout.fillWidth: true
+                                text: qsTr("Continue")
+                                enabled: WorkspaceSession.workshopStep < 2
+                                onClicked: WorkspaceSession.setWorkshopStep(
+                                               WorkspaceSession.workshopStep + 1)
+                            }
+                        }
+                    }
+
                     Label {
+                        visible: !WorkspaceSession.workshopActive
                         text: qsTr("Game Metadata")
                         font.bold: true
                         color: Theme.muted
