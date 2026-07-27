@@ -18,6 +18,8 @@ Item {
 
     // The width and height of the whole board.
     property real side: 640
+    property int files: WorkspaceSession.workshopActive ? WorkspaceSession.boardFiles : 8
+    property int ranks: WorkspaceSession.workshopActive ? WorkspaceSession.boardRanks : 8
 
     // The square a piece has been picked up from, or "" when the player is
     // holding nothing.
@@ -38,10 +40,10 @@ Item {
     property string setupPiece: "__move"
     property string setupFrom: ""
 
-    readonly property real cell: side / 8
+    readonly property real cell: Math.min(width / files, height / ranks)
 
-    width: side
-    height: side
+    width: WorkspaceSession.workshopActive ? side : side
+    height: WorkspaceSession.workshopActive ? side * ranks / files : side
 
     // Any new position means the piece that was picked up is no longer where
     // it was, so nothing stays held across a board change.
@@ -72,7 +74,7 @@ Item {
             return ""
         const column = Math.floor(x / cell)
         const row = Math.floor(y / cell)
-        return WorkspaceSession.squareNameAt(row * 8 + column)
+        return WorkspaceSession.squareNameAt(row * files + column)
     }
 
     function isTarget(square) {
@@ -100,8 +102,8 @@ Item {
     Grid {
         id: grid
         anchors.fill: parent
-        columns: 8
-        rows: 8
+        columns: board.files
+        rows: board.ranks
 
         Repeater {
             model: WorkspaceSession.board
