@@ -14,13 +14,22 @@ PKGBUILD = REPOSITORY_ROOT / "packaging" / "PKGBUILD"
 # Reading the recipe's own variables, rather than grepping its text, keeps the
 # journey honest about what makepkg would see. Every array is passed whole, so
 # an assertion never sees just its first element.
-_ARRAYS = ("arch", "depends", "makedepends", "optdepends", "source", "validpgpkeys")
+_ARRAYS = (
+    "arch",
+    "depends",
+    "makedepends",
+    "optdepends",
+    "source",
+    "validpgpkeys",
+    "sha256sums",
+)
 
 RECIPE_AS_JSON = r"""
 source "$1"
 python3 - "$pkgname" "$pkgver" "$install" <<'PY' \
   "${arch[@]}" --- "${depends[@]}" --- "${makedepends[@]}" --- \
-  "${optdepends[@]}" --- "${source[@]}" --- "${validpgpkeys[@]}"
+  "${optdepends[@]}" --- "${source[@]}" --- "${validpgpkeys[@]}" --- \
+  "${sha256sums[@]}"
 import json, sys
 names = %r
 head, rest = sys.argv[1:4], sys.argv[4:]
@@ -86,6 +95,19 @@ class PackageRecipe(unittest.TestCase):
         self.assertTrue(self.recipe["validpgpkeys"], "no validpgpkeys entry pins the signing key")
         for key in self.recipe["validpgpkeys"]:
             self.assertRegex(key, r"^[0-9A-F]{40}$", "validpgpkeys wants a full fingerprint")
+
+    def test_the_released_tarball_has_its_digest_pinned(self) -> None:
+        """A signature proves who built the tarball; the digest pins which one."""
+        sums = dict(zip(self.recipe["source"], self.recipe["sha256sums"]))
+        self.assertEqual(len(sums), len(self.recipe["source"]), "a source has no sha256sum")
+        for item, digest in sums.items():
+            if item.endswith((".sig", ".asc")):
+                # A detached signature carries no digest of its own.
+                self.assertEqual(digest, "SKIP", f"{item} should not be digested")
+            else:
+                self.assertRegex(
+                    digest, r"^[0-9a-f]{64}$", f"{item} has no pinned sha256 digest"
+                )
 
     def test_the_package_depends_hard_on_omarchy(self) -> None:
         depends = self.recipe["depends"]
