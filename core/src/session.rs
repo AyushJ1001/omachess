@@ -43,7 +43,24 @@ pub struct Session {
     suspended: bool,
     metadata: GameMetadata,
     setup: Option<PositionSetup>,
+    save_mode: SaveMode,
+    dirty: bool,
     workshop: Option<VariantDefinition>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveMode {
+    Autosave,
+    Manual,
+}
+
+impl SaveMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Autosave => "autosave",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +168,8 @@ impl Session {
             suspended: false,
             metadata: GameMetadata::default(),
             setup: None,
+            save_mode: SaveMode::Autosave,
+            dirty: false,
             workshop: None,
         }
     }
@@ -166,6 +185,10 @@ impl Session {
     }
 
     fn open_store(store: LiveStore) -> Result<Self, SessionOpenError> {
+        let save_mode = match store.workspace().residue("save_mode") {
+            Ok(Some(mode)) if mode == "manual" => SaveMode::Manual,
+            _ => SaveMode::Autosave,
+        };
         let open_tabs = match store.workspace().residue("open_tab_ids") {
             Ok(Some(encoded)) => decode_tab_ids(&encoded),
             _ => Vec::new(),
@@ -207,6 +230,8 @@ impl Session {
             suspended: false,
             metadata: GameMetadata::default(),
             setup: None,
+            save_mode,
+            dirty: false,
             workshop,
         };
         // Completed records may reopen directly. Unfinished Played Games are
@@ -246,6 +271,9 @@ impl Session {
             "place_setup_piece" => self.place_setup_piece(command)?,
             "relocate_setup_piece" => self.relocate_setup_piece(command)?,
             "start_setup_game" => self.start_setup_game()?,
+            "set_save_mode" => self.set_save_mode(command)?,
+            "save_record" => self.save_record()?,
+            "discard_changes" => self.discard_changes()?,
             "new_variant_definition" => self.new_variant_definition()?,
             "select_board_preset" => self.select_board_preset(command)?,
             "set_workshop_step" => self.set_workshop_step(command)?,
@@ -380,7 +408,9 @@ impl Session {
 
     fn import_pgn(&mut self, command: &str) -> Result<(), CommandError> {
         let text = json::read_string_field(command, "pgn").ok_or(CommandError::MalformedCommand)?;
-        let Some(store) = self.store.as_ref() else { return Err(CommandError::Store) };
+        let Some(store) = self.store.as_ref() else {
+            return Err(CommandError::Store);
+        };
         let mut results = Vec::new();
         for (index, entry) in pgn::import(&text).into_iter().enumerate() {
             match entry {
@@ -399,30 +429,50 @@ impl Session {
                     let result = Game::from_history(&imported.start_fen, imported.moves.clone())
                         .and_then(|game| {
                             let outcome = game.outcome();
-                            (outcome.is_over() && outcome.winner.score() == imported.result)
-                                .then(|| RecordResult {
+                            (outcome.is_over() && outcome.winner.score() == imported.result).then(
+                                || RecordResult {
                                     status: status_name(outcome.winner).to_owned(),
                                     termination: outcome.termination.name().to_owned(),
                                     score: outcome.winner.score().to_owned(),
-                                })
+                                },
+                            )
                         });
                     let record = GameRecord {
-                        id: id.clone(), kind: GameRecordKind::Played,
+                        id: id.clone(),
+                        kind: GameRecordKind::Played,
                         title: (!title.is_empty()).then_some(title.clone()),
                         result_score: result.as_ref().map(|value| value.score.clone()),
-                        ply_count: imported.moves.len() as u32, archived: false,
-                        created_at: now.clone(), updated_at: now,
+                        ply_count: imported.moves.len() as u32,
+                        archived: false,
+                        created_at: now.clone(),
+                        updated_at: now,
                         payload: GameRecordPayload {
-                            variant: "standard".into(), start_fen: imported.start_fen,
-                            moves: imported.moves.into_iter().map(|played| MoveEntry {
-                                uci: played.uci, san: played.san, number: played.number,
-                                side: played.side.into(),
-                            }).collect(),
-                            result, participation: Some(encode_metadata(&metadata)), clock: None,
+                            variant: "standard".into(),
+                            start_fen: imported.start_fen,
+                            moves: imported
+                                .moves
+                                .into_iter()
+                                .map(|played| MoveEntry {
+                                    uci: played.uci,
+                                    san: played.san,
+                                    number: played.number,
+                                    side: played.side.into(),
+                                })
+                                .collect(),
+                            result,
+                            participation: Some(encode_metadata(&metadata)),
+                            clock: None,
                         },
                     };
-                    store.workspace().upsert_game_record(&record).map_err(|_| CommandError::Store)?;
-                    results.push(ImportReport::Imported { entry: index + 1, title, id });
+                    store
+                        .workspace()
+                        .upsert_game_record(&record)
+                        .map_err(|_| CommandError::Store)?;
+                    results.push(ImportReport::Imported {
+                        entry: index + 1,
+                        title,
+                        id,
+                    });
                 }
                 ImportEntry::Failed(failure) => {
                     results.push(ImportReport::Failed(failure));
@@ -436,40 +486,77 @@ impl Session {
 
     fn export_pgn(&mut self, command: &str) -> Result<(), CommandError> {
         let ids = json::read_string_field(command, "ids").ok_or(CommandError::MalformedCommand)?;
-        let Some(store) = self.store.as_ref() else { return Err(CommandError::Store) };
+        let Some(store) = self.store.as_ref() else {
+            return Err(CommandError::Store);
+        };
         let mut documents = Vec::new();
         for id in ids.split(',').filter(|id| !id.is_empty()) {
-            let record = store.workspace().get_game_record(id)
-                .map_err(|_| CommandError::Store)?.ok_or(CommandError::Store)?;
-            if record.payload.variant != "standard" { continue; }
+            let record = store
+                .workspace()
+                .get_game_record(id)
+                .map_err(|_| CommandError::Store)?
+                .ok_or(CommandError::Store)?;
+            if record.payload.variant != "standard" {
+                continue;
+            }
             let metadata = decode_metadata(record.payload.participation.as_deref());
             let mut tags = pgn::decode_tags(&metadata.tags);
             let site = existing_tag_or(&tags, "Site", "?").to_owned();
             let round = existing_tag_or(&tags, "Round", "?").to_owned();
             set_pgn_tag(&mut tags, "Event", value_or_unknown(&metadata.event));
             set_pgn_tag(&mut tags, "Site", &site);
-            set_pgn_tag(&mut tags, "Date", if metadata.date.is_empty() { "????.??.??" } else { &metadata.date });
+            set_pgn_tag(
+                &mut tags,
+                "Date",
+                if metadata.date.is_empty() {
+                    "????.??.??"
+                } else {
+                    &metadata.date
+                },
+            );
             set_pgn_tag(&mut tags, "Round", &round);
             set_pgn_tag(&mut tags, "White", value_or_unknown(&metadata.white));
             set_pgn_tag(&mut tags, "Black", value_or_unknown(&metadata.black));
-            let result = record.payload.result.as_ref().map(|value| value.score.as_str())
-                .or_else(|| tags.iter().find(|(name, _)| name == "Result").map(|(_, value)| value.as_str()))
-                .unwrap_or("*").to_owned();
+            let result = record
+                .payload
+                .result
+                .as_ref()
+                .map(|value| value.score.as_str())
+                .or_else(|| {
+                    tags.iter()
+                        .find(|(name, _)| name == "Result")
+                        .map(|(_, value)| value.as_str())
+                })
+                .unwrap_or("*")
+                .to_owned();
             set_pgn_tag(&mut tags, "Result", &result);
             if record.payload.start_fen != GameRecordPayload::STANDARD_START {
                 set_pgn_tag(&mut tags, "SetUp", "1");
                 set_pgn_tag(&mut tags, "FEN", &record.payload.start_fen);
             }
             documents.push(pgn::export(&PgnGame {
-                tags, start_fen: record.payload.start_fen,
-                moves: record.payload.moves.into_iter().map(|entry| PlayedMove {
-                    uci: entry.uci, san: entry.san, number: entry.number,
-                    side: if entry.side == "black" { "black" } else { "white" },
-                }).collect(),
+                tags,
+                start_fen: record.payload.start_fen,
+                moves: record
+                    .payload
+                    .moves
+                    .into_iter()
+                    .map(|entry| PlayedMove {
+                        uci: entry.uci,
+                        san: entry.san,
+                        number: entry.number,
+                        side: if entry.side == "black" {
+                            "black"
+                        } else {
+                            "white"
+                        },
+                    })
+                    .collect(),
                 result,
             }));
         }
-        self.events.push(pgn_export_ready_event(&documents.join("\n")));
+        self.events
+            .push(pgn_export_ready_event(&documents.join("\n")));
         Ok(())
     }
 
@@ -496,6 +583,9 @@ impl Session {
             return Err(CommandError::MalformedCommand);
         };
         let promotion = json::read_string_field(command, "promotion");
+        if self.save_mode == SaveMode::Manual && self.record_id.is_none() {
+            self.persist_current_record()?;
+        }
         self.game
             .play(&from, &to, promotion.as_deref())
             .map_err(|rejection| match rejection {
@@ -507,8 +597,63 @@ impl Session {
             clock.history.push((clock.white_ms, clock.black_ms));
             clock.last_tick = Some(Instant::now());
         }
-        self.persist_current_record()?;
+        self.record_changed()?;
         Ok(())
+    }
+
+    fn set_save_mode(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(mode) = json::read_string_field(command, "mode") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let next = match mode.as_str() {
+            "autosave" => SaveMode::Autosave,
+            "manual" => SaveMode::Manual,
+            _ => return Err(CommandError::MalformedCommand),
+        };
+        if next == SaveMode::Autosave && self.dirty {
+            self.persist_current_record()?;
+            self.dirty = false;
+        }
+        self.save_mode = next;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .workspace()
+                .set_residue("save_mode", self.save_mode.name())
+                .map_err(|_| CommandError::Store)?;
+        }
+        Ok(())
+    }
+
+    fn save_record(&mut self) -> Result<(), CommandError> {
+        if self.record_id.is_some() {
+            self.persist_current_record()?;
+        }
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn discard_changes(&mut self) -> Result<(), CommandError> {
+        if self.dirty {
+            let Some(id) = self.record_id.clone() else {
+                return Err(CommandError::MalformedCommand);
+            };
+            self.load_record(&id)?;
+        }
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn record_changed(&mut self) -> Result<(), CommandError> {
+        if self.save_mode == SaveMode::Manual {
+            self.dirty = true;
+            Ok(())
+        } else {
+            self.persist_current_record()
+        }
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.save_mode == SaveMode::Manual && self.dirty
     }
 
     fn configure_clock(&mut self, command: &str) -> Result<(), CommandError> {
@@ -569,7 +714,7 @@ impl Session {
             self.game.complete_on_time(loser);
             clock.history.push((clock.white_ms, clock.black_ms));
             clock.last_tick = None;
-            self.persist_current_record()?;
+            self.record_changed()?;
         }
         Ok(())
     }
@@ -590,7 +735,12 @@ impl Session {
                 *destination = value;
             }
         }
-        self.persist_metadata(&id)
+        if self.save_mode == SaveMode::Manual {
+            self.dirty = true;
+            Ok(())
+        } else {
+            self.persist_metadata(&id)
+        }
     }
 
     fn navigate(&mut self, command: &str) -> Result<(), CommandError> {
@@ -644,6 +794,7 @@ impl Session {
     fn can_suspend_game(&mut self) -> bool {
         self.setup.is_none()
             && !self.suspended
+            && !self.has_unsaved_changes()
             && !self.game.moves().is_empty()
             && !self.game.reviewing()
             && !self.game.outcome().is_over()
@@ -663,6 +814,9 @@ impl Session {
     }
 
     fn new_game(&mut self) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
         // The previous Game Record stays in the Live Store; this only clears
         // the board so the next move starts a new record.
         self.game = Game::standard();
@@ -673,6 +827,7 @@ impl Session {
         self.suspended = false;
         self.metadata = GameMetadata::default();
         self.setup = None;
+        self.dirty = false;
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
@@ -809,6 +964,9 @@ impl Session {
     }
 
     fn open_record(&mut self, command: &str) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
         let Some(id) = json::read_string_field(command, "id") else {
             return Err(CommandError::MalformedCommand);
         };
@@ -912,6 +1070,7 @@ impl Session {
         }
         self.setup = None;
         self.record_id = Some(record.id);
+        self.dirty = false;
         Ok(())
     }
 
@@ -1217,10 +1376,28 @@ impl Session {
         } else {
             "false"
         });
+        out.push_str(",\"saveMode\":");
+        json::write_string(&mut out, self.save_mode.name());
+        out.push_str(",\"dirty\":");
+        out.push_str(if self.has_unsaved_changes() {
+            "true"
+        } else {
+            "false"
+        });
+        out.push_str(",\"needsUnsavedDecision\":");
+        out.push_str(if self.has_unsaved_changes() {
+            "true"
+        } else {
+            "false"
+        });
         out.push_str(",\"suspended\":");
         out.push_str(if self.suspended { "true" } else { "false" });
         out.push_str(",\"canSuspend\":");
-        out.push_str(if self.can_suspend_game() { "true" } else { "false" });
+        out.push_str(if self.can_suspend_game() {
+            "true"
+        } else {
+            "false"
+        });
 
         out.push_str(",\"clock\":");
         match &self.clock {
@@ -1564,12 +1741,19 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
 fn import_results_event(results: &[ImportReport]) -> String {
     let mut out = String::from("{\"type\":\"pgn_import_results\",\"entries\":[");
     for (index, result) in results.iter().enumerate() {
-        if index > 0 { out.push(','); }
+        if index > 0 {
+            out.push(',');
+        }
         let (entry, title, id, reason) = match result {
-            ImportReport::Imported { entry, title, id } =>
-                (*entry, title.as_str(), Some(id.as_str()), None),
-            ImportReport::Failed(failure) =>
-                (failure.entry, failure.title.as_str(), None, Some(failure.reason.as_str())),
+            ImportReport::Imported { entry, title, id } => {
+                (*entry, title.as_str(), Some(id.as_str()), None)
+            }
+            ImportReport::Failed(failure) => (
+                failure.entry,
+                failure.title.as_str(),
+                None,
+                Some(failure.reason.as_str()),
+            ),
         };
         out.push_str("{\"entry\":");
         out.push_str(&entry.to_string());
@@ -1578,10 +1762,12 @@ fn import_results_event(results: &[ImportReport]) -> String {
         out.push_str(",\"status\":");
         json::write_string(&mut out, if id.is_some() { "imported" } else { "failed" });
         if let Some(id) = id {
-            out.push_str(",\"id\":"); json::write_string(&mut out, id);
+            out.push_str(",\"id\":");
+            json::write_string(&mut out, id);
         }
         if let Some(reason) = reason {
-            out.push_str(",\"reason\":"); json::write_string(&mut out, reason);
+            out.push_str(",\"reason\":");
+            json::write_string(&mut out, reason);
         }
         out.push('}');
     }
@@ -1597,7 +1783,9 @@ fn pgn_export_ready_event(pgn: &str) -> String {
 }
 
 fn set_pgn_tag(tags: &mut Vec<(String, String)>, name: &str, value: &str) {
-    if value.is_empty() { return; }
+    if value.is_empty() {
+        return;
+    }
     if let Some((_, existing)) = tags.iter_mut().find(|(key, _)| key == name) {
         *existing = value.to_owned();
     } else {
@@ -1606,11 +1794,17 @@ fn set_pgn_tag(tags: &mut Vec<(String, String)>, name: &str, value: &str) {
 }
 
 fn value_or_unknown(value: &str) -> &str {
-    if value.is_empty() { "?" } else { value }
+    if value.is_empty() {
+        "?"
+    } else {
+        value
+    }
 }
 
 fn existing_tag_or<'a>(tags: &'a [(String, String)], name: &str, fallback: &'a str) -> &'a str {
-    tags.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+    tags.iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
         .unwrap_or(fallback)
 }
 
@@ -1708,7 +1902,8 @@ impl Default for Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.apply_elapsed_clock();
-        if self.record_id.is_some() && !self.game.outcome().is_over() {
+        if self.record_id.is_some() && !self.game.outcome().is_over() && !self.has_unsaved_changes()
+        {
             let _ = self.persist_current_record();
         }
         let _ = self.persist_residue();
@@ -2067,6 +2262,58 @@ mod tests {
         session.submit(r#"{"type":"navigate","to":"end"}"#).unwrap();
         let event = describe(&mut session);
         assert!(event.contains(r#""canSuspend":true"#));
+    }
+
+    #[test]
+    fn manual_save_mode_keeps_changes_dirty_until_saved_and_discard_restores_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+
+        session
+            .submit(r#"{"type":"set_save_mode","mode":"manual"}"#)
+            .unwrap();
+        play(&mut session, "e2", "e4");
+        let dirty = describe(&mut session);
+        assert!(dirty.contains(r#""saveMode":"manual""#));
+        assert!(dirty.contains(r#""dirty":true"#));
+        assert_eq!(
+            session.submit(r#"{"type":"new_game"}"#),
+            Err(CommandError::RejectedMove)
+        );
+        assert_eq!(
+            session.submit(r#"{"type":"open_record","id":"another"}"#),
+            Err(CommandError::RejectedMove)
+        );
+
+        session.submit(r#"{"type":"discard_changes"}"#).unwrap();
+        let discarded = describe(&mut session);
+        assert!(discarded.contains(r#""moveList":[]"#));
+        assert!(discarded.contains(r#""dirty":false"#));
+
+        play(&mut session, "d2", "d4");
+        session.submit(r#"{"type":"save_record"}"#).unwrap();
+        let saved = describe(&mut session);
+        assert!(saved.contains(r#""san":"d4"#));
+        assert!(saved.contains(r#""dirty":false"#));
+    }
+
+    #[test]
+    fn only_a_dirty_game_record_in_manual_save_mode_requires_an_unsaved_close_decision() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+
+        play(&mut session, "e2", "e4");
+        assert!(!describe(&mut session).contains(r#""dirty":true"#));
+
+        session
+            .submit(r#"{"type":"set_save_mode","mode":"manual"}"#)
+            .unwrap();
+        play(&mut session, "e7", "e5");
+        let board = describe(&mut session);
+        assert!(board.contains(r#""dirty":true"#));
+        assert!(board.contains(r#""needsUnsavedDecision":true"#));
     }
 
     #[test]

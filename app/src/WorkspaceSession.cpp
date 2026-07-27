@@ -133,6 +133,21 @@ void WorkspaceSession::closeTab(const QString &id)
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
 }
 
+void WorkspaceSession::setSaveMode(const QString &mode)
+{
+    submit(command(QStringLiteral("set_save_mode"), {{QStringLiteral("mode"), mode}}));
+}
+
+void WorkspaceSession::saveRecord()
+{
+    submit(command(QStringLiteral("save_record")));
+}
+
+void WorkspaceSession::discardChanges()
+{
+    submit(command(QStringLiteral("discard_changes")));
+}
+
 void WorkspaceSession::configureClock(int milliseconds)
 {
     submit(command(QStringLiteral("configure_clock"),

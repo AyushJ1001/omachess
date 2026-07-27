@@ -22,6 +22,68 @@ ApplicationWindow {
     color: Theme.background
     property var selectedLibraryIds: []
 
+    property string pendingCloseRecordId: ""
+    property bool pendingWorkspaceClose: false
+    property string pendingAction: ""
+    property string pendingOpenRecordId: ""
+
+    function askBeforeAbandoning(action, id) {
+        if (!WorkspaceSession.needsUnsavedDecision)
+            return false
+        pendingAction = action
+        pendingOpenRecordId = id || ""
+        pendingWorkspaceClose = action === "workspace"
+        pendingCloseRecordId = action === "record" ? id : ""
+        unsavedClose.open()
+        return true
+    }
+
+    function continuePendingAction() {
+        const action = pendingAction
+        const id = pendingOpenRecordId
+        pendingAction = ""
+        pendingOpenRecordId = ""
+        if (action === "workspace")
+            workspace.close()
+        else if (action === "record")
+            WorkspaceSession.closeTab(pendingCloseRecordId)
+        else if (action === "new")
+            WorkspaceSession.newGame()
+        else if (action === "open")
+            WorkspaceSession.openRecord(id)
+        pendingCloseRecordId = ""
+    }
+
+    function requestNewGame() {
+        if (!askBeforeAbandoning("new", ""))
+            WorkspaceSession.newGame()
+    }
+
+    function requestOpenRecord(id) {
+        if (id === WorkspaceSession.activeRecordId)
+            return
+        if (!askBeforeAbandoning("open", id))
+            WorkspaceSession.openRecord(id)
+    }
+
+    function requestRecordClose(id) {
+        if (id !== WorkspaceSession.activeRecordId
+                || !askBeforeAbandoning("record", id))
+            WorkspaceSession.closeTab(id)
+    }
+
+    function requestWorkspaceClose() {
+        if (!askBeforeAbandoning("workspace", ""))
+            workspace.close()
+    }
+
+    onClosing: function(close) {
+        if (WorkspaceSession.needsUnsavedDecision && !pendingWorkspaceClose) {
+            close.accepted = false
+            requestWorkspaceClose()
+        }
+    }
+
     Component.onCompleted: {
         WorkspaceSession.describeBoard()
         actionSource.rebuild()
@@ -144,7 +206,12 @@ ApplicationWindow {
                 action("palette", qsTr("Command palette"), "Ctrl+K",
                        function() { commandPalette.open() }),
                 action("new-game", qsTr("New game"), "Ctrl+N",
-                       function() { WorkspaceSession.newGame() }),
+                       function() { workspace.requestNewGame() }),
+                action("save-record", qsTr("Save Game Record"), "Ctrl+S",
+                       function() { WorkspaceSession.saveRecord() },
+                       WorkspaceSession.dirty),
+                action("close-workspace", qsTr("Close workspace"), "Ctrl+Q",
+                       function() { workspace.requestWorkspaceClose() }),
                 action("flip", qsTr("Flip board"), "F",
                        function() { WorkspaceSession.flipBoard() }),
                 action("first", qsTr("First position"), "Home",
@@ -193,7 +260,7 @@ ApplicationWindow {
                 actions.push(action("open-" + id, qsTr("Open %1").arg(record.title),
                                     index < 9 ? "Alt+" + (index + 1)
                                               : "Alt+Right · ↑/↓ · Enter",
-                                    function() { WorkspaceSession.openRecord(id) },
+                                    function() { workspace.requestOpenRecord(id) },
                                     true, index < 9 ? "Alt+" + (index + 1) : ""))
             }
             for (let index = 0; index < WorkspaceSession.openTabs.length; ++index) {
@@ -202,12 +269,12 @@ ApplicationWindow {
                 actions.push(action("switch-" + id, qsTr("Switch to %1").arg(tab.title),
                                     index < 9 ? "Ctrl+" + (index + 1)
                                               : "Alt+Right · Tab · Enter",
-                                    function() { WorkspaceSession.openRecord(id) },
+                                    function() { workspace.requestOpenRecord(id) },
                                     true, index < 9 ? "Ctrl+" + (index + 1) : ""))
                 const active = id === WorkspaceSession.activeRecordId
                 actions.push(action("close-" + id, qsTr("Close %1").arg(tab.title),
                                     active ? "Ctrl+W" : "Alt+Right · Tab · Enter",
-                                    function() { WorkspaceSession.closeTab(id) },
+                                    function() { workspace.requestRecordClose(id) },
                                     true, active ? "Ctrl+W" : ""))
             }
             if (WorkspaceSession.restoreAvailable) {
@@ -306,7 +373,38 @@ ApplicationWindow {
             Button {
                 objectName: "newGameButton"
                 text: qsTr("New game")
-                onClicked: WorkspaceSession.newGame()
+                onClicked: workspace.requestNewGame()
+            }
+
+            Button {
+                objectName: "autosaveMode"
+                text: qsTr("Autosave Mode")
+                checkable: true
+                checked: WorkspaceSession.saveMode === "autosave"
+                onClicked: WorkspaceSession.setSaveMode("autosave")
+            }
+
+            Button {
+                objectName: "manualSaveMode"
+                text: qsTr("Manual Save Mode")
+                checkable: true
+                checked: WorkspaceSession.saveMode === "manual"
+                onClicked: WorkspaceSession.setSaveMode("manual")
+            }
+
+            Label {
+                objectName: "dirtyState"
+                visible: WorkspaceSession.dirty
+                text: qsTr("Unsaved")
+                color: Theme.accent
+            }
+
+            Button {
+                objectName: "saveRecord"
+                visible: WorkspaceSession.saveMode === "manual"
+                enabled: WorkspaceSession.dirty
+                text: qsTr("Save")
+                onClicked: WorkspaceSession.saveRecord()
             }
             Button {
                 objectName: "newVariantButton"
@@ -572,9 +670,9 @@ ApplicationWindow {
                                 opacity: libraryItem.highlighted || libraryItem.hovered ? 1 : 0
                             }
 
-                            onClicked: WorkspaceSession.openRecord(modelData.id)
-                            Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
-                            Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
+                            onClicked: workspace.requestOpenRecord(modelData.id)
+                            Keys.onReturnPressed: workspace.requestOpenRecord(modelData.id)
+                            Keys.onEnterPressed: workspace.requestOpenRecord(modelData.id)
                         }
 
                         Label {
@@ -635,8 +733,8 @@ ApplicationWindow {
                                               ? Theme.muted : "transparent"
                                 border.width: 1
                                 activeFocusOnTab: true
-                                Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
-                                Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
+                                Keys.onReturnPressed: workspace.requestOpenRecord(modelData.id)
+                                Keys.onEnterPressed: workspace.requestOpenRecord(modelData.id)
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -661,14 +759,14 @@ ApplicationWindow {
                                         Layout.preferredHeight: 22
                                         flat: true
                                         text: "×"
-                                        onClicked: WorkspaceSession.closeTab(modelData.id)
+                                        onClicked: workspace.requestRecordClose(modelData.id)
                                     }
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
                                     z: -1
-                                    onClicked: WorkspaceSession.openRecord(modelData.id)
+                                    onClicked: workspace.requestOpenRecord(modelData.id)
                                 }
                             }
                         }
@@ -1276,6 +1374,60 @@ ApplicationWindow {
     }
 
     // The choice a promoting pawn needs before its move exists.
+    Dialog {
+        id: unsavedClose
+        objectName: "unsavedCloseDialog"
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: qsTr("Unsaved changes")
+
+        ColumnLayout {
+            Label {
+                objectName: "unsavedCloseTitle"
+                text: workspace.pendingWorkspaceClose
+                      ? qsTr("Close workspace with unsaved changes?")
+                      : qsTr("Close Game Record with unsaved changes?")
+            }
+            Label {
+                text: qsTr("Save the Game Record, discard it back to its Saved Snapshot, or cancel.")
+                wrapMode: Text.WordWrap
+                Layout.preferredWidth: 420
+            }
+            RowLayout {
+                Button {
+                    objectName: "saveUnsavedClose"
+                    text: qsTr("Save")
+                    onClicked: {
+                        WorkspaceSession.saveRecord()
+                        unsavedClose.close()
+                        workspace.continuePendingAction()
+                    }
+                }
+                Button {
+                    objectName: "discardUnsavedClose"
+                    text: qsTr("Discard")
+                    onClicked: {
+                        WorkspaceSession.discardChanges()
+                        unsavedClose.close()
+                        workspace.continuePendingAction()
+                    }
+                }
+                Button {
+                    objectName: "cancelUnsavedClose"
+                    text: qsTr("Cancel")
+                    onClicked: {
+                        unsavedClose.close()
+                        workspace.pendingCloseRecordId = ""
+                        workspace.pendingWorkspaceClose = false
+                        workspace.pendingAction = ""
+                        workspace.pendingOpenRecordId = ""
+                    }
+                }
+            }
+        }
+    }
+
     Dialog {
         id: promotion
         objectName: "promotionDialog"
