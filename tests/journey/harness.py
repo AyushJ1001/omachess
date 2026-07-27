@@ -198,6 +198,8 @@ class Workspace:
         theme_name: str = "journey-a",
         install_palette: bool = True,
         malformed_palette: bool = False,
+        import_pgn: Path | None = None,
+        export_pgn: Path | None = None,
     ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
@@ -217,6 +219,8 @@ class Workspace:
         self._theme_name = theme_name
         self._install_palette = install_palette
         self._malformed_palette = malformed_palette
+        self._import_pgn = import_pgn
+        self._export_pgn = export_pgn
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
@@ -237,6 +241,10 @@ class Workspace:
         environment = dict(os.environ)
         environment["OMACHESS_TEST_CHANNEL"] = self._socket_path
         environment["QT_QPA_PLATFORM"] = self._platform
+        if self._import_pgn is not None:
+            environment["OMACHESS_TEST_IMPORT_PGN"] = str(self._import_pgn)
+        if self._export_pgn is not None:
+            environment["OMACHESS_TEST_EXPORT_PGN"] = str(self._export_pgn)
         # Isolate the run from the developer's own configuration and state.
         for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
             directory = self._root / variable.lower()

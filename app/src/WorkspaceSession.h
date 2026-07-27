@@ -71,6 +71,7 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(bool restoreAvailable READ restoreAvailable NOTIFY restoreChanged)
     Q_PROPERTY(QString restoreLabel READ restoreLabel NOTIFY restoreChanged)
     Q_PROPERTY(QString storeError READ storeError CONSTANT)
+    Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
     explicit WorkspaceSession(QObject *parent = nullptr);
@@ -116,6 +117,7 @@ public:
     bool restoreAvailable() const { return m_restoreAvailable; }
     QString restoreLabel() const { return m_restoreLabel; }
     QString storeError() const { return m_storeError; }
+    QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
     // Asks the core to describe the board it owns. Called once at startup so
     // the first frame is drawn from core-owned state.
@@ -158,6 +160,8 @@ public:
     Q_INVOKABLE void placeSetupPiece(const QString &square, const QString &piece);
     Q_INVOKABLE void relocateSetupPiece(const QString &from, const QString &to);
     Q_INVOKABLE void startSetupGame();
+    Q_INVOKABLE void importPgn();
+    Q_INVOKABLE void exportPgn(const QStringList &recordIds);
 
     // --- What the core said a player may do -------------------------------
     //
@@ -188,6 +192,7 @@ signals:
     void libraryChanged();
     void tabsChanged();
     void restoreChanged();
+    void pgnImportResultsChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -214,4 +219,6 @@ private:
     bool m_restoreAvailable = false;
     QString m_restoreLabel;
     QString m_storeError;
+    QVariantList m_pgnImportResults;
+    QString m_exportPath;
 };

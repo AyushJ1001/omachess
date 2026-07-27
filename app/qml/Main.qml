@@ -20,10 +20,53 @@ ApplicationWindow {
     visible: true
     title: qsTr("Omachess")
     color: Theme.background
+    property var selectedLibraryIds: []
 
     Component.onCompleted: {
         WorkspaceSession.describeBoard()
         actionSource.rebuild()
+    }
+
+    Connections {
+        target: WorkspaceSession
+        function onPgnImportResultsChanged() { pgnImportResultsDialog.open() }
+    }
+
+    Dialog {
+        id: pgnImportResultsDialog
+        objectName: "pgnImportResultsDialog"
+        title: qsTr("PGN import results")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, parent.width - 40)
+        standardButtons: Dialog.Close
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "pgnImportSummary"
+                text: {
+                    let imported = 0
+                    let failed = 0
+                    for (const entry of WorkspaceSession.pgnImportResults)
+                        entry.status === "imported" ? imported++ : failed++
+                    return qsTr("%1 imported · %2 failed").arg(imported).arg(failed)
+                }
+                font.bold: true
+            }
+            Repeater {
+                model: WorkspaceSession.pgnImportResults
+                Label {
+                    required property var modelData
+                    objectName: "pgnImportEntry:" + modelData.entry
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: modelData.status === "imported"
+                          ? qsTr("Entry %1 — %2: imported").arg(modelData.entry).arg(modelData.title)
+                          : qsTr("Entry %1 — %2: failed — %3")
+                                .arg(modelData.entry).arg(modelData.title).arg(modelData.reason)
+                }
+            }
+        }
     }
 
     function focusPane(delta) {
@@ -404,6 +447,22 @@ ApplicationWindow {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 8
+                        Button {
+                            objectName: "importPgnButton"
+                            text: qsTr("Import PGN…")
+                            onClicked: WorkspaceSession.importPgn()
+                        }
+                        Button {
+                            objectName: "exportPgnButton"
+                            text: qsTr("Export selected…")
+                            enabled: workspace.selectedLibraryIds.length > 0
+                            onClicked: WorkspaceSession.exportPgn(workspace.selectedLibraryIds)
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
@@ -455,6 +514,29 @@ ApplicationWindow {
                                     }
                                     color: Theme.muted
                                     font.pixelSize: 11
+                                }
+                            }
+
+                            Row {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                CheckBox {
+                                    objectName: "selectRecord:" + modelData.id
+                                    checked: workspace.selectedLibraryIds.indexOf(modelData.id) >= 0
+                                    onClicked: {
+                                        let ids = workspace.selectedLibraryIds.slice()
+                                        const at = ids.indexOf(modelData.id)
+                                        if (checked && at < 0)
+                                            ids.push(modelData.id)
+                                        else if (!checked && at >= 0)
+                                            ids.splice(at, 1)
+                                        workspace.selectedLibraryIds = ids
+                                    }
+                                }
+                                Button {
+                                    objectName: "exportRecord:" + modelData.id
+                                    text: qsTr("Export")
+                                    onClicked: WorkspaceSession.exportPgn([modelData.id])
                                 }
                             }
 

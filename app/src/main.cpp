@@ -6,6 +6,15 @@
 
 int main(int argc, char *argv[])
 {
+#if defined(Q_OS_LINUX)
+    // Qt's xdgdesktopportal platform theme routes native file choosers through
+    // org.freedesktop.portal.FileChooser. Respect an explicit user override,
+    // but make the portal the default desktop boundary on Omarchy/Linux.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORMTHEME")
+        && qEnvironmentVariableIsEmpty("OMACHESS_TEST_CHANNEL")) {
+        qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    }
+#endif
     QGuiApplication app(argc, argv);
 
     // The stable identity Omarchy uses for the launcher entry, window rules,

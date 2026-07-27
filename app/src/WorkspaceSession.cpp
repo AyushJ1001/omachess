@@ -4,6 +4,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QFile>
+#include <QFileDialog>
+#include <QStandardPaths>
 
 extern "C" {
 #include "omachess_core.h"
@@ -140,6 +143,40 @@ void WorkspaceSession::relocateSetupPiece(const QString &from, const QString &to
 void WorkspaceSession::startSetupGame()
 {
     submit(command(QStringLiteral("start_setup_game")));
+}
+
+void WorkspaceSession::importPgn()
+{
+    QString path = qEnvironmentVariable("OMACHESS_TEST_IMPORT_PGN");
+    if (path.isEmpty()) {
+        path = QFileDialog::getOpenFileName(nullptr, tr("Import PGN"), QString(),
+                                            tr("Portable Game Notation (*.pgn)"));
+    }
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qCWarning(lcSession) << "cannot read PGN" << path << file.errorString();
+        return;
+    }
+    submit(command(QStringLiteral("import_pgn"),
+                   {{QStringLiteral("pgn"), QString::fromUtf8(file.readAll())}}));
+}
+
+void WorkspaceSession::exportPgn(const QStringList &recordIds)
+{
+    if (recordIds.isEmpty())
+        return;
+    m_exportPath = qEnvironmentVariable("OMACHESS_TEST_EXPORT_PGN");
+    if (m_exportPath.isEmpty()) {
+        m_exportPath = QFileDialog::getSaveFileName(nullptr, tr("Export PGN"),
+                                                    QStringLiteral("omachess.pgn"),
+                                                    tr("Portable Game Notation (*.pgn)"));
+    }
+    if (m_exportPath.isEmpty())
+        return;
+    submit(command(QStringLiteral("export_pgn"),
+                   {{QStringLiteral("ids"), recordIds.join(',')}}));
 }
 
 QVariantList WorkspaceSession::moveList() const
@@ -341,6 +378,24 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_restoreAvailable = false;
         m_restoreLabel.clear();
         emit restoreChanged();
+        return;
+    }
+    if (type == QStringLiteral("pgn_import_results")) {
+        m_pgnImportResults.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("entries")).toArray())
+            m_pgnImportResults.append(value.toObject().toVariantMap());
+        emit pgnImportResultsChanged();
+        return;
+    }
+    if (type == QStringLiteral("pgn_export_ready")) {
+        QFile file(m_exportPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            qCWarning(lcSession) << "cannot write PGN" << m_exportPath << file.errorString();
+            return;
+        }
+        file.write(event.value(QStringLiteral("pgn")).toString().toUtf8());
+        file.close();
+        m_exportPath.clear();
         return;
     }
 

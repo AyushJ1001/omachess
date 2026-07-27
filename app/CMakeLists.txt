@@ -1,4 +1,4 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test Widgets)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -55,6 +55,7 @@ target_link_libraries(omachess PRIVATE
   # Piece Set artwork is vector, so the workspace needs the SVG image handler.
   Qt6::Svg
   Qt6::Test
+  Qt6::Widgets
   omachess::core
 )
 
