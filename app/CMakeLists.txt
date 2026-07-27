@@ -11,6 +11,8 @@ qt_add_executable(omachess
   src/BoardModel.h
   src/TestChannel.cpp
   src/TestChannel.h
+  src/EngineManager.cpp
+  src/EngineManager.h
 )
 
 qt_add_qml_module(omachess
