@@ -76,6 +76,20 @@ Studies, Variant Definitions, and portable preferences. That export is not in
 this release yet, so until it lands, back up the directory above — and take an
 export as well once it is available.
 
+## Optional Chess Engines
+
+Omachess does not include a play engine and does not install one as a system
+package. Engines offered in the Engine Catalog are downloaded only after you
+choose **Install from upstream**. A completed download is placed in the private
+App Engine Store under `${XDG_DATA_HOME:-$HOME/.local/share}/omachess/engines`;
+failed and cancelled downloads are discarded.
+
+Installing an engine does not make it ready to use. Omachess still asks for
+first-contact consent and runs its bounded UCI probe before advertising Engine
+Readiness. Declining an install or consent leaves local play and analysis
+available without network access. Komodo is detect-only and is never offered
+for installation.
+
 ## Uninstall
 
 ```bash
