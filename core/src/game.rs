@@ -127,13 +127,26 @@ impl Game {
     }
 
     pub fn variant(variant: &str, fen: &str) -> Option<Self> {
-        let mut rules = Rules::new(variant, Some(fen))?;
+        Self::variant_from_history(variant, fen, Vec::new())
+    }
+
+    pub fn variant_from_history(
+        variant: &str,
+        start_fen: &str,
+        moves: Vec<PlayedMove>,
+    ) -> Option<Self> {
+        let mut rules = Rules::new(variant, Some(start_fen))?;
+        for played in &moves {
+            if !rules.push(&played.uci) {
+                return None;
+            }
+        }
         let outcome = rules.outcome();
         Some(Game {
             rules,
-            start_fen: fen.to_owned(),
-            moves: Vec::new(),
-            cursor: 0,
+            start_fen: start_fen.to_owned(),
+            cursor: moves.len(),
+            moves,
             outcome,
         })
     }

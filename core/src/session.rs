@@ -51,6 +51,7 @@ pub struct Session {
     dirty: bool,
     workshop: Option<VariantDefinition>,
     variant_active: bool,
+    variant_snapshot: Option<VariantDefinition>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,6 +198,7 @@ impl Session {
             dirty: false,
             workshop: None,
             variant_active: false,
+            variant_snapshot: None,
         }
     }
 
@@ -264,6 +266,7 @@ impl Session {
             dirty: false,
             workshop,
             variant_active: false,
+            variant_snapshot: None,
         };
         // Completed records may reopen directly. Unfinished Played Games are
         // offered for restore and remain unloaded until the player chooses it.
@@ -538,6 +541,8 @@ impl Session {
 
     fn new_variant_definition(&mut self) -> Result<(), CommandError> {
         self.workshop = Some(VariantDefinition::default());
+        self.variant_active = false;
+        self.variant_snapshot = None;
         self.persist_variant_definition()
     }
 
@@ -742,6 +747,9 @@ impl Session {
                 .ok_or(CommandError::RejectedMove)?;
             self.setup = None;
             self.variant_active = true;
+            self.variant_snapshot = Some(definition);
+            self.record_id = None;
+            self.persist_current_record()?;
         }
         Ok(())
     }
@@ -1181,6 +1189,8 @@ impl Session {
         self.metadata = GameMetadata::default();
         self.setup = None;
         self.dirty = false;
+        self.variant_active = false;
+        self.variant_snapshot = None;
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
@@ -1379,6 +1389,7 @@ impl Session {
             .ok_or(CommandError::Store)?;
         let stored_result = record.payload.result.clone();
         let stored_clock = record.payload.clock.as_deref().and_then(decode_clock);
+        let variant = record.payload.variant.clone();
         let moves = record
             .payload
             .moves
@@ -1393,8 +1404,27 @@ impl Session {
                 },
             })
             .collect();
-        self.game =
-            Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        if let Some(encoded) = variant.strip_prefix("omachess:v1:") {
+            let snapshot = decode_variant_definition(encoded).ok_or(CommandError::Store)?;
+            let adapter =
+                String::from_utf8(compile_variant_adapter(&snapshot)).map_err(|_| CommandError::Store)?;
+            if !Rules::load_variant_adapter(&adapter) {
+                return Err(CommandError::Store);
+            }
+            self.game = Game::variant_from_history(
+                "omachess",
+                &record.payload.start_fen,
+                moves,
+            )
+            .ok_or(CommandError::Store)?;
+            self.variant_snapshot = Some(snapshot);
+            self.variant_active = true;
+        } else {
+            self.game =
+                Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+            self.variant_snapshot = None;
+            self.variant_active = false;
+        }
         if stored_result
             .as_ref()
             .is_some_and(|result| result.termination == "time_forfeit")
@@ -1460,7 +1490,11 @@ impl Session {
         };
         let result_score = result.as_ref().map(|result| result.score.clone());
         let payload = GameRecordPayload {
-            variant: "standard".into(),
+            variant: self
+                .variant_snapshot
+                .as_ref()
+                .map(|snapshot| format!("omachess:v1:{}", encode_variant_definition(snapshot)))
+                .unwrap_or_else(|| "standard".into()),
             start_fen: self.game.start_fen().to_owned(),
             moves: self
                 .game
