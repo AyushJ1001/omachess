@@ -2,6 +2,8 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
@@ -71,10 +73,24 @@ EngineManager::EngineManager(QObject *parent)
     };
 
     QSettings settings;
-    for (Profile &profile : m_profiles)
+    for (Profile &profile : m_profiles) {
         profile.rating = settings.value(QStringLiteral("engines/%1/displayRating").arg(profile.key),
                                         profile.rating)
                              .toInt();
+        if (profile.key == QStringLiteral("reckless"))
+            profile.upstreamUrl =
+                QStringLiteral("https://github.com/codedeliveryservice/Reckless/releases/"
+                               "download/v0.9.0/reckless-linux-generic");
+    }
+    if (qEnvironmentVariableIsSet("OMACHESS_TEST_CHANNEL")) {
+        for (Profile &profile : m_profiles) {
+            const QByteArray variable =
+                QByteArray("OMACHESS_TEST_") + profile.key.toUpper().toUtf8() + "_URL";
+            const QString overrideUrl = qEnvironmentVariable(variable.constData());
+            if (!overrideUrl.isEmpty())
+                profile.upstreamUrl = overrideUrl;
+        }
+    }
 
     m_deadline.setSingleShot(true);
     connect(&m_deadline, &QTimer::timeout, this, [this] {
@@ -148,7 +164,10 @@ QVariant EngineManager::data(const QModelIndex &index, int role) const
         return profile.found
             && (profile.state == QStringLiteral("Consent required")
                 || profile.state == QStringLiteral("Consent granted — probe required"));
-    case InstallOfferedRole: return !profile.detectOnly;
+    case InstallOfferedRole:
+        return !profile.detectOnly && !profile.found && !profile.upstreamUrl.isEmpty()
+            && m_installing != index.row();
+    case InstallingRole: return m_installing == index.row();
     default: return {};
     }
 }
@@ -166,7 +185,8 @@ QHash<int, QByteArray> EngineManager::roleNames() const
             {ArtworkProvenanceRole, "artworkProvenance"},
             {FoundRole, "found"},
             {ConsentRequiredRole, "consentRequired"},
-            {InstallOfferedRole, "installOffered"}};
+            {InstallOfferedRole, "installOffered"},
+            {InstallingRole, "installing"}};
 }
 
 void EngineManager::discover()
@@ -191,9 +211,7 @@ void EngineManager::discover()
 QString EngineManager::discoverPath(const Profile &profile) const
 {
     QStringList candidates;
-    const QString store =
-        QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
-            .filePath(QStringLiteral("omachess/engines/%1").arg(profile.key));
+    const QString store = storeDirectory(profile);
     for (const QString &name : profile.executableNames)
         candidates.append(QDir(store).filePath(name));
     for (const QString &name : profile.executableNames)
@@ -205,6 +223,12 @@ QString EngineManager::discoverPath(const Profile &profile) const
             return info.canonicalFilePath();
     }
     return {};
+}
+
+QString EngineManager::storeDirectory(const Profile &profile) const
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+        .filePath(QStringLiteral("omachess/engines/%1").arg(profile.key));
 }
 
 int EngineManager::indexOf(const QString &key) const
@@ -224,6 +248,132 @@ void EngineManager::grantConsent(const QString &key)
     QSettings settings;
     settings.setValue(QStringLiteral("engines/%1/consent/%2").arg(profile.key, profile.path), true);
     startProbe(index);
+}
+
+void EngineManager::install(const QString &key)
+{
+    const int profileIndex = indexOf(key);
+    if (profileIndex < 0 || m_installing >= 0 || m_profiles.at(profileIndex).found)
+        return;
+    Profile &profile = m_profiles[profileIndex];
+    if (profile.detectOnly || profile.upstreamUrl.isEmpty())
+        return;
+
+    const QString directory = storeDirectory(profile);
+    if (!QDir().mkpath(directory)) {
+        profile.state = QStringLiteral("Install failed — App Engine Store is unavailable");
+        emit dataChanged(index(profileIndex), index(profileIndex));
+        return;
+    }
+    m_downloadFile.setFileName(QDir(directory).filePath(QStringLiteral(".download")));
+    if (!m_downloadFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        profile.state = QStringLiteral("Install failed — could not create staging file");
+        emit dataChanged(index(profileIndex), index(profileIndex));
+        return;
+    }
+
+    m_installing = profileIndex;
+    profile.state = QStringLiteral("Downloading…");
+    emit dataChanged(index(profileIndex), index(profileIndex));
+    QNetworkRequest request{QUrl(profile.upstreamUrl)};
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    m_download = m_network.get(request);
+    connect(m_download, &QNetworkReply::readyRead, this, [this] {
+        if (m_download && m_downloadFile.write(m_download->readAll()) < 0)
+            failInstall(QStringLiteral("could not write staging file"));
+    });
+    connect(m_download, &QNetworkReply::downloadProgress, this,
+            [this](qint64 received, qint64 total) {
+        constexpr qint64 maximumDownloadBytes = 512 * 1024 * 1024;
+        if (m_installing < 0)
+            return;
+        if (received > maximumDownloadBytes || total > maximumDownloadBytes) {
+            if (m_download)
+                m_download->abort();
+            failInstall(QStringLiteral("upstream download is too large"));
+            return;
+        }
+        if (total <= 0)
+            return;
+        m_profiles[m_installing].state =
+            QStringLiteral("Downloading… %1%").arg(received * 100 / total);
+        emit dataChanged(index(m_installing), index(m_installing), {StateRole});
+    });
+    connect(m_download, &QNetworkReply::finished, this, [this] {
+        if (!m_download || m_installing < 0)
+            return;
+        if (m_download->error() != QNetworkReply::NoError) {
+            failInstall(QStringLiteral("upstream error: %1").arg(m_download->errorString()));
+            return;
+        }
+        finishInstall();
+    });
+}
+
+void EngineManager::cancelInstall(const QString &key)
+{
+    if (m_installing < 0 || m_profiles.at(m_installing).key != key)
+        return;
+    if (m_download) {
+        disconnect(m_download, nullptr, this, nullptr);
+        m_download->abort();
+    }
+    failInstall(QStringLiteral("cancelled"));
+}
+
+void EngineManager::finishInstall()
+{
+    const int profileIndex = m_installing;
+    Profile &profile = m_profiles[profileIndex];
+    if (m_download)
+        m_downloadFile.write(m_download->readAll());
+    m_downloadFile.close();
+    const QString staged = m_downloadFile.fileName();
+    const QString target = QDir(storeDirectory(profile)).filePath(profile.executableNames.first());
+    if (!QFile::setPermissions(staged, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                          | QFileDevice::ExeOwner | QFileDevice::ReadGroup
+                                          | QFileDevice::ExeGroup | QFileDevice::ReadOther
+                                          | QFileDevice::ExeOther)) {
+        failInstall(QStringLiteral("could not make downloaded engine executable"));
+        return;
+    }
+    if (!QFile::rename(staged, target)) {
+        failInstall(QStringLiteral("could not publish downloaded engine"));
+        return;
+    }
+    if (m_download)
+        m_download->deleteLater();
+    m_download = nullptr;
+    m_installing = -1;
+    const QFileInfo installed(target);
+    profile.path = installed.canonicalFilePath();
+    if (profile.path.isEmpty() || !installed.isFile() || !installed.isExecutable()) {
+        QFile::remove(target);
+        profile.path.clear();
+        failInstall(QStringLiteral("downloaded engine is not executable"));
+        return;
+    }
+    profile.found = true;
+    profile.state = QStringLiteral("Consent required");
+    emit dataChanged(index(profileIndex), index(profileIndex));
+}
+
+void EngineManager::failInstall(const QString &reason)
+{
+    if (m_installing < 0)
+        return;
+    const int profileIndex = m_installing;
+    if (m_download) {
+        disconnect(m_download, nullptr, this, nullptr);
+        m_download->deleteLater();
+    }
+    m_download = nullptr;
+    m_downloadFile.close();
+    QFile::remove(m_downloadFile.fileName());
+    m_installing = -1;
+    m_profiles[profileIndex].state = QStringLiteral("Install failed — %1").arg(reason);
+    emit dataChanged(index(profileIndex), index(profileIndex));
 }
 
 void EngineManager::setDisplayRating(const QString &key, int rating)

@@ -784,6 +784,8 @@ ApplicationWindow {
                             required property string artworkProvenance
                             required property bool found
                             required property bool consentRequired
+                            required property bool installOffered
+                            required property bool installing
 
                             width: engines.width
                             padding: 6
@@ -850,6 +852,18 @@ ApplicationWindow {
                                     visible: consentRequired
                                     text: qsTr("Allow and probe")
                                     onClicked: EngineManager.grantConsent(key)
+                                }
+                                Button {
+                                    objectName: "engineInstall:" + key
+                                    visible: installOffered
+                                    text: qsTr("Install from upstream")
+                                    onClicked: EngineManager.install(key)
+                                }
+                                Button {
+                                    objectName: "engineCancelInstall:" + key
+                                    visible: installing
+                                    text: qsTr("Cancel install")
+                                    onClicked: EngineManager.cancelInstall(key)
                                 }
                             }
                         }
