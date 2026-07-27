@@ -53,9 +53,10 @@ const ENGINE_SOURCES: &[&str] = &[
 
 /// The configuration the engine expects of a hosted build.
 ///
-/// `NNUE_EMBEDDING_OFF` keeps a neural network out of the binary: Omachess
-/// asks the engine for rules, never for an evaluation, and no network file
-/// ships with the app.
+/// `NNUE_EMBEDDING_OFF` keeps a neural network out of the binary. Fresh
+/// player-made variants are therefore evaluated by Fairy-Stockfish's generic
+/// handcrafted evaluator, which the cockpit discloses; no network ships with
+/// the app.
 const ENGINE_DEFINES: &[&str] = &[
     "NDEBUG",
     "IS_64BIT",

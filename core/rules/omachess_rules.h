@@ -2,8 +2,8 @@
  *
  * Fairy-Stockfish is the only source of legal moves, SAN, FEN, and game
  * results in Omachess. This header is the narrowest surface the Rust core
- * needs to ask it those four questions, and nothing else: no search, no
- * evaluation, no UCI process.
+ * needs to ask it those questions. Player-made Chess Variants also use the
+ * pinned build's bounded search and generic handcrafted evaluation here.
  *
  * A game is a Chess Variant plus a position plus the moves played to reach
  * it. Moves are pushed and popped, so navigating a Game Record backward and
@@ -67,6 +67,10 @@ int omachess_rules_push(OmachessRules *rules, const char *uci_move);
 
 /* Runs a depth-bounded Fairy-Stockfish search. */
 int omachess_rules_bounded_search(OmachessRules *rules, int depth);
+
+/* Runs a bounded search and returns "score|pv" for the best line. The score
+ * uses Fairy-Stockfish's UCI spelling ("cp N" or "mate N"). */
+const char *omachess_rules_analysis(OmachessRules *rules, int depth);
 
 /* Takes back the last pushed move. Returns 1, or 0 at the starting
  * position. */

@@ -184,17 +184,14 @@ class VariantWorkshopJourney(unittest.TestCase):
             workspace.screen_when(lambda s: "validateVariant" in s.labels)
             workspace.click("validateVariant")
             screen = workspace.screen_when(
-                lambda s: s.labels.get("workshopStatus")
-                == "Playable Variant Definition · v1"
-            )
-            self.assertEqual(
-                screen.labels["variantValidationMessage"],
-                "Playable — every validation stage passed.",
+                lambda s: s.labels.get("rightRailHeading")
+                == "Live Position Analysis"
             )
             self.assertEqual(
                 screen.labels["libraryMeta:variant-draft"],
                 "Playable Variant Definition",
             )
+            self.assertIn("editVariantDefinition", screen.labels)
 
     def test_validate_routes_a_non_rule_valid_start_to_starting_position(self):
         with Workspace(executable_under_test()) as workspace:
@@ -224,6 +221,50 @@ class VariantWorkshopJourney(unittest.TestCase):
             self.assertIn(
                 "detected Fairy-Stockfish build",
                 screen.labels["variantValidationMessage"],
+            )
+
+    def test_create_validate_play_analyze_and_return_to_editing(self):
+        with Workspace(executable_under_test()) as workspace:
+            workspace.click("newVariantButton")
+            workspace.click("workshopContinue")
+            workspace.click("workshopContinue")
+            workspace.click("workshopTray:K")
+            workspace.click_square("e1")
+            workspace.click("workshopTray:k")
+            workspace.click_square("e8")
+            workspace.click("workshopTray:R")
+            workspace.click_square("a1")
+            workspace.click("workshopTray:r")
+            workspace.click_square("a8")
+            workspace.click("workshopContinue")
+            workspace.click("validateVariant")
+
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("rightRailHeading")
+                == "Live Position Analysis"
+                and "variantAnalysisEvaluation" in value.labels
+            )
+            self.assertIn("Fairy-Stockfish", screen.labels["variantAnalysisEvaluator"])
+            self.assertIn("generic handcrafted", screen.labels["variantAnalysisEvaluator"])
+            self.assertIn("does not prove", screen.labels["variantAnalysisCaveat"])
+            self.assertIn("balanced", screen.labels["variantAnalysisCaveat"])
+            self.assertIn("variantAnalysisLine:1", screen.labels)
+            self.assertIn("editVariantDefinition", screen.labels)
+
+            first_line = screen.labels["variantAnalysisLine:1"]
+            workspace.play("e1d1")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("variantAnalysisLine:1") != first_line
+            )
+            self.assertEqual(screen.labels["rightRailHeading"], "Live Position Analysis")
+
+            workspace.click("editVariantDefinition")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("rightRailHeading") == "Variant Workshop"
+            )
+            self.assertEqual(
+                screen.labels["workshopStatus"],
+                "Draft Variant Definition · v1",
             )
 
 

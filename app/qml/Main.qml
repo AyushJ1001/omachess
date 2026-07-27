@@ -21,7 +21,7 @@ ApplicationWindow {
     visible: true
 
     function requestLivePositionAnalysis() {
-        if (analysisToggle.checked)
+        if (analysisToggle.checked && WorkspaceSession.activity !== "variant_play")
             EngineManager.analyzePosition(WorkspaceSession.displayedFen,
                                           WorkspaceSession.displayedPositionRuleValid)
     }
@@ -1407,6 +1407,7 @@ ApplicationWindow {
                         id: analysisToggle
                         objectName: "analysisToggle"
                         Layout.fillWidth: true
+                        visible: WorkspaceSession.activity !== "variant_play"
                         text: checked ? qsTr("Hide live analysis") : qsTr("Show live analysis")
                         checkable: true
                         checked: true
@@ -1421,6 +1422,7 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: analysisToggle.checked
+                                 && WorkspaceSession.activity !== "variant_play"
                         spacing: 4
 
                         Label {
@@ -1467,12 +1469,54 @@ ApplicationWindow {
 
                     Label {
                         objectName: "rightRailHeading"
-                        text: WorkspaceSession.workshopActive ? qsTr("Variant Workshop")
+                        text: WorkspaceSession.activity === "variant_play"
+                              ? qsTr("Live Position Analysis")
+                              : WorkspaceSession.workshopActive ? qsTr("Variant Workshop")
                               : WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
                         font.bold: true
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
+                    }
+
+                    ColumnLayout {
+                        visible: WorkspaceSession.activity === "variant_play"
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            objectName: "variantAnalysisEvaluation"
+                            text: WorkspaceSession.variantAnalysisEvaluation
+                            font.bold: true
+                            font.pixelSize: 22
+                        }
+                        Label {
+                            objectName: "variantAnalysisLine:1"
+                            Layout.fillWidth: true
+                            text: WorkspaceSession.variantAnalysisVariation
+                            wrapMode: Text.WordWrap
+                            font.family: "monospace"
+                        }
+                        Label {
+                            objectName: "variantAnalysisEvaluator"
+                            Layout.fillWidth: true
+                            text: WorkspaceSession.variantAnalysisEvaluator
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "variantAnalysisCaveat"
+                            Layout.fillWidth: true
+                            text: WorkspaceSession.variantAnalysisCaveat
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Button {
+                            objectName: "editVariantDefinition"
+                            Layout.fillWidth: true
+                            text: qsTr("Edit definition")
+                            onClicked: WorkspaceSession.editVariantDefinition()
+                        }
                     }
 
                     ColumnLayout {

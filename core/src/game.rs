@@ -126,6 +126,18 @@ impl Game {
         Self::from_history(fen, Vec::new())
     }
 
+    pub fn variant(variant: &str, fen: &str) -> Option<Self> {
+        let mut rules = Rules::new(variant, Some(fen))?;
+        let outcome = rules.outcome();
+        Some(Game {
+            rules,
+            start_fen: fen.to_owned(),
+            moves: Vec::new(),
+            cursor: 0,
+            outcome,
+        })
+    }
+
     pub fn start_fen(&self) -> &str {
         &self.start_fen
     }
@@ -139,6 +151,10 @@ impl Game {
 
     pub fn fen(&mut self) -> String {
         self.rules.fen()
+    }
+
+    pub fn analysis(&mut self) -> Option<(String, String)> {
+        self.rules.analysis(2)
     }
 
     /// Whether White is to move in the Displayed Position.
