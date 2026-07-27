@@ -40,8 +40,23 @@ it. Nothing is downloaded: the engine source is in the repository. The core
 depends on the Live Store crate, which links against system SQLite.
 
 For a release build, configure with `-DCMAKE_BUILD_TYPE=Release`. Installing
-(`cmake --install build`) puts `omachess` on the path and installs
-`com.omachess.Omachess.desktop`, which gives the window its stable app ID.
+(`cmake --install build`) puts `omachess` on the path and installs the launcher
+entry, the hicolor icon, and the installed documentation.
+
+## Packaging
+
+`packaging/PKGBUILD` is the AUR recipe: it builds Omachess from a signed source
+tarball, depends hard on Omarchy 4, and installs nothing but program files, the
+launcher entry, its icon, and `docs/install.md`. It has no install scriptlet,
+no Hyprland rules, and no Omarchy hooks. Regenerate `packaging/.SRCINFO` with
+`makepkg --printsrcinfo -p PKGBUILD > .SRCINFO` whenever the recipe changes;
+a packaging test fails if the two drift apart.
+
+`com.omachess.Omachess` is the desktop entry ID, the icon name, and the Wayland
+app ID, and it is **fixed permanently for v0.1**. Changing it breaks every
+player's window rules and keybindings, so it is not a refactor. `docs/install.md`
+is the player-facing install, backup, export, and removal guidance and ships
+inside the package.
 
 Backup paths for the Live Store and preferences are documented in
 [`docs/backup.md`](docs/backup.md).
@@ -52,11 +67,15 @@ Backup paths for the Live Store and preferences are documented in
 ctest --test-dir build --output-on-failure
 ```
 
-That runs two suites:
+That runs three suites:
 
 - **Core unit tests** (`cargo test`) cover the Rust core's own behaviour.
 - **Journey tests** launch the real `omachess` binary, drive it, and assert
   what ends up on screen.
+- **Packaging tests** stage an installation with `cmake --install`, then assert
+  what a player who installed the `omachess` package actually gets: the
+  launcher entry, the icon, the desktop identity, the installed footprint, and
+  the same workspace launching from the installed binary.
 
 Journey tests are the highest acceptance seam in this project: they assert
 externally observable behaviour of the running application, never QML
@@ -82,8 +101,13 @@ store/           the Live Store: SQLite Personal Library persistence
 app/src/         the workspace: C++ glue around the ABI
 app/qml/         the workspace: how a game looks
   pieces/        Piece Set artwork
+packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
+<<<<<<< HEAD
 docs/backup.md   which XDG paths a player should copy
+=======
+tests/packaging/ the same, against a staged installation
+>>>>>>> origin/main
 ```
 
 ## The Rules Authority
