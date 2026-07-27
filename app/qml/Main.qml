@@ -21,7 +21,9 @@ ApplicationWindow {
     visible: true
 
     function requestLivePositionAnalysis() {
-        if (analysisToggle.checked && WorkspaceSession.activity !== "variant_play")
+        if (!computerAnalysisRunning && computerAnalysisRunState !== "Failed"
+                && analysisToggle.checked
+                && WorkspaceSession.activity !== "variant_play")
             EngineManager.analyzePosition(WorkspaceSession.displayedFen,
                                           WorkspaceSession.displayedPositionRuleValid)
     }
@@ -34,7 +36,15 @@ ApplicationWindow {
 
     Connections {
         target: WorkspaceSession
-        function onBoardChanged() { workspace.requestLivePositionAnalysis() }
+        function onBoardChanged() {
+            workspace.requestLivePositionAnalysis()
+            if (!workspace.computerAnalysisRunning
+                    && WorkspaceSession.activity === "played_game"
+                    && WorkspaceSession.gameOver)
+                EngineManager.setComputerAnalysisBudget(
+                    workspace.computerAnalysisBudgetKey,
+                    WorkspaceSession.moveList.length + 1)
+        }
     }
     title: qsTr("Omachess")
     color: Theme.background
@@ -44,6 +54,29 @@ ApplicationWindow {
     property int computerAnalysisTargetPly: 0
     property int computerAnalysisTotal: 0
     property var computerAnalysisResults: []
+    property string computerAnalysisBudgetKey: "standard"
+    property string computerAnalysisFailureMessage: ""
+
+    Timer {
+        id: computerAnalysisNextPositionTimer
+        interval: 20
+        repeat: false
+        onTriggered: workspace.requestComputerPosition()
+    }
+
+    function computerAnalysisBudgetSummary(key) {
+        if (key === "quick")
+            return qsTr("Quick · 250 ms · one line · Low resources")
+        if (key === "deep")
+            return qsTr("Deep · 5 s · three lines · High resources")
+        return qsTr("Standard · 1 s · two lines · Moderate resources")
+    }
+
+    function selectComputerAnalysisBudget(key) {
+        computerAnalysisBudgetKey = key
+        EngineManager.setComputerAnalysisBudget(
+            key, WorkspaceSession.moveList.length + 1)
+    }
 
     function requestComputerPosition() {
         EngineManager.clearAnalysis()
@@ -54,16 +87,21 @@ ApplicationWindow {
     function startComputerAnalysis() {
         computerAnalysisRunning = true
         computerAnalysisRunState = "Running"
+        computerAnalysisFailureMessage = ""
         computerAnalysisTargetPly = 0
         computerAnalysisTotal = WorkspaceSession.moveList.length + 1
         computerAnalysisResults = []
+        EngineManager.beginComputerAnalysis(
+            computerAnalysisBudgetKey, computerAnalysisTotal)
         WorkspaceSession.navigate("start")
-        Qt.callLater(requestComputerPosition)
+        computerAnalysisNextPositionTimer.start()
     }
 
     function cancelComputerAnalysis() {
         computerAnalysisRunning = false
         computerAnalysisRunState = "Cancelled"
+        computerAnalysisNextPositionTimer.stop()
+        EngineManager.endComputerAnalysis()
         EngineManager.clearAnalysis()
     }
 
@@ -82,16 +120,20 @@ ApplicationWindow {
             better_line: best.length > 0 ? best : null
         })
         computerAnalysisResults = computerAnalysisResults.slice()
-        if (computerAnalysisResults.length === computerAnalysisTotal) {
+        const complete = computerAnalysisResults.length === computerAnalysisTotal
+        computerAnalysisTargetPly = complete ? computerAnalysisTotal
+                                               : computerAnalysisTargetPly + 1
+        EngineManager.recordComputerAnalysisPosition()
+        if (complete) {
             computerAnalysisRunning = false
             computerAnalysisRunState = "Complete"
+            EngineManager.endComputerAnalysis()
             const encoded = JSON.stringify(computerAnalysisResults)
             WorkspaceSession.completeComputerAnalysis(encoded)
             return
         }
-        computerAnalysisTargetPly += 1
         WorkspaceSession.navigate("forward")
-        Qt.callLater(requestComputerPosition)
+        computerAnalysisNextPositionTimer.start()
     }
 
     property string pendingCloseRecordId: ""
@@ -175,7 +217,20 @@ ApplicationWindow {
     }
     Connections {
         target: EngineManager
-        function onAnalysisChanged() { workspace.collectComputerPosition() }
+        function onAnalysisChanged() {
+            if (workspace.computerAnalysisRunning
+                    && !EngineManager.analyzing
+                    && !EngineManager.analysisReady
+                && EngineManager.analysisMessage.indexOf("unavailable —") >= 0) {
+                computerAnalysisNextPositionTimer.stop()
+                workspace.computerAnalysisFailureMessage = EngineManager.analysisMessage
+                workspace.computerAnalysisRunning = false
+                workspace.computerAnalysisRunState = "Failed"
+                EngineManager.endComputerAnalysis()
+                return
+            }
+            workspace.collectComputerPosition()
+        }
     }
 
     Dialog {
@@ -1593,6 +1648,84 @@ ApplicationWindow {
                                 workspace.requestLivePositionAnalysis()
                             else
                                 EngineManager.clearAnalysis()
+                        }
+                    }
+
+                    ColumnLayout {
+                        visible: (WorkspaceSession.activity === "played_game"
+                                  && WorkspaceSession.activeRecordId.length > 0
+                                  && WorkspaceSession.gameOver)
+                                 || workspace.computerAnalysisRunState.length > 0
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Label {
+                            objectName: "computerAnalysisSettingsHeading"
+                            Layout.fillWidth: true
+                            text: qsTr("Computer-analysis settings")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "analysisBudgetSelection"
+                            Layout.fillWidth: true
+                            text: workspace.computerAnalysisBudgetSummary(
+                                      workspace.computerAnalysisBudgetKey)
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Button {
+                            objectName: "analysisBudget:quick"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "quick"
+                            text: qsTr("Quick · 250 ms · one line · Low resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("quick")
+                        }
+                        Button {
+                            objectName: "analysisBudget:standard"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "standard"
+                            text: qsTr("Standard · 1 s · two lines · Moderate resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("standard")
+                        }
+                        Button {
+                            objectName: "analysisBudget:deep"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "deep"
+                            text: qsTr("Deep · 5 s · three lines · High resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("deep")
+                        }
+                        Label {
+                            objectName: "computerAnalysisDisclosure"
+                            Layout.fillWidth: true
+                            visible: (WorkspaceSession.activity === "played_game"
+                                      && WorkspaceSession.activeRecordId.length > 0
+                                      && WorkspaceSession.gameOver)
+                                     || workspace.computerAnalysisRunState.length > 0
+                            text: EngineManager.computerAnalysisDisclosure
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "computerAnalysisEstimate"
+                            Layout.fillWidth: true
+                            visible: (WorkspaceSession.activity === "played_game"
+                                      && WorkspaceSession.activeRecordId.length > 0
+                                      && WorkspaceSession.gameOver)
+                                     || workspace.computerAnalysisRunState.length > 0
+                            text: EngineManager.computerAnalysisEstimate
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "computerAnalysisError"
+                            Layout.fillWidth: true
+                            visible: workspace.computerAnalysisFailureMessage.length > 0
+                            text: workspace.computerAnalysisFailureMessage
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
                         }
                     }
 

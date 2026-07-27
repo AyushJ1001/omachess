@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QNetworkAccessManager>
 #include <QProcess>
@@ -24,6 +25,9 @@ class EngineManager : public QAbstractListModel
     Q_PROPERTY(QString analysisMessage READ analysisMessage NOTIFY analysisChanged)
     Q_PROPERTY(QString analysisEngine READ analysisEngine NOTIFY analysisChanged)
     Q_PROPERTY(QString analysisSearchContext READ analysisSearchContext NOTIFY analysisChanged)
+    Q_PROPERTY(QString computerAnalysisBudget READ computerAnalysisBudget NOTIFY analysisChanged)
+    Q_PROPERTY(QString computerAnalysisDisclosure READ computerAnalysisDisclosure NOTIFY analysisChanged)
+    Q_PROPERTY(QString computerAnalysisEstimate READ computerAnalysisEstimate NOTIFY analysisChanged)
     Q_PROPERTY(bool livePlayActive READ livePlayActive NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayEngineSide READ livePlayEngineSide NOTIFY livePlayChanged)
     Q_PROPERTY(QString livePlayStatus READ livePlayStatus NOTIFY livePlayChanged)
@@ -61,6 +65,10 @@ public:
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
     Q_INVOKABLE void analyzePosition(const QString &fen, bool ruleValid);
     Q_INVOKABLE void clearAnalysis();
+    Q_INVOKABLE void setComputerAnalysisBudget(const QString &budget, int positionCount = -1);
+    Q_INVOKABLE void beginComputerAnalysis(const QString &budget, int positionCount);
+    Q_INVOKABLE void recordComputerAnalysisPosition();
+    Q_INVOKABLE void endComputerAnalysis();
     Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
     Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
     Q_INVOKABLE void setLivePlayClock(const QString &key, int milliseconds);
@@ -91,6 +99,9 @@ public:
     QString analysisMessage() const { return m_analysisMessage; }
     QString analysisEngine() const;
     QString analysisSearchContext() const;
+    QString computerAnalysisBudget() const { return m_computerAnalysisBudget; }
+    QString computerAnalysisDisclosure() const { return m_computerAnalysisDisclosure; }
+    QString computerAnalysisEstimate() const { return m_computerAnalysisEstimate; }
 
 signals:
     void analysisChanged();
@@ -133,6 +144,17 @@ private:
         LiveSearch
     };
     enum class Operation { Probe, Analysis };
+    enum class AnalysisMode { Live, Computer };
+
+    struct Budget {
+        QString key;
+        QString label;
+        int milliseconds = 0;
+        int lines = 0;
+        QString resources;
+        int threadTarget = 1;
+        int hashTarget = 16;
+    };
 
     void discover();
     void loadCustomEngine();
@@ -157,6 +179,10 @@ private:
     int deadline(int productionMs) const;
     void failLivePlay(const QString &reason);
     void requestLiveMove();
+    Budget budgetDefinition(const QString &key) const;
+    void compileComputerAnalysis();
+    void updateComputerAnalysisEstimate();
+    QString formatDuration(qint64 milliseconds) const;
 
     QList<Profile> m_profiles;
     QProcess m_process;
@@ -175,6 +201,19 @@ private:
     QString m_analysisMessage;
     int m_analysisDepth = 0;
     QMap<int, QString> m_searchVariations;
+    AnalysisMode m_analysisMode = AnalysisMode::Live;
+    int m_analysisTimeMs = 250;
+    int m_analysisLineLimit = 3;
+    int m_computerAnalysisTimeMs = 1000;
+    int m_computerAnalysisLineLimit = 2;
+    QString m_computerAnalysisBudget = QStringLiteral("standard");
+    QString m_computerAnalysisDisclosure;
+    QString m_computerAnalysisEstimate;
+    QString m_computerAnalysisSettings;
+    bool m_computerAnalysisActive = false;
+    int m_computerAnalysisPositionCount = 0;
+    int m_computerAnalysisPositionsCompleted = 0;
+    QElapsedTimer m_computerAnalysisTimer;
     bool m_livePlayActive = false;
     QString m_livePlayEngineSide;
     QString m_livePlayStatus;

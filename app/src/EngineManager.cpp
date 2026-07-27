@@ -130,7 +130,10 @@ EngineManager::EngineManager(QObject *parent)
         if (m_stage != Stage::Starting)
             return;
         send("uci\n");
-        advance(Stage::Uci, deadline(3000));
+        const int analysisProbeDeadline = m_operation == Operation::Analysis
+                && m_computerAnalysisActive
+            ? qMax(500, deadline(3000)) : deadline(3000);
+        advance(Stage::Uci, analysisProbeDeadline);
     });
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &EngineManager::readOutput);
     connect(&m_process,
@@ -160,6 +163,7 @@ EngineManager::EngineManager(QObject *parent)
             fail(QStringLiteral("could not start"));
     });
 
+    compileComputerAnalysis();
     discover();
 }
 
@@ -626,6 +630,12 @@ void EngineManager::analyzePosition(const QString &fen, bool ruleValid)
     m_analysisDepth = 0;
     m_analysisMessage = ruleValid ? QStringLiteral("Waiting for a Ready engine.")
                                   : QStringLiteral("Engine analysis is not guaranteed for a Freeform Position.");
+    if (ruleValid && m_computerAnalysisActive) {
+        m_analysisMessage = QStringLiteral("%1 · searching position %2 of %3")
+                                .arg(m_computerAnalysisDisclosure)
+                                .arg(m_computerAnalysisPositionsCompleted + 1)
+                                .arg(m_computerAnalysisPositionCount);
+    }
     if (m_livePlayActive && ruleValid)
         m_analysisMessage = QStringLiteral("Live Position Analysis pauses while this engine is playing.");
     emit analysisChanged();
@@ -649,7 +659,8 @@ void EngineManager::clearAnalysis()
     if (m_operation == Operation::Analysis) {
         m_active = -1;
         m_stage = Stage::Idle;
-        stopProcess();
+        if (!m_computerAnalysisActive)
+            stopProcess();
     }
     m_analysisEvaluation.clear();
     m_analysisVariations.clear();
@@ -659,24 +670,264 @@ void EngineManager::clearAnalysis()
     emit analysisChanged();
 }
 
+void EngineManager::setComputerAnalysisBudget(const QString &budget, int positionCount)
+{
+    const Budget selected = budgetDefinition(budget);
+    m_computerAnalysisBudget = selected.key;
+    if (positionCount >= 0)
+        m_computerAnalysisPositionCount = positionCount;
+    compileComputerAnalysis();
+    updateComputerAnalysisEstimate();
+    emit analysisChanged();
+}
+
+void EngineManager::beginComputerAnalysis(const QString &budget, int positionCount)
+{
+    setComputerAnalysisBudget(budget, positionCount);
+    m_computerAnalysisActive = true;
+    m_computerAnalysisPositionsCompleted = 0;
+    m_computerAnalysisTimer.start();
+    updateComputerAnalysisEstimate();
+    emit analysisChanged();
+}
+
+void EngineManager::recordComputerAnalysisPosition()
+{
+    if (!m_computerAnalysisActive)
+        return;
+    ++m_computerAnalysisPositionsCompleted;
+    updateComputerAnalysisEstimate();
+    emit analysisChanged();
+}
+
+void EngineManager::endComputerAnalysis()
+{
+    if (!m_computerAnalysisActive)
+        return;
+    if (m_computerAnalysisPositionsCompleted > 0 && m_computerAnalysisTimer.isValid()) {
+        const double observed = static_cast<double>(m_computerAnalysisTimer.elapsed())
+                                / m_computerAnalysisPositionsCompleted;
+        const QString profileKey = m_readyProfile >= 0
+            ? m_profiles.at(m_readyProfile).key : QStringLiteral("engine");
+        QSettings().setValue(QStringLiteral("analysisCalibration/%1/%2/msPerPosition")
+                                 .arg(profileKey, m_computerAnalysisBudget), observed);
+    }
+    m_computerAnalysisActive = false;
+    if (m_operation == Operation::Analysis && m_active < 0) {
+        m_stage = Stage::Idle;
+        stopProcess();
+    }
+}
+
+EngineManager::Budget EngineManager::budgetDefinition(const QString &key) const
+{
+    if (key == QStringLiteral("quick"))
+        return {QStringLiteral("quick"), QStringLiteral("Quick"), 250, 1,
+                QStringLiteral("Low resources"), 1, 16};
+    if (key == QStringLiteral("deep"))
+        return {QStringLiteral("deep"), QStringLiteral("Deep"), 5000, 3,
+                QStringLiteral("High resources"), 4, 256};
+    return {QStringLiteral("standard"), QStringLiteral("Standard"), 1000, 2,
+            QStringLiteral("Moderate resources"), 2, 64};
+}
+
+QString EngineManager::formatDuration(qint64 milliseconds) const
+{
+    if (milliseconds < 1000)
+        return QStringLiteral("%1 ms").arg(qMax<qint64>(0, milliseconds));
+    const double seconds = static_cast<double>(milliseconds) / 1000.0;
+    if (qFuzzyCompare(seconds, qRound(seconds)))
+        return QStringLiteral("%1 s").arg(qRound(seconds));
+    return QStringLiteral("%1 s").arg(seconds, 0, 'f', 1);
+}
+
+void EngineManager::compileComputerAnalysis()
+{
+    const Budget selected = budgetDefinition(m_computerAnalysisBudget);
+    m_computerAnalysisTimeMs = selected.milliseconds;
+    m_computerAnalysisLineLimit = selected.lines;
+    m_computerAnalysisSettings.clear();
+
+    const Profile *profile = m_readyProfile >= 0 && m_readyProfile < m_profiles.size()
+        ? &m_profiles.at(m_readyProfile) : nullptr;
+    auto optionNamed = [profile](const QString &wanted) -> QVariantMap {
+        if (!profile)
+            return {};
+        for (const QVariant &value : profile->options) {
+            const QVariantMap option = value.toMap();
+            if (option.value(QStringLiteral("name")).toString().compare(
+                    wanted, Qt::CaseInsensitive) == 0)
+                return option;
+        }
+        return {};
+    };
+    auto boundedValue = [](const QVariantMap &option, int requested, int softMaximum) {
+        if (option.isEmpty() || option.value(QStringLiteral("type")).toString()
+                .compare(QStringLiteral("spin"), Qt::CaseInsensitive) != 0
+            || !option.contains(QStringLiteral("min"))
+            || !option.contains(QStringLiteral("max")))
+            return -1;
+        const int minimum = option.value(QStringLiteral("min")).toInt();
+        const int maximum = qMin(softMaximum, option.value(QStringLiteral("max")).toInt());
+        if (minimum > maximum)
+            return -1;
+        return qBound(minimum, requested, maximum);
+    };
+
+    const QVariantMap multiPv = optionNamed(QStringLiteral("MultiPV"));
+    const int requestedLines = selected.lines;
+    const int effectiveLines = boundedValue(multiPv, requestedLines, 64);
+    if (effectiveLines >= 1) {
+        m_computerAnalysisLineLimit = effectiveLines;
+        m_computerAnalysisSettings =
+            QStringLiteral("setoption name %1 value %2\n")
+                .arg(multiPv.value(QStringLiteral("name")).toString())
+                .arg(effectiveLines);
+    } else {
+        m_computerAnalysisLineLimit = 1;
+    }
+
+    QStringList resources;
+    const QVariantMap threads = optionNamed(QStringLiteral("Threads"));
+    const int effectiveThreads = boundedValue(threads, qMin(selected.threadTarget, 4), 4);
+    if (effectiveThreads >= 1) {
+        resources.append(QStringLiteral("Threads %1 (soft cap 4)").arg(effectiveThreads));
+        m_computerAnalysisSettings.prepend(
+            QStringLiteral("setoption name %1 value %2\n")
+                .arg(threads.value(QStringLiteral("name")).toString())
+                .arg(effectiveThreads));
+    } else {
+        resources.append(QStringLiteral("Threads unavailable"));
+    }
+
+    const QVariantMap hash = optionNamed(QStringLiteral("Hash"));
+    const int effectiveHash = boundedValue(hash, selected.hashTarget, 256);
+    if (effectiveHash >= 1) {
+        resources.append(QStringLiteral("Hash %1 MB (soft cap 256 MB)").arg(effectiveHash));
+        m_computerAnalysisSettings.prepend(
+            QStringLiteral("setoption name %1 value %2\n")
+                .arg(hash.value(QStringLiteral("name")).toString())
+                .arg(effectiveHash));
+    } else {
+        resources.append(QStringLiteral("Hash unavailable"));
+    }
+
+    QString backendDisclosure = QStringLiteral("Backend preserved (no override)");
+    if (profile) {
+        for (const QVariant &value : profile->options) {
+            const QVariantMap option = value.toMap();
+            const QString name = option.value(QStringLiteral("name")).toString().toLower();
+            if (name.contains(QStringLiteral("backend")) || name.contains(QStringLiteral("device"))
+                || name.contains(QStringLiteral("gpu")) || name.contains(QStringLiteral("nnue"))
+                || name.contains(QStringLiteral("network")) || name.contains(QStringLiteral("weights"))) {
+                const QString defaultValue = option.value(QStringLiteral("default")).toString();
+                backendDisclosure = defaultValue.isEmpty()
+                    ? QStringLiteral("Backend preserved")
+                    : QStringLiteral("Backend preserved: %1").arg(defaultValue);
+                break;
+            }
+        }
+    }
+    resources.append(backendDisclosure);
+
+    QString fallback;
+    if (m_computerAnalysisLineLimit < requestedLines) {
+        fallback = QStringLiteral(" · fallback: MultiPV capped to %1 lines")
+                       .arg(m_computerAnalysisLineLimit);
+    }
+    const QString capabilityState = profile
+        ? QString() : QStringLiteral(" · capability probe pending");
+    m_computerAnalysisDisclosure = QStringLiteral(
+        "%1 · %2/position · %3 requested lines · %4 effective lines · %5 · Engine limit: go movetime %6 ms · %7%8%9")
+        .arg(selected.label)
+        .arg(selected.milliseconds == 1000
+                 ? QStringLiteral("1 s")
+                 : selected.milliseconds == 5000 ? QStringLiteral("5 s")
+                                                  : QStringLiteral("250 ms"))
+        .arg(requestedLines)
+        .arg(m_computerAnalysisLineLimit)
+        .arg(selected.resources)
+        .arg(selected.milliseconds)
+        .arg(resources.join(QStringLiteral(", ")))
+        .arg(fallback)
+        .arg(capabilityState);
+}
+
+void EngineManager::updateComputerAnalysisEstimate()
+{
+    const Budget selected = budgetDefinition(m_computerAnalysisBudget);
+    const int positions = qMax(1, m_computerAnalysisPositionCount);
+    const QString profileKey = m_readyProfile >= 0
+        ? m_profiles.at(m_readyProfile).key : QStringLiteral("engine");
+    const double calibrated = QSettings()
+        .value(QStringLiteral("analysisCalibration/%1/%2/msPerPosition")
+                   .arg(profileKey, selected.key), selected.milliseconds + 150)
+        .toDouble();
+
+    if (!m_computerAnalysisActive || m_computerAnalysisPositionsCompleted <= 0
+        || !m_computerAnalysisTimer.isValid()) {
+        const qint64 low = qRound64(calibrated * positions * 0.8);
+        const qint64 high = qRound64(calibrated * positions * 1.25);
+        m_computerAnalysisEstimate = QStringLiteral("Estimate: %1–%2 for %3 positions")
+                                          .arg(formatDuration(low))
+                                          .arg(formatDuration(high))
+                                          .arg(positions);
+        return;
+    }
+
+    const qint64 elapsed = m_computerAnalysisTimer.elapsed();
+    const double observedPerPosition = static_cast<double>(elapsed)
+                                       / m_computerAnalysisPositionsCompleted;
+    const int remainingPositions = qMax(0, positions - m_computerAnalysisPositionsCompleted);
+    const qint64 remaining = qRound64(observedPerPosition * remainingPositions);
+    const qint64 margin = qMax<qint64>(50, qRound64(remaining * 0.2));
+    m_computerAnalysisEstimate = QStringLiteral(
+        "Corrected estimate: %1–%2 remaining · observed %3/position")
+        .arg(formatDuration(qMax<qint64>(0, remaining - margin)))
+        .arg(formatDuration(remaining + margin))
+        .arg(formatDuration(qRound64(observedPerPosition)));
+}
+
 void EngineManager::startAnalysis()
 {
     if (m_readyProfile < 0 || m_requestedFen.isEmpty() || !m_requestedRuleValid)
         return;
     m_operation = Operation::Analysis;
+    m_analysisMode = m_computerAnalysisActive ? AnalysisMode::Computer : AnalysisMode::Live;
+    if (m_analysisMode == AnalysisMode::Computer) {
+        compileComputerAnalysis();
+        m_analysisTimeMs = m_computerAnalysisTimeMs;
+        m_analysisLineLimit = m_computerAnalysisLineLimit;
+    } else {
+        m_analysisTimeMs = 250;
+        m_analysisLineLimit = 3;
+    }
     m_active = m_readyProfile;
     m_output.clear();
     m_searchVariations.clear();
     m_analysisDepth = 0;
-    m_analysisMessage = QStringLiteral("Analyzing…");
+    m_analysisMessage = m_analysisMode == AnalysisMode::Computer
+        ? QStringLiteral("%1 · searching position %2 of %3")
+              .arg(m_computerAnalysisDisclosure)
+              .arg(m_computerAnalysisPositionsCompleted + 1)
+              .arg(m_computerAnalysisPositionCount)
+        : QStringLiteral("Analyzing…");
     emit analysisChanged();
     const Profile &profile = m_profiles.at(m_readyProfile);
+    if (m_analysisMode == AnalysisMode::Computer
+        && m_process.state() == QProcess::Running) {
+        send("isready\n");
+        advance(Stage::Ready, qMax(500, deadline(5000)));
+        return;
+    }
     m_process.setProgram(profile.path);
     m_process.setArguments(QProcess::splitCommand(profile.arguments));
     m_process.setWorkingDirectory(profile.workingDirectory);
     m_process.setProcessChannelMode(QProcess::SeparateChannels);
     m_process.start();
-    advance(Stage::Starting, deadline(3000));
+    advance(Stage::Starting, m_computerAnalysisActive
+                                   ? qMax(500, deadline(3000))
+                                   : deadline(3000));
 }
 
 void EngineManager::send(const QByteArray &command)
@@ -776,8 +1027,13 @@ void EngineManager::consumeLine(const QString &line)
         }
         else if (line == QStringLiteral("uciok")) {
             if (m_operation == Operation::Analysis) {
-                send("setoption name MultiPV value 3\nisready\n");
-                advance(Stage::Ready, deadline(5000));
+                if (m_analysisMode == AnalysisMode::Computer)
+                    send(m_computerAnalysisSettings.toUtf8() + "isready\n");
+                else
+                    send("setoption name MultiPV value 3\nisready\n");
+                const int analysisReadyDeadline = m_analysisMode == AnalysisMode::Computer
+                    ? qMax(500, deadline(5000)) : deadline(5000);
+                advance(Stage::Ready, analysisReadyDeadline);
                 return;
             }
             if (profile.identity.isEmpty() || m_sawMalformedHandshake) {
@@ -824,11 +1080,15 @@ void EngineManager::consumeLine(const QString &line)
         }
     } else if (m_stage == Stage::Ready && line == QStringLiteral("readyok")) {
         if (m_operation == Operation::Analysis) {
-            send("position fen " + m_requestedFen.toUtf8() + "\ngo movetime 250\n");
+            send("position fen " + m_requestedFen.toUtf8() + "\ngo movetime "
+                 + QByteArray::number(m_analysisTimeMs) + "\n");
         } else {
             send("ucinewgame\nposition startpos\ngo movetime 50\n");
         }
-        advance(Stage::Search, deadline(1500));
+        const int analysisSearchDeadline = m_analysisMode == AnalysisMode::Computer
+            ? qMax(500, deadline(qMax(1500, m_analysisTimeMs + 1000)))
+            : deadline(qMax(1500, m_analysisTimeMs + 1000));
+        advance(Stage::Search, analysisSearchDeadline);
     } else if (m_stage == Stage::Search && m_operation == Operation::Analysis
                && line.startsWith(QStringLiteral("info "))) {
         consumeAnalysisInfo(line);
@@ -864,6 +1124,8 @@ void EngineManager::consumeAnalysisInfo(const QString &line)
         m_analysisDepth = qMax(m_analysisDepth, depthMatch.captured(1).toInt());
     const QRegularExpressionMatch rankMatch = rankPattern.match(line);
     const int rank = rankMatch.hasMatch() ? rankMatch.captured(1).toInt() : 1;
+    if (m_analysisMode == AnalysisMode::Computer && rank > m_analysisLineLimit)
+        return;
     if (rank == 1) {
         const int score = scoreMatch.captured(2).toInt();
         if (scoreMatch.captured(1) == QStringLiteral("mate"))
@@ -888,8 +1150,11 @@ QString EngineManager::analysisEngine() const
 QString EngineManager::analysisSearchContext() const
 {
     if (m_analysisDepth <= 0)
-        return QStringLiteral("movetime 250 ms");
-    return QStringLiteral("depth %1 · movetime 250 ms").arg(m_analysisDepth);
+        return QStringLiteral("movetime %1 ms").arg(m_analysisTimeMs);
+    if (m_analysisMode == AnalysisMode::Computer)
+        return QStringLiteral("depth %1 · movetime %2 ms · MultiPV %3")
+            .arg(m_analysisDepth).arg(m_analysisTimeMs).arg(m_analysisLineLimit);
+    return QStringLiteral("depth %1 · movetime %2 ms").arg(m_analysisDepth).arg(m_analysisTimeMs);
 }
 
 void EngineManager::finishAnalysis()
@@ -901,11 +1166,16 @@ void EngineManager::finishAnalysis()
         m_analysisVariations.append(QStringLiteral("%1. %2").arg(variation.key()).arg(variation.value()));
     m_analysisMessage = m_analysisEvaluation.isEmpty()
                             ? QStringLiteral("The engine returned no analysis.")
-                            : QStringLiteral("Live Position Analysis");
+                            : m_analysisMode == AnalysisMode::Computer
+                                  ? QStringLiteral("%1 · position complete")
+                                        .arg(m_computerAnalysisDisclosure)
+                                  : QStringLiteral("Live Position Analysis");
     m_active = -1;
     m_stage = Stage::Idle;
-    send("quit\n");
-    stopProcess();
+    if (m_analysisMode == AnalysisMode::Live) {
+        send("quit\n");
+        stopProcess();
+    }
     emit analysisChanged();
 }
 
@@ -920,7 +1190,9 @@ void EngineManager::fail(const QString &reason)
     if (m_active < 0)
         return;
     if (m_operation == Operation::Analysis) {
-        m_analysisMessage = QStringLiteral("Analysis unavailable — %1").arg(reason);
+        m_analysisMessage = m_analysisMode == AnalysisMode::Computer
+            ? QStringLiteral("%1 · unavailable — %2").arg(m_computerAnalysisDisclosure, reason)
+            : QStringLiteral("Analysis unavailable — %1").arg(reason);
         m_analysisEvaluation.clear();
         m_analysisVariations.clear();
         m_stage = Stage::Idle;
@@ -951,7 +1223,10 @@ void EngineManager::finishReady()
     m_readyProfile = completed;
     m_active = -1;
     m_stage = Stage::Idle;
+    compileComputerAnalysis();
+    updateComputerAnalysisEstimate();
     emit dataChanged(index(completed), index(completed));
+    emit analysisChanged();
     if (!m_requestedFen.isEmpty() && m_requestedRuleValid)
         startAnalysis();
 }
@@ -972,8 +1247,10 @@ void EngineManager::stopProcess()
     m_deadline.stop();
     if (m_process.state() != QProcess::NotRunning) {
         m_process.terminate();
-        if (!m_process.waitForFinished(50))
+        if (!m_process.waitForFinished(50)) {
             m_process.kill();
+            m_process.waitForFinished(100);
+        }
     }
 }
 
