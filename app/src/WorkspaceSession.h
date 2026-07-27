@@ -244,6 +244,12 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void archiveRecord(const QString &id);
+    Q_INVOKABLE void unarchiveRecord(const QString &id);
+    Q_INVOKABLE void setLibraryView(const QString &view);
+    Q_INVOKABLE void purgeRecord(const QString &id);
+    Q_INVOKABLE void purgeStudy(const QString &studyId);
+    Q_INVOKABLE void purgeVariantDefinition();
     Q_INVOKABLE void createStudy(const QString &name);
     Q_INVOKABLE void addStudyRecord(const QString &studyId, const QString &recordId);
     Q_INVOKABLE void removeStudyRecord(const QString &studyId, const QString &recordId);
