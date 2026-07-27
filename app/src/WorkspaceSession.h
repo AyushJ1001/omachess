@@ -46,6 +46,12 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString resultScore READ resultScore NOTIFY boardChanged)
     Q_PROPERTY(bool gameOver READ gameOver NOTIFY boardChanged)
 
+    // Personal Library summaries from the Live Store.
+    Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
+    // Open record tabs and the active Game Record id.
+    Q_PROPERTY(QVariantList openTabs READ openTabs NOTIFY tabsChanged)
+    Q_PROPERTY(QString activeRecordId READ activeRecordId NOTIFY tabsChanged)
+
     // Shown when a prior Game Record can be restored after restart.
     Q_PROPERTY(bool restoreAvailable READ restoreAvailable NOTIFY restoreChanged)
     Q_PROPERTY(QString restoreLabel READ restoreLabel NOTIFY restoreChanged)
@@ -72,6 +78,10 @@ public:
     QString resultStatus() const { return result(QStringLiteral("status")); }
     QString resultScore() const { return result(QStringLiteral("score")); }
     bool gameOver() const;
+
+    QVariantList libraryRecords() const { return m_libraryRecords; }
+    QVariantList openTabs() const { return m_openTabs; }
+    QString activeRecordId() const { return m_activeRecordId; }
 
     bool restoreAvailable() const { return m_restoreAvailable; }
     QString restoreLabel() const { return m_restoreLabel; }
@@ -100,6 +110,15 @@ public:
     // Player intent: decline the restore offer and keep the fresh board.
     Q_INVOKABLE void dismissRestore();
 
+    // Player intent: clear the board so the next move starts a new Game Record.
+    Q_INVOKABLE void newGame();
+
+    // Player intent: open a Personal Library record in a tab (or focus it).
+    Q_INVOKABLE void openRecord(const QString &id);
+
+    // Player intent: close a tab without removing the record from the library.
+    Q_INVOKABLE void closeTab(const QString &id);
+
     // --- What the core said a player may do -------------------------------
     //
     // These read the moves the last event carried. They are how the board
@@ -126,6 +145,8 @@ public:
 
 signals:
     void boardChanged();
+    void libraryChanged();
+    void tabsChanged();
     void restoreChanged();
 
 private:
@@ -145,6 +166,9 @@ private:
     // The last board_changed event, kept whole so every property answers from
     // one core-owned snapshot.
     QJsonObject m_state;
+    QVariantList m_libraryRecords;
+    QVariantList m_openTabs;
+    QString m_activeRecordId;
     bool m_restoreAvailable = false;
     QString m_restoreLabel;
     QString m_storeError;

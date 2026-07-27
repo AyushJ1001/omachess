@@ -76,6 +76,21 @@ void WorkspaceSession::dismissRestore()
     submit(command(QStringLiteral("dismiss_restore")));
 }
 
+void WorkspaceSession::newGame()
+{
+    submit(command(QStringLiteral("new_game")));
+}
+
+void WorkspaceSession::openRecord(const QString &id)
+{
+    submit(command(QStringLiteral("open_record"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::closeTab(const QString &id)
+{
+    submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
+}
+
 QVariantList WorkspaceSession::moveList() const
 {
     QVariantList moves;
@@ -219,6 +234,40 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_state = event;
         m_board.applySquares(event.value(QStringLiteral("squares")).toArray());
         emit boardChanged();
+        return;
+    }
+    if (type == QStringLiteral("library_changed")) {
+        m_libraryRecords.clear();
+        const QJsonArray records = event.value(QStringLiteral("records")).toArray();
+        for (const QJsonValue &value : records) {
+            const QJsonObject record = value.toObject();
+            QVariantMap entry{
+                {QStringLiteral("id"), record.value(QStringLiteral("id")).toString()},
+                {QStringLiteral("kind"), record.value(QStringLiteral("kind")).toString()},
+                {QStringLiteral("title"), record.value(QStringLiteral("title")).toString()},
+                {QStringLiteral("plyCount"), record.value(QStringLiteral("plyCount")).toInt()},
+            };
+            const QJsonValue score = record.value(QStringLiteral("resultScore"));
+            entry.insert(QStringLiteral("resultScore"),
+                         score.isNull() ? QString() : score.toString());
+            m_libraryRecords.append(entry);
+        }
+        emit libraryChanged();
+        return;
+    }
+    if (type == QStringLiteral("tabs_changed")) {
+        m_openTabs.clear();
+        const QJsonArray tabs = event.value(QStringLiteral("openTabs")).toArray();
+        for (const QJsonValue &value : tabs) {
+            const QJsonObject tab = value.toObject();
+            m_openTabs.append(QVariantMap{
+                {QStringLiteral("id"), tab.value(QStringLiteral("id")).toString()},
+                {QStringLiteral("title"), tab.value(QStringLiteral("title")).toString()},
+            });
+        }
+        const QJsonValue active = event.value(QStringLiteral("activeId"));
+        m_activeRecordId = active.isNull() ? QString() : active.toString();
+        emit tabsChanged();
         return;
     }
     if (type == QStringLiteral("restore_available")) {
