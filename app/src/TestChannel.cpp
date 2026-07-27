@@ -8,11 +8,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLocalSocket>
 #include <QLoggingCategory>
 #include <QMouseEvent>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QTest>
 
 Q_LOGGING_CATEGORY(lcTestChannel, "omachess.testchannel")
 
@@ -216,6 +218,8 @@ QJsonObject TestChannel::snapshot() const
     // internals.
     ThemeController *activeTheme = ThemeController::instance();
 
+    const QQuickItem *focused = keyboardTarget(m_window);
+
     const QString chromeBackground = activeTheme ? colorHex(activeTheme->background())
                                                  : colorHex(m_window->color());
     const QString chromeForeground =
@@ -248,6 +252,7 @@ QJsonObject TestChannel::snapshot() const
         {"themeName", themeName},
         {"boardThemeId", boardThemeId},
         {"pieceSetId", pieceSetId},
+        {"activeFocus", focused ? focused->objectName() : QString()},
         {"squares", squares},
         {"labels", labels},
     };
@@ -255,19 +260,15 @@ QJsonObject TestChannel::snapshot() const
 
 bool TestChannel::sendKey(const QString &key)
 {
-    if (key.size() != 1)
+    const QKeySequence sequence = QKeySequence::fromString(key, QKeySequence::PortableText);
+    if (sequence.isEmpty())
         return false;
-
-    const QChar character = key.at(0).toLower();
-    if (character < QLatin1Char('a') || character > QLatin1Char('z'))
-        return false;
-    const int code = Qt::Key_A + (character.unicode() - u'a');
-
-    QObject *target = keyboardTarget(m_window);
-    QKeyEvent press(QEvent::KeyPress, code, Qt::NoModifier, QString(character));
-    QCoreApplication::sendEvent(target, &press);
-    QKeyEvent release(QEvent::KeyRelease, code, Qt::NoModifier, QString(character));
-    QCoreApplication::sendEvent(target, &release);
+    const QKeyCombination combination = sequence[0];
+    const int code = combination.key();
+    const Qt::KeyboardModifiers modifiers = combination.keyboardModifiers();
+    m_window->requestActivate();
+    QCoreApplication::processEvents();
+    QTest::keyClick(m_window, static_cast<Qt::Key>(code), modifiers);
     QCoreApplication::processEvents();
     return true;
 }
