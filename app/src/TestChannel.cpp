@@ -170,6 +170,28 @@ QJsonObject TestChannel::handle(const QJsonObject &command)
         QCoreApplication::processEvents();
         return QJsonObject{{"ok", true}};
     }
+    if (name == QStringLiteral("set_text")) {
+        settle();
+        const QString target = command.value(QStringLiteral("target")).toString();
+        QQuickItem *item = findItem(m_window, target);
+        if (!item || !item->isVisible())
+            return QJsonObject{{"ok", false}, {"error", QStringLiteral("missing text target")}};
+        item->setProperty("text", command.value(QStringLiteral("text")).toString());
+        QCoreApplication::processEvents();
+        return QJsonObject{{"ok", true}};
+    }
+    if (name == QStringLiteral("select")) {
+        settle();
+        QQuickItem *item =
+            findItem(m_window, command.value(QStringLiteral("target")).toString());
+        const int index = command.value(QStringLiteral("index")).toInt(-1);
+        if (!item || !item->isVisible() || index < 0)
+            return QJsonObject{{"ok", false}, {"error", QStringLiteral("missing picker")}};
+        item->setProperty("currentIndex", index);
+        const bool invoked = QMetaObject::invokeMethod(item, "activated", Q_ARG(int, index));
+        QCoreApplication::processEvents();
+        return QJsonObject{{"ok", invoked}};
+    }
     if (name == QStringLiteral("quit")) {
         QCoreApplication::quit();
         return QJsonObject{{"ok", true}};

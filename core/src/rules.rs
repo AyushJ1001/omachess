@@ -23,6 +23,7 @@ extern "C" {
     fn omachess_rules_pop(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_side_to_move(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_in_check(rules: *mut OmachessRules) -> c_int;
+    fn omachess_rules_time_forfeit_winner(rules: *mut OmachessRules, loser: c_int) -> c_int;
     fn omachess_rules_termination(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_winner(rules: *mut OmachessRules) -> c_int;
 }
@@ -37,6 +38,8 @@ pub enum Termination {
     InsufficientMaterial,
     FiftyMove,
     Repetition,
+    /// A player's clock reached zero.
+    TimeForfeit,
     /// An ending belonging to the Chess Variant's own rules.
     VariantRule,
 }
@@ -63,6 +66,7 @@ impl Termination {
             Termination::InsufficientMaterial => "insufficient_material",
             Termination::FiftyMove => "fifty_move_rule",
             Termination::Repetition => "threefold_repetition",
+            Termination::TimeForfeit => "time_forfeit",
             Termination::VariantRule => "variant_rule",
         }
     }
@@ -251,6 +255,12 @@ impl Rules {
     /// Whether the side to move is in check.
     pub fn in_check(&mut self) -> bool {
         unsafe { omachess_rules_in_check(self.handle) == 1 }
+    }
+
+    pub fn time_forfeit_winner(&mut self, loser_is_white: bool) -> Winner {
+        Winner::from_code(unsafe {
+            omachess_rules_time_forfeit_winner(self.handle, if loser_is_white { 0 } else { 1 })
+        })
     }
 
     /// The result of the game in the current position.

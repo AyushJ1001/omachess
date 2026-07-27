@@ -215,6 +215,42 @@ class PlayJourney(unittest.TestCase):
     def test_a_game_can_be_played_to_checkmate(self) -> None:
         self.assert_game_ends_with(CHECKMATE, "Black wins by checkmate (0-1)")
 
+    def test_a_timed_game_completes_on_flag_fall_and_reloads(self) -> None:
+        self.workspace.select("clockPicker", 1)
+        self.workspace.play("e2e4")
+        screen = self.workspace.screen_when(game_is_over, timeout=5.0)
+        self.assertEqual(screen.status(), "White wins by time forfeit (1-0)")
+        self.assertIn("blackClockLabel", screen.labels)
+
+        self.workspace.restart()
+        screen = self.workspace.screen_when(game_is_over, timeout=5.0)
+        self.assertEqual(screen.status(), "White wins by time forfeit (1-0)")
+        self.assertEqual(screen.moves(), ["1. e4"])
+
+    def test_completed_game_rejects_moves_but_accepts_metadata_correction(self) -> None:
+        self.workspace.play_all(CHECKMATE)
+        self.workspace.screen_when(game_is_over)
+        moves = self.workspace.screen().moves()
+
+        self.workspace.set_text("metadata:white", "Ada")
+        self.workspace.set_text("metadata:black", "Grace")
+        self.workspace.set_text("metadata:event", "Club")
+        self.workspace.set_text("metadata:date", "2026-07-27")
+        self.workspace.set_text("metadata:title", "Corrected title")
+        self.workspace.set_text("metadata:tags", "casual")
+        self.workspace.click("saveMetadataButton")
+        screen = self.workspace.screen_when(
+            lambda s: any(text == "Corrected title" for text in s.labels.values())
+        )
+        self.assertEqual(screen.moves(), moves)
+        self.workspace.play("e1f2")
+        self.assertEqual(self.workspace.screen().moves(), moves)
+
+        self.workspace.restart()
+        screen = self.workspace.screen_when(game_is_over)
+        self.assertEqual(screen.moves(), moves)
+        self.assertTrue(any(text == "Corrected title" for text in screen.labels.values()))
+
     def test_a_game_can_be_played_to_stalemate(self) -> None:
         self.assert_game_ends_with(STALEMATE, "Draw by stalemate (1/2-1/2)")
 

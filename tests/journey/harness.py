@@ -427,6 +427,14 @@ class Workspace:
         """Choose a Piece Set from the chrome."""
         self.click(f"pieceSet:{piece_set_id}")
 
+    def set_text(self, target: str, text: str) -> None:
+        """Enter text into a visible workspace field."""
+        self._request({"command": "set_text", "target": target, "text": text})
+
+    def select(self, target: str, index: int) -> None:
+        """Choose a visible picker option."""
+        self._request({"command": "select", "target": target, "index": index})
+
     def replace_theme(
         self,
         palette: dict[str, str] | None,

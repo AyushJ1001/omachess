@@ -91,6 +91,30 @@ void WorkspaceSession::closeTab(const QString &id)
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
 }
 
+void WorkspaceSession::configureClock(int milliseconds)
+{
+    submit(command(QStringLiteral("configure_clock"),
+                   {{QStringLiteral("milliseconds"), QString::number(milliseconds)}}));
+}
+
+void WorkspaceSession::tickClock()
+{
+    submit(command(QStringLiteral("tick_clock")));
+}
+
+void WorkspaceSession::updateMetadata(const QString &white, const QString &black,
+                                      const QString &event, const QString &date,
+                                      const QString &title, const QString &tags)
+{
+    submit(command(QStringLiteral("update_metadata"),
+                   {{QStringLiteral("white"), white},
+                    {QStringLiteral("black"), black},
+                    {QStringLiteral("event"), event},
+                    {QStringLiteral("date"), date},
+                    {QStringLiteral("title"), title},
+                    {QStringLiteral("tags"), tags}}));
+}
+
 void WorkspaceSession::beginPositionSetup()
 {
     submit(command(QStringLiteral("begin_position_setup")));
@@ -218,6 +242,16 @@ QString WorkspaceSession::result(const QString &name) const
 QString WorkspaceSession::lastMoveSquare(const QString &name) const
 {
     return m_state.value(QStringLiteral("lastMove")).toObject().value(name).toString();
+}
+
+QJsonValue WorkspaceSession::clockField(const QString &name) const
+{
+    return m_state.value(QStringLiteral("clock")).toObject().value(name);
+}
+
+QString WorkspaceSession::metadataField(const QString &name) const
+{
+    return m_state.value(QStringLiteral("metadata")).toObject().value(name).toString();
 }
 
 void WorkspaceSession::submit(const QByteArray &commandJson)

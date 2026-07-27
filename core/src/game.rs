@@ -55,6 +55,12 @@ pub enum MoveRejected {
     Reviewing,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    White,
+    Black,
+}
+
 /// The moves available from one square to one other square.
 ///
 /// A promotion is several engine moves that share a from and a to, so they are
@@ -160,6 +166,18 @@ impl Game {
 
     pub fn outcome(&self) -> Outcome {
         self.outcome
+    }
+
+    /// Completes an otherwise unfinished Played Game when `loser` flags.
+    pub fn complete_on_time(&mut self, loser: Side) -> bool {
+        if self.outcome.is_over() {
+            return false;
+        }
+        self.outcome = Outcome {
+            termination: crate::rules::Termination::TimeForfeit,
+            winner: self.rules.time_forfeit_winner(loser == Side::White),
+        };
+        true
     }
 
     /// The move that produced the Displayed Position, if any.
@@ -323,6 +341,7 @@ pub fn result_label(outcome: Outcome) -> String {
         "fifty_move_rule" => "the fifty-move rule",
         "threefold_repetition" => "threefold repetition",
         "variant_rule" => "the rules of this variant",
+        "time_forfeit" => "time forfeit",
         _ => return "In progress".to_owned(),
     };
     match outcome.winner {
@@ -389,6 +408,26 @@ mod tests {
             .map(|played| (played.number, played.side))
             .collect();
         assert_eq!(numbered, [(1, "white"), (1, "black"), (2, "white")]);
+    }
+
+    #[test]
+    fn flag_fall_completes_the_game_and_freezes_its_moves() {
+        let mut game = Game::standard();
+        play(&mut game, &["e2e4"]);
+        assert!(game.complete_on_time(Side::Black));
+        assert_eq!(game.outcome().winner, Winner::White);
+        assert_eq!(game.outcome().termination, Termination::TimeForfeit);
+        assert_eq!(game.play("e7", "e5", None), Err(MoveRejected::GameOver));
+        assert_eq!(game.moves().len(), 1);
+        assert!(!game.complete_on_time(Side::White));
+    }
+
+    #[test]
+    fn flag_fall_is_a_draw_when_the_other_side_cannot_mate() {
+        let mut game = Game::new_from("4k2r/8/8/8/8/8/8/4K3 w - - 0 1");
+        assert!(game.complete_on_time(Side::Black));
+        assert_eq!(game.outcome().winner, Winner::Draw);
+        assert_eq!(game.outcome().termination, Termination::TimeForfeit);
     }
 
     #[test]
