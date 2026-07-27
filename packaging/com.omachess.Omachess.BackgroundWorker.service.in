@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=com.omachess.Omachess.BackgroundWorker
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/omachess-background-worker

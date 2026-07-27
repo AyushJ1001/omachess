@@ -99,14 +99,16 @@ class InstalledFootprint(unittest.TestCase):
     def test_the_package_installs_only_program_files_and_documentation(self) -> None:
         expected = {
             "bin/omachess",
+            "bin/omachess-background-worker",
             f"share/applications/{DESKTOP_ID}.desktop",
+            "share/dbus-1/services/com.omachess.Omachess.BackgroundWorker.service",
         }
         places = {str(path.relative_to(self.prefix)) for path in self.files}
         self.assertTrue(expected <= places, f"missing {sorted(expected - places)}")
         for place in places:
             self.assertTrue(
                 place.startswith(
-                    ("bin/", "share/applications/", "share/icons/", "share/doc/",
+                    ("bin/", "share/applications/", "share/dbus-1/services/", "share/icons/", "share/doc/",
                      "share/licenses/")
                 ),
                 f"{place} is outside the program, launcher, icon, and documentation footprint",

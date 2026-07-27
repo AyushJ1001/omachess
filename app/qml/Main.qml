@@ -57,6 +57,9 @@ ApplicationWindow {
     property var computerAnalysisResults: []
     property string computerAnalysisBudgetKey: "standard"
     property string computerAnalysisFailureMessage: ""
+    property string backgroundComputerAnalysisId: ""
+    property var backgroundComputerAnalysisJob: null
+    property bool backgroundComputerAnalysisCloseApproved: false
 
     Timer {
         id: computerAnalysisNextPositionTimer
@@ -79,6 +82,65 @@ ApplicationWindow {
             key, WorkspaceSession.moveList.length + 1)
     }
 
+    function backgroundJobControlsContain(control) {
+        return backgroundComputerAnalysisJob !== null
+                && backgroundComputerAnalysisJob.controls !== undefined
+                && backgroundComputerAnalysisJob.controls.indexOf(control) >= 0
+    }
+
+    function resetBackgroundComputerAnalysis() {
+        backgroundComputerAnalysisId = ""
+        backgroundComputerAnalysisJob = null
+        computerAnalysisRunning = false
+        computerAnalysisRunState = ""
+        computerAnalysisResults = []
+        backgroundComputerAnalysisCloseApproved = false
+    }
+
+    function refreshBackgroundComputerAnalysisJobs() {
+        const encoded = WorkspaceSession.backgroundJobs()
+        if (encoded === "")
+            return
+        let jobs = []
+        try {
+            jobs = JSON.parse(encoded)
+        } catch (error) {
+            return
+        }
+        const job = jobs.find(candidate => candidate.kind === "computer_analysis")
+        if (job === undefined) {
+            if (backgroundComputerAnalysisId !== "")
+                resetBackgroundComputerAnalysis()
+            return
+        }
+        backgroundComputerAnalysisId = job.id
+        backgroundComputerAnalysisJob = job
+        computerAnalysisTotal = job.total
+        const previousCheckpoint = computerAnalysisResults.length
+        const checkpoint = Math.min(job.checkpoint, job.total)
+        for (let completed = previousCheckpoint; completed < checkpoint; ++completed)
+            EngineManager.recordComputerAnalysisPosition()
+        computerAnalysisResults = Array(checkpoint).fill({})
+        if (job.state === "complete") {
+            computerAnalysisResults = Array(job.total).fill({})
+            if (WorkspaceSession.importBackgroundComputerAnalysis(job.id)) {
+                backgroundComputerAnalysisId = ""
+                backgroundComputerAnalysisJob = null
+                computerAnalysisRunning = false
+                computerAnalysisRunState = "Complete"
+                backgroundComputerAnalysisCloseApproved = false
+                EngineManager.endComputerAnalysis()
+                return
+            }
+            computerAnalysisRunning = false
+            computerAnalysisRunState = "Ready to import"
+            EngineManager.endComputerAnalysis()
+            return
+        }
+        computerAnalysisRunning = job.state === "running"
+        computerAnalysisRunState = job.state.charAt(0).toUpperCase() + job.state.slice(1)
+    }
+
     function visibleLibraryRecords() {
         return WorkspaceSession.libraryRecords.filter(function(record) {
             return showArchivedRecords || !record.archived
@@ -99,19 +161,44 @@ ApplicationWindow {
     }
 
     function startComputerAnalysis() {
-        computerAnalysisRunning = true
-        computerAnalysisRunState = "Running"
         computerAnalysisFailureMessage = ""
         computerAnalysisTargetPly = 0
         computerAnalysisTotal = WorkspaceSession.moveList.length + 1
         computerAnalysisResults = []
         EngineManager.beginComputerAnalysis(
             computerAnalysisBudgetKey, computerAnalysisTotal)
-        WorkspaceSession.navigate("start")
-        computerAnalysisNextPositionTimer.start()
+        const backgroundJobId = WorkspaceSession.startBackgroundComputerAnalysis(
+            EngineManager.computerAnalysisSearchSettings(),
+            EngineManager.computerAnalysisSearchTimeMs(),
+            EngineManager.computerAnalysisLineLimit())
+        if (backgroundJobId !== "") {
+            backgroundComputerAnalysisCloseApproved = false
+            backgroundComputerAnalysisId = backgroundJobId
+            backgroundComputerAnalysisJob = {
+                id: backgroundJobId,
+                kind: "computer_analysis",
+                state: "running",
+                recordId: WorkspaceSession.activeRecordId,
+                checkpoint: 0,
+                total: WorkspaceSession.moveList.length + 1,
+                controls: ["pause", "cancel", "open"]
+            }
+            computerAnalysisRunning = true
+            computerAnalysisRunState = "Running in background worker"
+            return
+        }
+        computerAnalysisRunning = false
+        computerAnalysisRunState = "Background worker unavailable"
+        computerAnalysisTotal = 0
+        computerAnalysisResults = []
+        EngineManager.endComputerAnalysis()
     }
 
     function cancelComputerAnalysis() {
+        if (backgroundComputerAnalysisId !== "")
+            WorkspaceSession.cancelBackgroundJob(backgroundComputerAnalysisId)
+        backgroundComputerAnalysisId = ""
+        backgroundComputerAnalysisJob = null
         computerAnalysisRunning = false
         computerAnalysisRunState = "Cancelled"
         computerAnalysisNextPositionTimer.stop()
@@ -120,6 +207,8 @@ ApplicationWindow {
     }
 
     function collectComputerPosition() {
+        if (backgroundComputerAnalysisId !== "")
+            return
         if (!computerAnalysisRunning || !EngineManager.analysisReady
                 || WorkspaceSession.cursor !== computerAnalysisTargetPly)
             return
@@ -166,6 +255,13 @@ ApplicationWindow {
         return true
     }
 
+    Timer {
+        interval: 300
+        repeat: true
+        running: backgroundComputerAnalysisId !== ""
+        onTriggered: workspace.refreshBackgroundComputerAnalysisJobs()
+    }
+
     function continuePendingAction() {
         const action = pendingAction
         const id = pendingOpenRecordId
@@ -201,14 +297,60 @@ ApplicationWindow {
     }
 
     function requestWorkspaceClose() {
+        if (computerAnalysisRunning) {
+            backgroundComputerAnalysisCloseApproved = false
+            backgroundCloseConsent.open()
+            return
+        }
         if (!askBeforeAbandoning("workspace", ""))
             workspace.close()
     }
 
     onClosing: function(close) {
+        if (computerAnalysisRunning && !backgroundComputerAnalysisCloseApproved) {
+            close.accepted = false
+            backgroundCloseConsent.open()
+            return
+        }
         if (WorkspaceSession.needsUnsavedDecision && !pendingWorkspaceClose) {
             close.accepted = false
             requestWorkspaceClose()
+        }
+    }
+
+    Dialog {
+        id: backgroundCloseConsent
+        objectName: "backgroundCloseConsent"
+        modal: true
+        title: qsTr("Continue Computer Analysis?")
+        standardButtons: Dialog.NoButton
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Computer Analysis can continue after this workspace closes. Continue it in the background?")
+            }
+            RowLayout {
+                Button {
+                    objectName: "backgroundConsentContinue"
+                    text: qsTr("Continue")
+                    onClicked: {
+                        backgroundComputerAnalysisCloseApproved = true
+                        backgroundCloseConsent.close()
+                        workspace.close()
+                    }
+                }
+                Button {
+                    objectName: "backgroundConsentStop"
+                    text: qsTr("Stop")
+                    onClicked: {
+                        backgroundComputerAnalysisCloseApproved = false
+                        workspace.cancelComputerAnalysis()
+                        backgroundCloseConsent.close()
+                        workspace.close()
+                    }
+                }
+            }
         }
     }
 
@@ -222,6 +364,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         WorkspaceSession.describeBoard()
+        workspace.refreshBackgroundComputerAnalysisJobs()
         actionSource.rebuild()
     }
 
@@ -233,9 +376,10 @@ ApplicationWindow {
         target: EngineManager
         function onAnalysisChanged() {
             if (workspace.computerAnalysisRunning
+                    && workspace.backgroundComputerAnalysisId === ""
                     && !EngineManager.analyzing
                     && !EngineManager.analysisReady
-                && EngineManager.analysisMessage.indexOf("unavailable —") >= 0) {
+                    && EngineManager.analysisMessage.indexOf("unavailable —") >= 0) {
                 computerAnalysisNextPositionTimer.stop()
                 workspace.computerAnalysisFailureMessage = EngineManager.analysisMessage
                 workspace.computerAnalysisRunning = false
@@ -593,25 +737,73 @@ ApplicationWindow {
                 visible: WorkspaceSession.activity === "played_game"
                          && WorkspaceSession.activeRecordId.length > 0
                          && WorkspaceSession.gameOver
-                         && EngineManager.analysisReady
                          && !workspace.computerAnalysisRunning
+                         && workspace.backgroundComputerAnalysisId === ""
                 Layout.maximumWidth: 92
                 text: qsTr("Analyze")
                 onClicked: workspace.startComputerAnalysis()
             }
 
             Button {
+                objectName: "resumeComputerAnalysisButton"
+                visible: workspace.backgroundJobControlsContain("resume")
+                Layout.maximumWidth: 92
+                text: qsTr("Resume")
+                onClicked: {
+                    WorkspaceSession.resumeBackgroundJob(
+                        workspace.backgroundComputerAnalysisId,
+                        EngineManager.computerAnalysisSearchSettings(),
+                        EngineManager.computerAnalysisSearchTimeMs(),
+                        EngineManager.computerAnalysisLineLimit())
+                    workspace.refreshBackgroundComputerAnalysisJobs()
+                }
+            }
+
+            Button {
+                objectName: "pauseComputerAnalysisButton"
+                visible: workspace.backgroundJobControlsContain("pause")
+                Layout.maximumWidth: 92
+                text: qsTr("Pause")
+                onClicked: {
+                    WorkspaceSession.pauseBackgroundJob(workspace.backgroundComputerAnalysisId)
+                    workspace.refreshBackgroundComputerAnalysisJobs()
+                }
+            }
+
+            Button {
                 objectName: "cancelComputerAnalysisButton"
                 visible: workspace.computerAnalysisRunning
+                         || workspace.backgroundJobControlsContain("cancel")
                 Layout.maximumWidth: 92
                 text: qsTr("Cancel analysis")
                 onClicked: workspace.cancelComputerAnalysis()
+            }
+
+            Button {
+                objectName: "dismissComputerAnalysisButton"
+                visible: workspace.backgroundJobControlsContain("dismiss")
+                Layout.maximumWidth: 92
+                text: qsTr("Dismiss")
+                onClicked: {
+                    WorkspaceSession.dismissBackgroundJob(workspace.backgroundComputerAnalysisId)
+                    workspace.resetBackgroundComputerAnalysis()
+                }
+            }
+
+            Button {
+                objectName: "openComputerAnalysisSourceButton"
+                visible: workspace.backgroundJobControlsContain("open")
+                         && workspace.backgroundComputerAnalysisJob.recordId !== WorkspaceSession.activeRecordId
+                Layout.maximumWidth: 92
+                text: qsTr("Open source")
+                onClicked: WorkspaceSession.openRecord(workspace.backgroundComputerAnalysisJob.recordId)
             }
 
             Label {
                 objectName: "computerAnalysisStatus"
                 visible: workspace.computerAnalysisRunning
                          || workspace.computerAnalysisResults.length > 0
+                         || workspace.backgroundComputerAnalysisId !== ""
                 Layout.maximumWidth: 92
                 text: qsTr("%1 / %2 positions")
                       .arg(workspace.computerAnalysisResults.length)

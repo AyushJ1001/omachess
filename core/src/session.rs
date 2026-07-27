@@ -390,9 +390,17 @@ impl Session {
     }
 
     fn create_study(&mut self, command: &str) -> Result<(), CommandError> {
-        let name = json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .create_study(&format!("study-{}", new_record_id()), &name, &timestamp_now())
+        let name =
+            json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .create_study(
+                &format!("study-{}", new_record_id()),
+                &name,
+                &timestamp_now(),
+            )
             .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
@@ -442,12 +450,13 @@ impl Session {
         let removed_index = self.open_tabs.iter().position(|tab| tab == &id);
         self.open_tabs.retain(|tab| tab != &id);
         if self.record_id.as_deref() == Some(id.as_str()) {
-            let next = removed_index
-                .and_then(|index| self.open_tabs.get(index).cloned().or_else(|| {
+            let next = removed_index.and_then(|index| {
+                self.open_tabs.get(index).cloned().or_else(|| {
                     index
                         .checked_sub(1)
                         .and_then(|previous| self.open_tabs.get(previous).cloned())
-                }));
+                })
+            });
             if let Some(next) = next {
                 self.load_record(&next)?;
             } else {
@@ -479,8 +488,8 @@ impl Session {
 
     fn purge_study(&mut self, command: &str) -> Result<(), CommandError> {
         require_purge_confirmation(command)?;
-        let id = json::read_string_field(command, "study_id")
-            .ok_or(CommandError::MalformedCommand)?;
+        let id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
         self.store
             .as_ref()
             .ok_or(CommandError::Store)?
@@ -518,37 +527,60 @@ impl Session {
     }
 
     fn add_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .add_study_record(&study_id, &record_id).map_err(|_| CommandError::RejectedMove)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .add_study_record(&study_id, &record_id)
+            .map_err(|_| CommandError::RejectedMove)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn remove_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .remove_study_record(&study_id, &record_id).map_err(|_| CommandError::Store)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .remove_study_record(&study_id, &record_id)
+            .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn reorder_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
         let position = json::read_string_field(command, "position")
-            .and_then(|value| value.parse().ok()).ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .reorder_study_record(&study_id, &record_id, position).map_err(|_| CommandError::Store)?;
+            .and_then(|value| value.parse().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .reorder_study_record(&study_id, &record_id, position)
+            .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn emit_studies_changed(&mut self) {
-        let Some(store) = self.store.as_ref() else { return };
-        let Ok(studies) = store.workspace().list_studies() else { return };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Ok(studies) = store.workspace().list_studies() else {
+            return;
+        };
         self.events.push(studies_changed_event(&studies));
     }
 
@@ -578,8 +610,8 @@ impl Session {
         if self.has_unsaved_changes() {
             return Err(CommandError::RejectedMove);
         }
-        let encoded =
-            json::read_string_field(command, "evaluations").ok_or(CommandError::MalformedCommand)?;
+        let encoded = json::read_string_field(command, "evaluations")
+            .ok_or(CommandError::MalformedCommand)?;
         let mut evaluations: Vec<ComputerEvaluation> =
             serde_json::from_str(&encoded).map_err(|_| CommandError::MalformedCommand)?;
         if evaluations.len() != self.game.moves().len() + 1
@@ -627,7 +659,12 @@ impl Session {
             };
             let Some(mut line_game) = Game::from_history(
                 &self.game.start_fen(),
-                self.game.moves().iter().take(evaluation.ply as usize).cloned().collect(),
+                self.game
+                    .moves()
+                    .iter()
+                    .take(evaluation.ply as usize)
+                    .cloned()
+                    .collect(),
             ) else {
                 continue;
             };
@@ -728,15 +765,18 @@ impl Session {
                 uci: entry.uci.clone(),
                 san: entry.san.clone(),
                 number: entry.number,
-                side: if entry.side == "black" { "black" } else { "white" },
+                side: if entry.side == "black" {
+                    "black"
+                } else {
+                    "white"
+                },
             })
             .collect();
         if prefix.len() != after_ply as usize {
             return Err(CommandError::MalformedCommand);
         }
-        let mut sideline_game =
-            Game::from_history(&analysis.source_snapshot.start_fen, prefix)
-                .ok_or(CommandError::Store)?;
+        let mut sideline_game = Game::from_history(&analysis.source_snapshot.start_fen, prefix)
+            .ok_or(CommandError::Store)?;
         let base = sideline_game.moves().len();
         for uci in variation.split_whitespace() {
             let parsed = parse_uci(uci).ok_or(CommandError::MalformedCommand)?;
@@ -762,9 +802,8 @@ impl Session {
 
     fn pin_engine_line(&mut self, command: &str) -> Result<(), CommandError> {
         let id = self.analysis_record_id()?;
-        let required = |name| {
-            json::read_string_field(command, name).ok_or(CommandError::MalformedCommand)
-        };
+        let required =
+            |name| json::read_string_field(command, name).ok_or(CommandError::MalformedCommand);
         let line = PinnedEngineLine {
             position_fen: required("position_fen")?,
             evaluation: required("evaluation")?,
@@ -1250,7 +1289,8 @@ impl Session {
         let package = match LibraryPackage::parse(&text) {
             Ok(package) => package,
             Err(rejection) => {
-                self.events.push(package_rejected_event(&rejection.to_string()));
+                self.events
+                    .push(package_rejected_event(&rejection.to_string()));
                 return Ok(());
             }
         };
@@ -1282,7 +1322,8 @@ impl Session {
         self.emit_tabs_changed();
         self.emit_record_graph_changed();
         self.emit_analysis_record_changed();
-        self.events.push(package_restored_event(&package.contents()));
+        self.events
+            .push(package_restored_event(&package.contents()));
         Ok(())
     }
 
@@ -1806,17 +1847,13 @@ impl Session {
             .collect();
         if let Some(encoded) = variant.strip_prefix("omachess:v1:") {
             let snapshot = decode_variant_definition(encoded).ok_or(CommandError::Store)?;
-            let adapter =
-                String::from_utf8(compile_variant_adapter(&snapshot)).map_err(|_| CommandError::Store)?;
+            let adapter = String::from_utf8(compile_variant_adapter(&snapshot))
+                .map_err(|_| CommandError::Store)?;
             if !Rules::load_variant_adapter(&adapter) {
                 return Err(CommandError::Store);
             }
-            self.game = Game::variant_from_history(
-                "omachess",
-                &record.payload.start_fen,
-                moves,
-            )
-            .ok_or(CommandError::Store)?;
+            self.game = Game::variant_from_history("omachess", &record.payload.start_fen, moves)
+                .ok_or(CommandError::Store)?;
             self.variant_snapshot = Some(snapshot);
             self.variant_active = true;
         } else {
@@ -2060,38 +2097,38 @@ impl Session {
         out.push_str(",\"squares\":[");
         if !self.variant_active {
             if let Some(definition) = &self.workshop {
-            let mut index = 0;
-            for rank in (1..=definition.ranks).rev() {
-                for file in 0..definition.files {
-                    if index > 0 {
-                        out.push(',');
+                let mut index = 0;
+                for rank in (1..=definition.ranks).rev() {
+                    for file in 0..definition.files {
+                        if index > 0 {
+                            out.push(',');
+                        }
+                        index += 1;
+                        out.push_str("{\"name\":");
+                        json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
+                        out.push_str(",\"light\":");
+                        out.push_str(if (rank + file) % 2 == 1 {
+                            "true"
+                        } else {
+                            "false"
+                        });
+                        out.push_str(",\"piece\":");
+                        let square = format!("{}{}", (b'a' + file) as char, rank);
+                        match definition
+                            .placement
+                            .get(&square)
+                            .and_then(|piece| workshop_piece_id(definition, piece))
+                        {
+                            Some(piece) => json::write_string(&mut out, &piece),
+                            None => out.push_str("null"),
+                        }
+                        out.push_str(",\"footprint\":");
+                        json::write_string(&mut out, rule_footprint(definition, &square));
+                        out.push('}');
                     }
-                    index += 1;
-                    out.push_str("{\"name\":");
-                    json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
-                    out.push_str(",\"light\":");
-                    out.push_str(if (rank + file) % 2 == 1 {
-                        "true"
-                    } else {
-                        "false"
-                    });
-                    out.push_str(",\"piece\":");
-                    let square = format!("{}{}", (b'a' + file) as char, rank);
-                    match definition
-                        .placement
-                        .get(&square)
-                        .and_then(|piece| workshop_piece_id(definition, piece))
-                    {
-                        Some(piece) => json::write_string(&mut out, &piece),
-                        None => out.push_str("null"),
-                    }
-                    out.push_str(",\"footprint\":");
-                    json::write_string(&mut out, rule_footprint(definition, &square));
-                    out.push('}');
                 }
-            }
-            out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
-            return out;
+                out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
+                return out;
             }
         }
         let position = self.setup.as_ref().map(|setup| &setup.position);
@@ -2902,14 +2939,18 @@ fn require_purge_confirmation(command: &str) -> Result<(), CommandError> {
 fn studies_changed_event(studies: &[Study]) -> String {
     let mut out = String::from("{\"type\":\"studies_changed\",\"studies\":[");
     for (index, study) in studies.iter().enumerate() {
-        if index > 0 { out.push(','); }
+        if index > 0 {
+            out.push(',');
+        }
         out.push_str("{\"id\":");
         json::write_string(&mut out, &study.id);
         out.push_str(",\"name\":");
         json::write_string(&mut out, &study.name);
         out.push_str(",\"recordIds\":[");
         for (record_index, id) in study.record_ids.iter().enumerate() {
-            if record_index > 0 { out.push(','); }
+            if record_index > 0 {
+                out.push(',');
+            }
             json::write_string(&mut out, id);
         }
         out.push_str("]}");
@@ -3019,9 +3060,17 @@ fn analysis_record_changed_event(
         out.push('}');
     }
     out.push_str("],\"computerAnalysisComplete\":");
-    out.push_str(if data.computer_analysis_complete { "true" } else { "false" });
+    out.push_str(if data.computer_analysis_complete {
+        "true"
+    } else {
+        "false"
+    });
     out.push_str(",\"defaultAnalysis\":");
-    out.push_str(if data.default_analysis { "true" } else { "false" });
+    out.push_str(if data.default_analysis {
+        "true"
+    } else {
+        "false"
+    });
     out.push('}');
     out
 }
@@ -3787,7 +3836,9 @@ mod tests {
             .unwrap();
         assert!(!default_library.contains(&id));
 
-        session.submit(r#"{"type":"set_library_view","view":"archived"}"#).unwrap();
+        session
+            .submit(r#"{"type":"set_library_view","view":"archived"}"#)
+            .unwrap();
         let archived_library = std::iter::from_fn(|| session.poll_event())
             .find(|event| event.contains(r#""type":"library_changed"#))
             .unwrap();
@@ -3807,7 +3858,9 @@ mod tests {
     /// The package text a session just exported, with its JSON escaping intact
     /// so it can be handed straight back in a restore command.
     fn exported_package(session: &mut Session) -> String {
-        session.submit(r#"{"type":"export_library_package"}"#).unwrap();
+        session
+            .submit(r#"{"type":"export_library_package"}"#)
+            .unwrap();
         let event = std::iter::from_fn(|| session.poll_event())
             .find(|event| event.contains(r#""type":"library_package_ready"#))
             .expect("exporting emits library_package_ready");
@@ -3830,7 +3883,9 @@ mod tests {
         let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
         play(&mut source, "e2", "e4");
         play(&mut source, "e7", "e5");
-        source.submit(r#"{"type":"create_study","name":"Openings"}"#).unwrap();
+        source
+            .submit(r#"{"type":"create_study","name":"Openings"}"#)
+            .unwrap();
         let package = exported_package(&mut source);
         assert!(package.contains("\"format_version\": 1"));
         assert!(package.contains("Record Graph"));
@@ -4211,7 +4266,9 @@ mod tests {
         }
         let source_id = session.record_id.clone().unwrap();
 
-        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        session
+            .submit(r#"{"type":"derive_analysis_record"}"#)
+            .unwrap();
         while session.poll_event().is_some() {}
         let first_id = session.record_id.clone().unwrap();
         session
@@ -4226,7 +4283,9 @@ mod tests {
             .submit(&format!(r#"{{"type":"open_record","id":"{source_id}"}}"#))
             .unwrap();
         while session.poll_event().is_some() {}
-        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        session
+            .submit(r#"{"type":"derive_analysis_record"}"#)
+            .unwrap();
         while session.poll_event().is_some() {}
         let second_id = session.record_id.clone().unwrap();
         drop(session);
@@ -4234,7 +4293,11 @@ mod tests {
         let store = LiveStore::open(&path).unwrap();
         assert_ne!(first_id, second_id);
         assert_eq!(
-            store.workspace().derivations_from(&source_id).unwrap().len(),
+            store
+                .workspace()
+                .derivations_from(&source_id)
+                .unwrap()
+                .len(),
             2
         );
         assert_eq!(
@@ -4266,7 +4329,9 @@ mod tests {
             for uci in ["f2f3", "e7e5", "g2g4", "d8h4"] {
                 play(&mut session, &uci[..2], &uci[2..4]);
             }
-            session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+            session
+                .submit(r#"{"type":"derive_analysis_record"}"#)
+                .unwrap();
             while session.poll_event().is_some() {}
             session.submit(r#"{"type":"pin_engine_line","position_fen":"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1","evaluation":"+0.22","variation":"e2e4 e7e5","engine":"Stockfish 18","search_context":"depth 8 · movetime 250 ms"}"#).unwrap();
             while session.poll_event().is_some() {}

@@ -1,4 +1,4 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test Widgets DBus)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -62,8 +62,24 @@ target_link_libraries(omachess PRIVATE
   Qt6::Svg
   Qt6::Test
   Qt6::Widgets
+  Qt6::DBus
   omachess::core
 )
+
+# This executable is deliberately separate from the workspace. D-Bus starts
+# it on demand and it may survive the workspace window closing.
+qt_add_executable(omachess-background-worker
+  src/BackgroundWorker.cpp
+)
+target_link_libraries(omachess-background-worker PRIVATE Qt6::Core Qt6::DBus omachess::core)
+install(TARGETS omachess-background-worker RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+configure_file(
+  "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.BackgroundWorker.service.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/com.omachess.Omachess.BackgroundWorker.service"
+  @ONLY
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/com.omachess.Omachess.BackgroundWorker.service"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/dbus-1/services")
 
 install(TARGETS omachess RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.desktop"

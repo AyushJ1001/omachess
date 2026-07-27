@@ -15,7 +15,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 /// Schema version this build of Omachess understands and writes.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Why the Live Store could not be opened for use.
 #[derive(Debug)]
@@ -33,10 +33,7 @@ pub enum OpenError {
         source: rusqlite::Error,
     },
     /// The launch migration failed. The previous store is untouched.
-    Migration {
-        path: PathBuf,
-        detail: String,
-    },
+    Migration { path: PathBuf, detail: String },
 }
 
 impl std::fmt::Display for OpenError {
@@ -50,7 +47,11 @@ impl std::fmt::Display for OpenError {
                 )
             }
             OpenError::OpenFile { path, source } => {
-                write!(f, "could not open Live Store at {}: {source}", path.display())
+                write!(
+                    f,
+                    "could not open Live Store at {}: {source}",
+                    path.display()
+                )
             }
             OpenError::Configure { path, source } => {
                 write!(
@@ -261,6 +262,92 @@ pub struct Study {
     pub id: String,
     pub name: String,
     pub record_ids: Vec<String>,
+}
+
+/// The durable lifecycle of a Background Job. A worker marks in-flight work
+/// interrupted when it starts; resumption is therefore always an explicit
+/// request and never an accidental restart after a crash or logout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundJobState {
+    Queued,
+    Running,
+    Paused,
+    Interrupted,
+    Complete,
+    Cancelled,
+    Failed,
+    Dismissed,
+}
+
+impl BackgroundJobState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Interrupted => "interrupted",
+            Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Dismissed => "dismissed",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "paused" => Self::Paused,
+            "interrupted" => Self::Interrupted,
+            "complete" => Self::Complete,
+            "cancelled" => Self::Cancelled,
+            "failed" => Self::Failed,
+            "dismissed" => Self::Dismissed,
+            _ => return None,
+        })
+    }
+
+    /// Parse the stable D-Bus / C-ABI spelling of a lifecycle state.
+    pub fn parse_public(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
+
+    fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Queued, Self::Running)
+                | (
+                    Self::Running,
+                    Self::Paused
+                        | Self::Interrupted
+                        | Self::Complete
+                        | Self::Cancelled
+                        | Self::Failed
+                )
+                | (Self::Paused, Self::Running | Self::Cancelled)
+                | (
+                    Self::Interrupted,
+                    Self::Running | Self::Cancelled | Self::Dismissed
+                )
+                | (
+                    Self::Complete | Self::Cancelled | Self::Failed,
+                    Self::Dismissed
+                )
+        )
+    }
+}
+
+/// Worker-owned durable facts. `checkpoint` is a completed move boundary.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub kind: String,
+    pub state: BackgroundJobState,
+    pub record_id: String,
+    pub checkpoint: u32,
+    pub total: u32,
+    pub controls: Vec<String>,
+    pub payload: String,
+    pub updated_at: String,
 }
 
 /// The Library Portability Package format this build writes and accepts.
@@ -520,7 +607,10 @@ impl<'a> WorkspaceWriter<'a> {
         }
         transaction.execute(
             "INSERT INTO analysis_records (record_id, content) VALUES (?1, ?2)",
-            rusqlite::params![derived_id, serde_json::to_string(&data).map_err(json_error)?],
+            rusqlite::params![
+                derived_id,
+                serde_json::to_string(&data).map_err(json_error)?
+            ],
         )?;
         transaction.execute(
             "INSERT INTO record_edges (source_id, derived_id, edge_type) VALUES (?1, ?2, 'derived_from')",
@@ -571,11 +661,7 @@ impl<'a> WorkspaceWriter<'a> {
         self.update_analysis(id, |data| data.sidelines.push(sideline))
     }
 
-    pub fn pin_engine_line(
-        &self,
-        id: &str,
-        line: &PinnedEngineLine,
-    ) -> Result<(), StoreError> {
+    pub fn pin_engine_line(&self, id: &str, line: &PinnedEngineLine) -> Result<(), StoreError> {
         self.update_analysis(id, |data| data.pinned_lines.push(line.clone()))
     }
 
@@ -688,7 +774,9 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn purge_study(&self, id: &str) -> Result<(), StoreError> {
-        let changed = self.conn.execute("DELETE FROM studies WHERE id = ?1", [id])?;
+        let changed = self
+            .conn
+            .execute("DELETE FROM studies WHERE id = ?1", [id])?;
         if changed == 0 {
             return Err(StoreError::Message("Study is unavailable".into()));
         }
@@ -754,9 +842,14 @@ impl<'a> WorkspaceWriter<'a> {
         record_id: &str,
         position: usize,
     ) -> Result<(), StoreError> {
-        let ids = self.study(study_id)?.ok_or_else(|| StoreError::Message("Study is unavailable".into()))?.record_ids;
+        let ids = self
+            .study(study_id)?
+            .ok_or_else(|| StoreError::Message("Study is unavailable".into()))?
+            .record_ids;
         let Some(from) = ids.iter().position(|id| id == record_id) else {
-            return Err(StoreError::Message("Game Record is not in the Study".into()));
+            return Err(StoreError::Message(
+                "Game Record is not in the Study".into(),
+            ));
         };
         let mut reordered = ids;
         let id = reordered.remove(from);
@@ -785,24 +878,35 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn study(&self, id: &str) -> Result<Option<Study>, StoreError> {
-        let name = match self.conn.query_row(
-            "SELECT name FROM studies WHERE id = ?1", [id], |row| row.get::<_, String>(0)
-        ) {
-            Ok(name) => name,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
+        let name =
+            match self
+                .conn
+                .query_row("SELECT name FROM studies WHERE id = ?1", [id], |row| {
+                    row.get::<_, String>(0)
+                }) {
+                Ok(name) => name,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
         let mut statement = self.conn.prepare(
-            "SELECT record_id FROM study_records WHERE study_id = ?1 ORDER BY position, record_id"
+            "SELECT record_id FROM study_records WHERE study_id = ?1 ORDER BY position, record_id",
         )?;
-        let record_ids = statement.query_map([id], |row| row.get(0))?
+        let record_ids = statement
+            .query_map([id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(Study { id: id.into(), name, record_ids }))
+        Ok(Some(Study {
+            id: id.into(),
+            name,
+            record_ids,
+        }))
     }
 
     pub fn list_studies(&self) -> Result<Vec<Study>, StoreError> {
-        let mut statement = self.conn.prepare("SELECT id FROM studies ORDER BY created_at, id")?;
-        let study_ids = statement.query_map([], |row| row.get::<_, String>(0))?
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM studies ORDER BY created_at, id")?;
+        let study_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         study_ids
             .iter()
@@ -834,8 +938,10 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn clear_residue(&self, key: &str) -> Result<(), StoreError> {
-        self.conn
-            .execute("DELETE FROM workspace_residue WHERE key = ?1", rusqlite::params![key])?;
+        self.conn.execute(
+            "DELETE FROM workspace_residue WHERE key = ?1",
+            rusqlite::params![key],
+        )?;
         Ok(())
     }
 
@@ -1076,7 +1182,7 @@ pub struct GameRecordSummary {
     pub updated_at: String,
 }
 
-/// Worker write partition: Background Jobs (and later Analysis Record completion).
+/// Worker write partition: Background Jobs.
 pub struct WorkerWriter<'a> {
     conn: &'a Connection,
 }
@@ -1100,6 +1206,143 @@ impl<'a> WorkerWriter<'a> {
         }
         Ok(())
     }
+
+    pub fn create_job(&self, job: &BackgroundJob) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO background_jobs (id, kind, state, record_id, checkpoint, total, controls, updated_at, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![job.id, job.kind, job.state.as_str(), job.record_id, job.checkpoint, job.total, job.controls.join(","), job.updated_at, job.payload],
+        )?;
+        Ok(())
+    }
+
+    pub fn job(&self, id: &str) -> Result<Option<BackgroundJob>, StoreError> {
+        match self.conn.query_row("SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload FROM background_jobs WHERE id = ?1", [id], row_to_background_job) {
+            Ok(job) => Ok(Some(job)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn jobs(&self) -> Result<Vec<BackgroundJob>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload
+             FROM background_jobs
+             WHERE state != 'dismissed'
+             ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([], row_to_background_job)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Atomically records a completed move boundary and its lifecycle state.
+    pub fn checkpoint(
+        &self,
+        id: &str,
+        checkpoint: u32,
+        state: BackgroundJobState,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        self.checkpoint_with_payload(id, checkpoint, state, None, updated_at)
+    }
+
+    /// Atomically records a completed move boundary, lifecycle state, and optional payload.
+    pub fn checkpoint_with_payload(
+        &self,
+        id: &str,
+        checkpoint: u32,
+        state: BackgroundJobState,
+        payload: Option<&str>,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        let current = self
+            .job(id)?
+            .ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
+        if checkpoint > current.total
+            || checkpoint < current.checkpoint
+            || !current.state.can_transition_to(state) && current.state != state
+        {
+            return Err(StoreError::Message(
+                "invalid Background Job lifecycle transition".into(),
+            ));
+        }
+        let controls = controls_for(state);
+        let payload = payload.unwrap_or(&current.payload);
+        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, controls = ?4, payload = ?5, updated_at = ?6 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), controls, payload, updated_at])?;
+        if changed == 0 {
+            return Err(StoreError::Message(
+                "Background Job checkpoint was not accepted".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stores the result blob and closes the worker-owned job after its final checkpoint.
+    pub fn complete_job(
+        &self,
+        id: &str,
+        payload: &str,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        let current = self
+            .job(id)?
+            .ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
+        if current.state != BackgroundJobState::Running || current.checkpoint != current.total {
+            return Err(StoreError::Message(
+                "Background Job is not at its final running checkpoint".into(),
+            ));
+        }
+        self.conn.execute(
+            "UPDATE background_jobs SET state = 'complete', controls = ?2, payload = ?3, updated_at = ?4 WHERE id = ?1",
+            rusqlite::params![id, controls_for(BackgroundJobState::Complete), payload, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// Startup recovery: running work had no orderly shutdown and is never resumed implicitly.
+    pub fn interrupt_inflight_jobs(&self, updated_at: &str) -> Result<(), StoreError> {
+        self.conn.execute("UPDATE background_jobs SET state = 'interrupted', controls = 'resume,cancel,dismiss,open', updated_at = ?1 WHERE state = 'running'", [updated_at])?;
+        Ok(())
+    }
+}
+
+fn controls_for(state: BackgroundJobState) -> &'static str {
+    match state {
+        BackgroundJobState::Running => "pause,cancel,open",
+        BackgroundJobState::Paused => "resume,cancel,open",
+        BackgroundJobState::Interrupted => "resume,cancel,dismiss,open",
+        BackgroundJobState::Complete
+        | BackgroundJobState::Cancelled
+        | BackgroundJobState::Failed => "dismiss,open",
+        BackgroundJobState::Dismissed => "",
+        BackgroundJobState::Queued => "cancel,open",
+    }
+}
+
+fn row_to_background_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackgroundJob> {
+    let state_name: String = row.get(2)?;
+    let controls: String = row.get(6)?;
+    let state = BackgroundJobState::parse(&state_name).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            format!("unknown Background Job state: {state_name}").into(),
+        )
+    })?;
+    Ok(BackgroundJob {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        state,
+        record_id: row.get(3)?,
+        checkpoint: row.get(4)?,
+        total: row.get(5)?,
+        controls: controls
+            .split(',')
+            .filter(|control| !control.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        updated_at: row.get(7)?,
+        payload: row.get(8)?,
+    })
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> Result<GameRecord, StoreError> {
@@ -1195,7 +1438,9 @@ fn decode_payload(text: &str) -> Result<GameRecordPayload, StoreError> {
 
 fn decode_moves(text: &str) -> Result<Vec<MoveEntry>, StoreError> {
     let Some(array) = extract_array(text, "moves") else {
-        return Err(StoreError::Message("Game Record payload missing moves".into()));
+        return Err(StoreError::Message(
+            "Game Record payload missing moves".into(),
+        ));
     };
     if array.trim().is_empty() {
         return Ok(Vec::new());
@@ -1338,7 +1583,10 @@ fn read_quoted(input: &str) -> Result<String, StoreError> {
 fn extract_array<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("\"{name}\"");
     let start = input.find(&needle)?;
-    let rest = input[start + needle.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let rest = input[start + needle.len()..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
     if !rest.starts_with('[') {
         return None;
     }
@@ -1361,7 +1609,10 @@ fn extract_array<'a>(input: &'a str, name: &str) -> Option<&'a str> {
 fn extract_object<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("\"{name}\"");
     let start = input.find(&needle)?;
-    let rest = input[start + needle.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let rest = input[start + needle.len()..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
     if !rest.starts_with('{') {
         return None;
     }
@@ -1396,9 +1647,8 @@ fn split_top_level_objects(array_body: &str) -> Result<Vec<&str>, StoreError> {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    let from = start.ok_or_else(|| {
-                        StoreError::Message("malformed moves array".into())
-                    })?;
+                    let from =
+                        start.ok_or_else(|| StoreError::Message("malformed moves array".into()))?;
                     objects.push(&array_body[from..=offset]);
                     start = None;
                 }
@@ -1448,10 +1698,11 @@ impl LiveStore {
 
         match migrate(&conn) {
             Ok(()) => {
-                conn.execute_batch("COMMIT").map_err(|source| OpenError::Migration {
-                    path: path.to_path_buf(),
-                    detail: format!("could not commit the launch migration: {source}"),
-                })?;
+                conn.execute_batch("COMMIT")
+                    .map_err(|source| OpenError::Migration {
+                        path: path.to_path_buf(),
+                        detail: format!("could not commit the launch migration: {source}"),
+                    })?;
             }
             Err(detail) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1602,6 +1853,14 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 )
                 .map_err(|error| format!("could not record schema version: {error}"))?;
                 Ok(())
+            } else if parsed == 3 {
+                migrate_background_jobs_v4(conn)?;
+                conn.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    [SCHEMA_VERSION.to_string()],
+                )
+                .map_err(|error| format!("could not record schema version: {error}"))?;
+                Ok(())
             } else if parsed > SCHEMA_VERSION {
                 Err(format!(
                     "Live Store schema version {parsed} is newer than this Omachess understands ({SCHEMA_VERSION})"
@@ -1636,11 +1895,16 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
             value TEXT NOT NULL
         );
 
-        -- Worker write partition. Empty content for now; present so a second
-        -- writer can share the store without a schema redesign.
+        -- Worker write partition. The worker exclusively writes this table;
+        -- WAL lets the workspace safely read it while it checkpoints.
         CREATE TABLE background_jobs (
             id TEXT PRIMARY KEY NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'computer_analysis',
             state TEXT NOT NULL,
+            record_id TEXT NOT NULL DEFAULT '',
+            checkpoint INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            controls TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
         );
@@ -1649,6 +1913,17 @@ fn create_schema_v1(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("could not create base schema tables: {error}"))?;
     create_analysis_schema(conn)?;
     create_studies_schema(conn)
+}
+
+fn migrate_background_jobs_v4(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "ALTER TABLE background_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'computer_analysis';
+         ALTER TABLE background_jobs ADD COLUMN record_id TEXT NOT NULL DEFAULT '';
+         ALTER TABLE background_jobs ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE background_jobs ADD COLUMN total INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE background_jobs ADD COLUMN controls TEXT NOT NULL DEFAULT '';",
+    )
+    .map_err(|error| format!("could not migrate Background Jobs: {error}"))
 }
 
 fn create_analysis_schema(conn: &Connection) -> Result<(), String> {
@@ -1746,7 +2021,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.source_snapshot.moves, source.payload.moves);
-        assert_eq!(first.source_snapshot.metadata.as_deref(), source.payload.participation.as_deref());
+        assert_eq!(
+            first.source_snapshot.metadata.as_deref(),
+            source.payload.participation.as_deref()
+        );
         assert!(second.annotations.is_empty());
         assert_eq!(
             store.workspace().derivations_from("played-1").unwrap(),
@@ -1765,9 +2043,15 @@ mod tests {
         {
             let store = LiveStore::open(&path).unwrap();
             let writer = store.workspace();
-            writer.upsert_game_record(&completed_record("completed", "Completed")).unwrap();
-            writer.derive_analysis_record("completed", "analysis-1", "now").unwrap();
-            writer.derive_analysis_record("completed", "analysis-2", "later").unwrap();
+            writer
+                .upsert_game_record(&completed_record("completed", "Completed"))
+                .unwrap();
+            writer
+                .derive_analysis_record("completed", "analysis-1", "now")
+                .unwrap();
+            writer
+                .derive_analysis_record("completed", "analysis-2", "later")
+                .unwrap();
             let mut unfinished = completed_record("unfinished", "Unfinished");
             unfinished.payload.result = None;
             unfinished.result_score = None;
@@ -1779,17 +2063,29 @@ mod tests {
             writer.add_study_record("study-1", "analysis-2").unwrap();
             writer.add_study_record("study-2", "analysis-1").unwrap();
             assert!(writer.add_study_record("study-1", "unfinished").is_err());
-            writer.reorder_study_record("study-1", "analysis-2", 0).unwrap();
+            writer
+                .reorder_study_record("study-1", "analysis-2", 0)
+                .unwrap();
             writer.remove_study_record("study-1", "analysis-1").unwrap();
             assert!(writer.get_game_record("analysis-1").unwrap().is_some());
         }
         let store = LiveStore::open(&path).unwrap();
         assert_eq!(
-            store.workspace().study("study-1").unwrap().unwrap().record_ids,
+            store
+                .workspace()
+                .study("study-1")
+                .unwrap()
+                .unwrap()
+                .record_ids,
             vec!["analysis-2", "completed"]
         );
         assert_eq!(
-            store.workspace().study("study-2").unwrap().unwrap().record_ids,
+            store
+                .workspace()
+                .study("study-2")
+                .unwrap()
+                .unwrap()
+                .record_ids,
             vec!["analysis-1"]
         );
     }
@@ -1832,7 +2128,10 @@ mod tests {
             .unwrap();
         assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
         assert_eq!(analysis.pinned_lines[0].engine, "Stockfish 18");
-        assert_eq!(analysis.pinned_lines[0].search_context, "depth 8 · movetime 250 ms");
+        assert_eq!(
+            analysis.pinned_lines[0].search_context,
+            "depth 8 · movetime 250 ms"
+        );
     }
 
     #[test]
@@ -1844,7 +2143,14 @@ mod tests {
             let mut record = completed_record("played-1", "Original");
             store.workspace().upsert_game_record(&record).unwrap();
             store.workspace().archive_game_record("played-1").unwrap();
-            assert!(store.workspace().get_game_record("played-1").unwrap().unwrap().archived);
+            assert!(
+                store
+                    .workspace()
+                    .get_game_record("played-1")
+                    .unwrap()
+                    .unwrap()
+                    .archived
+            );
 
             record.title = Some("Renamed".into());
             record.archived = true;
@@ -1852,50 +2158,106 @@ mod tests {
         }
 
         let store = LiveStore::open(&path).unwrap();
-        let record = store.workspace().get_game_record("played-1").unwrap().unwrap();
+        let record = store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .unwrap();
         assert!(record.archived);
         assert_eq!(record.title.as_deref(), Some("Renamed"));
         store.workspace().unarchive_game_record("played-1").unwrap();
-        assert!(!store.workspace().get_game_record("played-1").unwrap().unwrap().archived);
+        assert!(
+            !store
+                .workspace()
+                .get_game_record("played-1")
+                .unwrap()
+                .unwrap()
+                .archived
+        );
     }
 
     #[test]
     fn purging_a_study_and_record_removes_membership_but_keeps_source_snapshot() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
-        store.workspace().upsert_game_record(&completed_record("played-1", "Original")).unwrap();
-        store.workspace().derive_analysis_record("played-1", "analysis-1", "now").unwrap();
-        store.workspace().create_study("study-1", "Review", "now").unwrap();
-        store.workspace().add_study_record("study-1", "played-1").unwrap();
-        store.workspace().add_study_record("study-1", "analysis-1").unwrap();
+        store
+            .workspace()
+            .upsert_game_record(&completed_record("played-1", "Original"))
+            .unwrap();
+        store
+            .workspace()
+            .derive_analysis_record("played-1", "analysis-1", "now")
+            .unwrap();
+        store
+            .workspace()
+            .create_study("study-1", "Review", "now")
+            .unwrap();
+        store
+            .workspace()
+            .add_study_record("study-1", "played-1")
+            .unwrap();
+        store
+            .workspace()
+            .add_study_record("study-1", "analysis-1")
+            .unwrap();
 
         store.workspace().purge_study("study-1").unwrap();
         assert!(store.workspace().study("study-1").unwrap().is_none());
-        assert!(store.workspace().get_game_record("played-1").unwrap().is_some());
+        assert!(store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .is_some());
 
         store.workspace().purge_game_record("played-1").unwrap();
-        assert!(store.workspace().get_game_record("played-1").unwrap().is_none());
-        let analysis = store.workspace().analysis_record("analysis-1").unwrap().unwrap();
+        assert!(store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .is_none());
+        let analysis = store
+            .workspace()
+            .analysis_record("analysis-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(analysis.source_snapshot.source_id, "played-1");
         assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
-        assert!(store.workspace().sources_of("analysis-1").unwrap().is_empty());
+        assert!(store
+            .workspace()
+            .sources_of("analysis-1")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn variant_definition_purge_is_allowed_until_a_snapshot_binds_it() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
-        store.workspace().set_residue("variant_definition_draft", "draft").unwrap();
+        store
+            .workspace()
+            .set_residue("variant_definition_draft", "draft")
+            .unwrap();
         store.workspace().purge_variant_definition().unwrap();
-        assert!(store.workspace().residue("variant_definition_draft").unwrap().is_none());
+        assert!(store
+            .workspace()
+            .residue("variant_definition_draft")
+            .unwrap()
+            .is_none());
 
         let mut bound = completed_record("played-1", "Bound");
         bound.payload.variant = "omachess:v1:immutable-snapshot".into();
         store.workspace().upsert_game_record(&bound).unwrap();
-        store.workspace().set_residue("variant_definition_draft", "draft").unwrap();
+        store
+            .workspace()
+            .set_residue("variant_definition_draft", "draft")
+            .unwrap();
         assert!(store.workspace().purge_variant_definition().is_err());
         assert_eq!(
-            store.workspace().residue("variant_definition_draft").unwrap().as_deref(),
+            store
+                .workspace()
+                .residue("variant_definition_draft")
+                .unwrap()
+                .as_deref(),
             Some("draft")
         );
     }
@@ -1906,6 +2268,106 @@ mod tests {
         let path = dir.path().join("live-store.sqlite");
         let store = LiveStore::open(&path).expect("a new Live Store should open");
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn worker_jobs_checkpoint_at_move_boundaries_and_recover_as_interrupted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            let worker = store.worker();
+            worker
+                .create_job(&BackgroundJob {
+                    id: "job-1".into(),
+                    kind: "computer_analysis".into(),
+                    state: BackgroundJobState::Running,
+                    record_id: "played-1".into(),
+                    checkpoint: 0,
+                    total: 5,
+                    controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                    payload: "{}".into(),
+                    updated_at: "one".into(),
+                })
+                .unwrap();
+            worker
+                .checkpoint("job-1", 3, BackgroundJobState::Running, "two")
+                .unwrap();
+            assert!(worker
+                .checkpoint("job-1", 2, BackgroundJobState::Running, "bad")
+                .is_err());
+        }
+        let store = LiveStore::open(&path).unwrap();
+        let worker = store.worker();
+        worker.interrupt_inflight_jobs("recovered").unwrap();
+        let job = worker.job("job-1").unwrap().unwrap();
+        assert_eq!(job.checkpoint, 3);
+        assert_eq!(job.state, BackgroundJobState::Interrupted);
+        assert_eq!(job.controls, vec!["resume", "cancel", "dismiss", "open"]);
+        assert!(worker
+            .checkpoint("job-1", 3, BackgroundJobState::Running, "resume")
+            .is_ok());
+        assert!(worker
+            .checkpoint("job-1", 5, BackgroundJobState::Complete, "complete")
+            .is_ok());
+        assert!(worker
+            .checkpoint("job-1", 5, BackgroundJobState::Running, "bad")
+            .is_err());
+        assert!(worker
+            .checkpoint("job-1", 6, BackgroundJobState::Complete, "bad")
+            .is_err());
+    }
+
+    #[test]
+    fn worker_jobs_list_open_work_and_complete_with_payload() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        let worker = store.worker();
+        worker
+            .create_job(&BackgroundJob {
+                id: "older".into(),
+                kind: "computer_analysis".into(),
+                state: BackgroundJobState::Running,
+                record_id: "played-1".into(),
+                checkpoint: 0,
+                total: 2,
+                controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                payload: "{}".into(),
+                updated_at: "one".into(),
+            })
+            .unwrap();
+        worker
+            .create_job(&BackgroundJob {
+                id: "newer".into(),
+                kind: "computer_analysis".into(),
+                state: BackgroundJobState::Running,
+                record_id: "played-2".into(),
+                checkpoint: 0,
+                total: 1,
+                controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                payload: "{}".into(),
+                updated_at: "two".into(),
+            })
+            .unwrap();
+        worker
+            .checkpoint("newer", 1, BackgroundJobState::Running, "three")
+            .unwrap();
+        worker
+            .complete_job("newer", r#"[{"ply":0}]"#, "four")
+            .unwrap();
+        worker
+            .checkpoint("older", 0, BackgroundJobState::Cancelled, "five")
+            .unwrap();
+        worker
+            .checkpoint("older", 0, BackgroundJobState::Dismissed, "six")
+            .unwrap();
+
+        let jobs = worker.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "newer");
+        assert_eq!(jobs[0].state, BackgroundJobState::Complete);
+        assert_eq!(jobs[0].controls, vec!["dismiss", "open"]);
+        assert_eq!(jobs[0].payload, r#"[{"ply":0}]"#);
     }
 
     #[test]
@@ -1938,7 +2400,10 @@ mod tests {
                 },
             };
             store.workspace().upsert_game_record(&record).unwrap();
-            store.workspace().set_residue("active_record_id", &record.id).unwrap();
+            store
+                .workspace()
+                .set_residue("active_record_id", &record.id)
+                .unwrap();
             record.id
         };
 
@@ -1956,7 +2421,11 @@ mod tests {
         assert!(loaded.payload.participation.is_none());
         assert!(loaded.payload.clock.is_none());
         assert_eq!(
-            store.workspace().residue("active_record_id").unwrap().as_deref(),
+            store
+                .workspace()
+                .residue("active_record_id")
+                .unwrap()
+                .as_deref(),
             Some("gr_opening")
         );
     }
@@ -2047,20 +2516,26 @@ mod tests {
         workspace
             .derive_analysis_record("played-1", "analysis-1", "2026-07-27T00:01:00Z")
             .unwrap();
-        workspace.add_annotation("analysis-1", 1, "Interesting").unwrap();
+        workspace
+            .add_annotation("analysis-1", 1, "Interesting")
+            .unwrap();
         workspace.archive_game_record("played-2").unwrap();
         workspace
             .create_study("study-1", "Endgames", "2026-07-27T00:03:00Z")
             .unwrap();
         workspace.add_study_record("study-1", "played-1").unwrap();
         workspace.add_study_record("study-1", "analysis-1").unwrap();
-        workspace.reorder_study_record("study-1", "analysis-1", 0).unwrap();
+        workspace
+            .reorder_study_record("study-1", "analysis-1", 0)
+            .unwrap();
         workspace
             .set_residue(VARIANT_DEFINITION_KEY, "preset=standard-8x8;files=8")
             .unwrap();
         workspace.set_residue("save_mode", "manual").unwrap();
         // Workspace-only residue: it must not travel with the package.
-        workspace.set_residue("active_record_id", "played-1").unwrap();
+        workspace
+            .set_residue("active_record_id", "played-1")
+            .unwrap();
         drop(workspace);
         store
     }
@@ -2083,7 +2558,12 @@ mod tests {
             package.records
         );
         assert_eq!(
-            target.workspace().study("study-1").unwrap().unwrap().record_ids,
+            target
+                .workspace()
+                .study("study-1")
+                .unwrap()
+                .unwrap()
+                .record_ids,
             vec!["analysis-1".to_string(), "played-1".to_string()]
         );
         assert_eq!(
@@ -2091,11 +2571,21 @@ mod tests {
             vec!["analysis-1".to_string()]
         );
         assert_eq!(
-            target.workspace().analysis_record("analysis-1").unwrap().unwrap().annotations.len(),
+            target
+                .workspace()
+                .analysis_record("analysis-1")
+                .unwrap()
+                .unwrap()
+                .annotations
+                .len(),
             1
         );
         assert_eq!(
-            target.workspace().residue(VARIANT_DEFINITION_KEY).unwrap().as_deref(),
+            target
+                .workspace()
+                .residue(VARIANT_DEFINITION_KEY)
+                .unwrap()
+                .as_deref(),
             Some("preset=standard-8x8;files=8")
         );
         assert_eq!(
@@ -2103,7 +2593,10 @@ mod tests {
             Some("manual")
         );
         // Session residue belongs to one machine, not to the library.
-        assert_eq!(target.workspace().residue("active_record_id").unwrap(), None);
+        assert_eq!(
+            target.workspace().residue("active_record_id").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -2141,7 +2634,11 @@ mod tests {
             .upsert_game_record(&completed_record("kept-1", "Kept"))
             .unwrap();
         assert!(target.workspace().restore_package(&package).is_err());
-        assert!(target.workspace().get_game_record("kept-1").unwrap().is_some());
+        assert!(target
+            .workspace()
+            .get_game_record("kept-1")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -2182,7 +2679,11 @@ mod tests {
 
         target.workspace().restore_package(&package).unwrap();
 
-        assert!(target.workspace().get_game_record("other-1").unwrap().is_none());
+        assert!(target
+            .workspace()
+            .get_game_record("other-1")
+            .unwrap()
+            .is_none());
         assert!(target.workspace().study("study-other").unwrap().is_none());
         assert_eq!(target.workspace().library_contents().unwrap().records, 3);
     }

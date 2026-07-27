@@ -69,6 +69,9 @@ public:
     Q_INVOKABLE void beginComputerAnalysis(const QString &budget, int positionCount);
     Q_INVOKABLE void recordComputerAnalysisPosition();
     Q_INVOKABLE void endComputerAnalysis();
+    Q_INVOKABLE int computerAnalysisSearchTimeMs() const { return m_computerAnalysisTimeMs; }
+    Q_INVOKABLE int computerAnalysisLineLimit() const { return m_computerAnalysisLineLimit; }
+    Q_INVOKABLE QString computerAnalysisSearchSettings() const { return m_computerAnalysisSettings; }
     Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
     Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
     Q_INVOKABLE void setLivePlayClock(const QString &key, int milliseconds);

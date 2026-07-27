@@ -305,6 +305,21 @@ public:
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();
     Q_INVOKABLE void completeComputerAnalysis(const QString &evaluations);
+    // Starts the worker-owned finite pass and returns the durable Background Job id.
+    // An empty id means no compatible worker boundary is available.
+    Q_INVOKABLE QString startBackgroundComputerAnalysis(const QString &searchSettings,
+                                                        int searchTimeMs,
+                                                        int lineLimit);
+    Q_INVOKABLE void pauseBackgroundJob(const QString &id);
+    Q_INVOKABLE void resumeBackgroundJob(const QString &id,
+                                         const QString &searchSettings,
+                                         int searchTimeMs,
+                                         int lineLimit);
+    Q_INVOKABLE void cancelBackgroundJob(const QString &id);
+    Q_INVOKABLE void dismissBackgroundJob(const QString &id);
+    Q_INVOKABLE QString backgroundJob(const QString &id);
+    Q_INVOKABLE QString backgroundJobs();
+    Q_INVOKABLE bool importBackgroundComputerAnalysis(const QString &id);
     Q_INVOKABLE void designateDefaultAnalysis();
     Q_INVOKABLE void addAnalysisAnnotation(int ply, const QString &text);
     Q_INVOKABLE void addAnalysisSideline(int afterPly, const QString &variation);
@@ -351,6 +366,7 @@ signals:
 private:
     // Submits a command and applies every event it produced.
     void submit(const QByteArray &commandJson);
+    bool submitAndDrain(const QByteArray &commandJson);
     void applyEvent(const QByteArray &eventJson);
 
     // The moves the last event said a player may make.
