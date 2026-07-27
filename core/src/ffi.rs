@@ -53,6 +53,14 @@ pub unsafe extern "C" fn omachess_background_job_checkpoint_value(id: *const c_c
         .map_or(u32::MAX, |job| job.checkpoint)
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn omachess_background_job_total_value(id: *const c_char) -> u32 {
+    if id.is_null() { return u32::MAX; }
+    let Ok(id) = CStr::from_ptr(id).to_str() else { return u32::MAX; };
+    LiveStore::open_default().ok().and_then(|store| store.worker().job(id).ok().flatten())
+        .map_or(u32::MAX, |job| job.total)
+}
+
 /// Commits a worker-owned Computer Analysis result. The worker calls this only
 /// after its final move-boundary checkpoint, so an interrupted job can never
 /// leave an Analysis Record that pretends to be complete.

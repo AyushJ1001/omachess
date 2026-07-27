@@ -809,7 +809,15 @@ impl<'a> WorkerWriter<'a> {
             || !current.state.can_transition_to(state) && current.state != state {
             return Err(StoreError::Message("invalid Background Job lifecycle transition".into()));
         }
-        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, updated_at = ?4 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), updated_at])?;
+        let controls = match state {
+            BackgroundJobState::Running => "pause,cancel,open",
+            BackgroundJobState::Paused => "resume,cancel,open",
+            BackgroundJobState::Interrupted => "resume,cancel,dismiss,open",
+            BackgroundJobState::Complete | BackgroundJobState::Cancelled | BackgroundJobState::Failed => "dismiss,open",
+            BackgroundJobState::Dismissed => "",
+            BackgroundJobState::Queued => "cancel,open",
+        };
+        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, controls = ?4, updated_at = ?5 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), controls, updated_at])?;
         if changed == 0 { return Err(StoreError::Message("Background Job checkpoint was not accepted".into())); }
         Ok(())
     }
