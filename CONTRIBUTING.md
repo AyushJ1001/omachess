@@ -121,6 +121,8 @@ packaging/       the AUR recipe and its .SRCINFO, desktop entry, and icon
 tests/journey/   launch-drive-assert tests against the real application
 tests/packaging/ the same, against a staged installation
 docs/backup.md   which XDG paths a player should copy
+docs/library-portability-package.md
+                 the take-away format for a whole library
 ```
 
 ## The Rules Authority

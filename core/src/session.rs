@@ -22,8 +22,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     AnalysisRecordData, AnalysisSideline, ComputerEvaluation, GameRecord, GameRecordKind,
-    GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine,
-    RecordResult, Study,
+    GameRecordPayload, GameRecordSummary, LibraryContents, LibraryPackage, LiveStore, MoveEntry,
+    OpenError, PinnedEngineLine, RecordResult, Study,
 };
 
 use crate::board::{Orientation, Piece, Position};
@@ -330,6 +330,8 @@ impl Session {
             "edit_variant_definition" => self.edit_variant_definition()?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
+            "export_library_package" => self.export_library_package()?,
+            "restore_library_package" => self.restore_library_package(command)?,
             "derive_analysis_record" => self.derive_analysis_record()?,
             "complete_computer_analysis" => self.complete_computer_analysis(command)?,
             "designate_default_analysis" => self.designate_default_analysis()?,
@@ -1214,6 +1216,106 @@ impl Session {
         }
         self.events
             .push(pgn_export_ready_event(&documents.join("\n")));
+        Ok(())
+    }
+
+    /// Exports the whole library as a Library Portability Package.
+    ///
+    /// The session hands the workspace the package text; the workspace writes
+    /// it to the file the player chose through the portal dialog.
+    fn export_library_package(&mut self) -> Result<(), CommandError> {
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        let package = store
+            .workspace()
+            .export_package()
+            .map_err(|_| CommandError::Store)?;
+        let contents = package.contents();
+        let text = package.to_json().map_err(|_| CommandError::Store)?;
+        self.events.push(package_ready_event(&text, &contents));
+        Ok(())
+    }
+
+    /// Restores a Library Portability Package into this library.
+    ///
+    /// A package never merges into a library. It goes into an empty one, or
+    /// through an explicit replacement the player confirms after being told
+    /// exactly what the restore would replace. Anything this build cannot
+    /// read — a damaged file, an incompatible format version — is refused
+    /// before a single row changes.
+    fn restore_library_package(&mut self, command: &str) -> Result<(), CommandError> {
+        let text =
+            json::read_string_field(command, "package").ok_or(CommandError::MalformedCommand)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+
+        let package = match LibraryPackage::parse(&text) {
+            Ok(package) => package,
+            Err(rejection) => {
+                self.events.push(package_rejected_event(&rejection.to_string()));
+                return Ok(());
+            }
+        };
+
+        let existing = store
+            .workspace()
+            .library_contents()
+            .map_err(|_| CommandError::Store)?;
+        let confirmed =
+            json::read_string_field(command, "confirmation").as_deref() == Some("REPLACE_LIBRARY");
+        if !existing.is_empty() && !confirmed {
+            self.events
+                .push(replacement_required_event(&existing, &package.contents()));
+            return Ok(());
+        }
+
+        store
+            .workspace()
+            .restore_package(&package)
+            .map_err(|_| CommandError::Store)?;
+
+        let had_variant_definition = self.workshop.is_some();
+        self.adopt_restored_library()?;
+        if had_variant_definition && self.workshop.is_none() {
+            self.emit_variant_library_removed();
+        }
+        self.emit_library_changed();
+        self.emit_studies_changed();
+        self.emit_tabs_changed();
+        self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        self.events.push(package_restored_event(&package.contents()));
+        Ok(())
+    }
+
+    /// Rereads the session's state from the library a restore just wrote.
+    ///
+    /// Nothing from the replaced library survives: no open tabs, no active
+    /// record, no restore offer. The board returns to a fresh standard game
+    /// so no identity from the previous library is still on screen.
+    fn adopt_restored_library(&mut self) -> Result<(), CommandError> {
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        self.save_mode = match store.workspace().residue("save_mode") {
+            Ok(Some(mode)) if mode == "manual" => SaveMode::Manual,
+            _ => SaveMode::Autosave,
+        };
+        self.workshop = store
+            .workspace()
+            .residue("variant_definition_draft")
+            .ok()
+            .flatten()
+            .and_then(|value| decode_variant_definition(&value));
+        self.game = Game::standard();
+        self.orientation = Orientation::WhiteBottom;
+        self.record_id = None;
+        self.open_tabs.clear();
+        self.restore_offer = None;
+        self.show_archived = false;
+        self.clock = None;
+        self.suspended = false;
+        self.metadata = GameMetadata::default();
+        self.setup = None;
+        self.dirty = false;
+        self.variant_active = false;
+        self.variant_snapshot = None;
         Ok(())
     }
 
@@ -2980,6 +3082,108 @@ fn import_results_event(results: &[ImportReport]) -> String {
     out
 }
 
+/// Counts as a player reads them: "3 Game Records, 1 Study, and 1 Variant
+/// Definition", omitting whatever the library does not hold.
+fn describe_contents(contents: &LibraryContents) -> String {
+    let mut parts = Vec::new();
+    for (count, singular, plural) in [
+        (contents.records, "Game Record", "Game Records"),
+        (contents.studies, "Study", "Studies"),
+        (
+            contents.variant_definitions,
+            "Variant Definition",
+            "Variant Definitions",
+        ),
+        (
+            contents.preferences,
+            "portable preference",
+            "portable preferences",
+        ),
+    ] {
+        if count > 0 {
+            parts.push(format!(
+                "{count} {}",
+                if count == 1 { singular } else { plural }
+            ));
+        }
+    }
+    match parts.len() {
+        0 => "nothing".to_owned(),
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().expect("more than one part");
+            format!("{}, and {last}", parts.join(", "))
+        }
+    }
+}
+
+fn write_contents_fields(out: &mut String, contents: &LibraryContents) {
+    out.push_str("\"records\":");
+    out.push_str(&contents.records.to_string());
+    out.push_str(",\"studies\":");
+    out.push_str(&contents.studies.to_string());
+    out.push_str(",\"variantDefinitions\":");
+    out.push_str(&contents.variant_definitions.to_string());
+    out.push_str(",\"preferences\":");
+    out.push_str(&contents.preferences.to_string());
+}
+
+fn package_ready_event(package: &str, contents: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_package_ready\",\"package\":");
+    json::write_string(&mut out, package);
+    out.push_str(",\"summary\":");
+    json::write_string(
+        &mut out,
+        &format!(
+            "Library Portability Package format version {} · {}",
+            omachess_store::PACKAGE_FORMAT_VERSION,
+            describe_contents(contents)
+        ),
+    );
+    out.push(',');
+    write_contents_fields(&mut out, contents);
+    out.push('}');
+    out
+}
+
+fn package_rejected_event(message: &str) -> String {
+    let mut out = String::from("{\"type\":\"library_package_rejected\",\"message\":");
+    json::write_string(&mut out, message);
+    out.push('}');
+    out
+}
+
+fn replacement_required_event(existing: &LibraryContents, incoming: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_replacement_required\",\"message\":");
+    json::write_string(
+        &mut out,
+        &format!(
+            "Restoring replaces this library. It removes {} and puts {} in their place. \
+             Nothing is merged, and no removed record can be recovered inside Omachess.",
+            describe_contents(existing),
+            describe_contents(incoming)
+        ),
+    );
+    out.push_str(",\"existing\":{");
+    write_contents_fields(&mut out, existing);
+    out.push_str("},\"incoming\":{");
+    write_contents_fields(&mut out, incoming);
+    out.push_str("}}");
+    out
+}
+
+fn package_restored_event(contents: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_package_restored\",\"message\":");
+    json::write_string(
+        &mut out,
+        &format!("Restored {} from the package.", describe_contents(contents)),
+    );
+    out.push(',');
+    write_contents_fields(&mut out, contents);
+    out.push('}');
+    out
+}
+
 fn pgn_export_ready_event(pgn: &str) -> String {
     let mut out = String::from("{\"type\":\"pgn_export_ready\",\"pgn\":");
     json::write_string(&mut out, pgn);
@@ -3598,6 +3802,133 @@ mod tests {
             .unwrap();
         assert!(restored_library.contains(&id));
         assert!(!restored_library.contains(r#""archived":true"#));
+    }
+
+    /// The package text a session just exported, with its JSON escaping intact
+    /// so it can be handed straight back in a restore command.
+    fn exported_package(session: &mut Session) -> String {
+        session.submit(r#"{"type":"export_library_package"}"#).unwrap();
+        let event = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_package_ready"#))
+            .expect("exporting emits library_package_ready");
+        json::read_string_field(&event, "package").expect("the event carries the package")
+    }
+
+    fn restore_command(package: &str, confirmed: bool) -> String {
+        let mut out = String::from(r#"{"type":"restore_library_package","package":"#);
+        json::write_string(&mut out, package);
+        if confirmed {
+            out.push_str(r#","confirmation":"REPLACE_LIBRARY""#);
+        }
+        out.push('}');
+        out
+    }
+
+    #[test]
+    fn a_package_round_trips_into_an_empty_library() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        play(&mut source, "e7", "e5");
+        source.submit(r#"{"type":"create_study","name":"Openings"}"#).unwrap();
+        let package = exported_package(&mut source);
+        assert!(package.contains("\"format_version\": 1"));
+        assert!(package.contains("Record Graph"));
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        target.submit(&restore_command(&package, false)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| target.poll_event()).collect();
+        assert!(events
+            .iter()
+            .any(|event| event.contains(r#""type":"library_package_restored"#)));
+        let library = events
+            .iter()
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert_eq!(library_ids(library).len(), 1);
+        assert!(library.contains(r#""plyCount":2"#));
+        let studies = events
+            .iter()
+            .find(|event| event.contains(r#""type":"studies_changed"#))
+            .unwrap();
+        assert!(studies.contains("Openings"));
+    }
+
+    #[test]
+    fn restoring_into_a_non_empty_library_needs_an_explicit_replacement() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        let package = exported_package(&mut source);
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut target, "d2", "d4");
+        target.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let existing = std::iter::from_fn(|| target.poll_event())
+            .filter(|event| event.contains(r#""type":"library_changed"#))
+            .last()
+            .unwrap();
+        let existing_id = library_ids(&existing).into_iter().next().unwrap();
+
+        target.submit(&restore_command(&package, false)).unwrap();
+        let asked = std::iter::from_fn(|| target.poll_event())
+            .find(|event| event.contains(r#""type":"library_replacement_required"#))
+            .expect("a populated library asks before replacing");
+        assert!(asked.contains("1 Game Record"));
+        assert!(asked.contains("Nothing is merged"));
+        // The library is untouched until the player confirms.
+        assert!(target
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .get_game_record(&existing_id)
+            .unwrap()
+            .is_some());
+
+        target.submit(&restore_command(&package, true)).unwrap();
+        assert!(std::iter::from_fn(|| target.poll_event())
+            .any(|event| event.contains(r#""type":"library_package_restored"#)));
+        assert!(target
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .get_game_record(&existing_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn an_incompatible_package_version_fails_closed_with_a_clear_message() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        let package = exported_package(&mut source)
+            .replace("\"format_version\": 1", "\"format_version\": 99");
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut target, "d2", "d4");
+        target.submit(&restore_command(&package, true)).unwrap();
+        let rejection = std::iter::from_fn(|| target.poll_event())
+            .find(|event| event.contains(r#""type":"library_package_rejected"#))
+            .expect("an unreadable version is refused");
+        assert!(rejection.contains("version 99"));
+        assert!(rejection.contains("Nothing was changed"));
+        assert_eq!(
+            target
+                .store
+                .as_ref()
+                .unwrap()
+                .workspace()
+                .library_contents()
+                .unwrap()
+                .records,
+            1
+        );
     }
 
     #[test]

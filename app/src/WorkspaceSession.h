@@ -116,6 +116,15 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString variantAnalysisCaveat READ variantAnalysisCaveat NOTIFY variantAnalysisChanged)
     Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
+    // Library Portability Package: what the last export or restore said, and
+    // the replacement a restore into a non-empty library is waiting on.
+    Q_PROPERTY(QString libraryPackageMessage READ libraryPackageMessage
+                   NOTIFY libraryPackageChanged)
+    Q_PROPERTY(bool libraryReplacementPending READ libraryReplacementPending
+                   NOTIFY libraryPackageChanged)
+    Q_PROPERTY(QString libraryReplacementMessage READ libraryReplacementMessage
+                   NOTIFY libraryPackageChanged)
+
 public:
     explicit WorkspaceSession(QObject *parent = nullptr);
     ~WorkspaceSession() override;
@@ -210,6 +219,9 @@ public:
     QString variantAnalysisCaveat() const { return m_variantAnalysisCaveat; }
     QString ruleConflict() const { return m_ruleConflict; }
     QVariantList pgnImportResults() const { return m_pgnImportResults; }
+    QString libraryPackageMessage() const { return m_libraryPackageMessage; }
+    bool libraryReplacementPending() const { return !m_libraryReplacementMessage.isEmpty(); }
+    QString libraryReplacementMessage() const { return m_libraryReplacementMessage; }
 
     // Asks the core to describe the board it owns. Called once at startup so
     // the first frame is drawn from core-owned state.
@@ -279,6 +291,17 @@ public:
     Q_INVOKABLE void validateVariantDefinition();
     Q_INVOKABLE void editVariantDefinition();
     Q_INVOKABLE void importPgn();
+
+    // Player intent: take the whole library away as a Library Portability
+    // Package, or bring one back. Both choose their file through the portal.
+    Q_INVOKABLE void exportLibraryPackage();
+    Q_INVOKABLE void restoreLibraryPackage();
+
+    // Player intent: answer the replacement a restore into a non-empty
+    // library asked for.
+    Q_INVOKABLE void confirmLibraryReplacement();
+    Q_INVOKABLE void cancelLibraryReplacement();
+
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();
     Q_INVOKABLE void completeComputerAnalysis(const QString &evaluations);
@@ -321,6 +344,7 @@ signals:
     void workshopChanged();
     void variantAnalysisChanged();
     void pgnImportResultsChanged();
+    void libraryPackageChanged();
     void analysisRecordChanged();
     void studiesChanged();
 
@@ -376,6 +400,11 @@ private:
     QString m_variantAnalysisCaveat;
     QVariantList m_pgnImportResults;
     QString m_exportPath;
+    QString m_packageExportPath;
+    // The package a restore is holding until the player confirms replacement.
+    QString m_pendingPackage;
+    QString m_libraryReplacementMessage;
+    QString m_libraryPackageMessage;
     QVariantMap m_sourceSnapshot;
     QStringList m_recordSources;
     QStringList m_recordDerivations;

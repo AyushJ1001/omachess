@@ -855,6 +855,37 @@ ApplicationWindow {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 8
+                        Layout.rightMargin: 8
+                        Button {
+                            objectName: "exportLibraryPackageButton"
+                            text: qsTr("Export library…")
+                            ToolTip.text: qsTr("Take the whole library away as a "
+                                               + "Library Portability Package")
+                            onClicked: WorkspaceSession.exportLibraryPackage()
+                        }
+                        Button {
+                            objectName: "restoreLibraryPackageButton"
+                            text: qsTr("Restore library…")
+                            ToolTip.text: qsTr("Bring a Library Portability Package back")
+                            onClicked: WorkspaceSession.restoreLibraryPackage()
+                        }
+                    }
+
+                    Label {
+                        objectName: "libraryPackageMessage"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 8
+                        Layout.rightMargin: 8
+                        visible: WorkspaceSession.libraryPackageMessage.length > 0
+                        text: WorkspaceSession.libraryPackageMessage
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                        color: Theme.muted
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
@@ -2467,6 +2498,47 @@ ApplicationWindow {
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
                     }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: libraryReplacementDialog
+        objectName: "libraryReplacementDialog"
+        anchors.centerIn: parent
+        width: Math.min(520, workspace.width - 40)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Replace this library")
+
+        // A package never merges into a library. A player restoring into a
+        // library that already holds work is told exactly what goes, and
+        // decides.
+        visible: WorkspaceSession.libraryReplacementPending
+        onRejected: WorkspaceSession.cancelLibraryReplacement()
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "libraryReplacementWarning"
+                Layout.fillWidth: true
+                text: WorkspaceSession.libraryReplacementMessage
+                color: Theme.danger
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    objectName: "cancelLibraryReplacement"
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: WorkspaceSession.cancelLibraryReplacement()
+                }
+                Button {
+                    objectName: "confirmLibraryReplacement"
+                    Layout.fillWidth: true
+                    text: qsTr("Replace this library")
+                    onClicked: WorkspaceSession.confirmLibraryReplacement()
                 }
             }
         }
