@@ -36,6 +36,11 @@ qt_add_qml_module(omachess
     qml/pieces/cburnett/black_bishop.svg
     qml/pieces/cburnett/black_knight.svg
     qml/pieces/cburnett/black_pawn.svg
+    qml/engine-art/stockfish.svg
+    qml/engine-art/leela.svg
+    qml/engine-art/reckless.svg
+    qml/engine-art/komodo.svg
+    qml/engine-art/README.md
   SOURCES
     src/WorkspaceSession.h
     src/WorkspaceSession.cpp

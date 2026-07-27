@@ -23,7 +23,6 @@ public:
         AuthorRole,
         OptionCountRole,
         RatingRole,
-        RatingLabelRole,
         ArtworkRole,
         ArtworkProvenanceRole,
         FoundRole,

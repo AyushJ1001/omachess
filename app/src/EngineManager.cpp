@@ -6,19 +6,9 @@
 #include <QSettings>
 #include <QStandardPaths>
 
-namespace {
-
-const QSet<QString> legalStartMoves = {
-    QStringLiteral("a2a3"), QStringLiteral("a2a4"), QStringLiteral("b2b3"),
-    QStringLiteral("b2b4"), QStringLiteral("c2c3"), QStringLiteral("c2c4"),
-    QStringLiteral("d2d3"), QStringLiteral("d2d4"), QStringLiteral("e2e3"),
-    QStringLiteral("e2e4"), QStringLiteral("f2f3"), QStringLiteral("f2f4"),
-    QStringLiteral("g2g3"), QStringLiteral("g2g4"), QStringLiteral("h2h3"),
-    QStringLiteral("h2h4"), QStringLiteral("b1a3"), QStringLiteral("b1c3"),
-    QStringLiteral("g1f3"), QStringLiteral("g1h3"),
-};
-
-} // namespace
+extern "C" {
+#include "omachess_core.h"
+}
 
 EngineManager::EngineManager(QObject *parent)
     : QAbstractListModel(parent)
@@ -32,7 +22,7 @@ EngineManager::EngineManager(QObject *parent)
          {},
          {},
          {},
-         QStringLiteral("qrc:/qt/qml/Omachess/engine-art/stockfish.svg"),
+         QStringLiteral("engine-art/stockfish.svg"),
          QStringLiteral("Official Stockfish logo; GPL-3.0, stockfishchess.org"),
          {},
          0,
@@ -45,7 +35,7 @@ EngineManager::EngineManager(QObject *parent)
          {},
          {},
          {},
-         QStringLiteral("qrc:/qt/qml/Omachess/engine-art/leela.svg"),
+         QStringLiteral("engine-art/leela.svg"),
          QStringLiteral("Official Leela Chess Zero logo; GPL-3.0-or-later, lczero.org"),
          {},
          0,
@@ -58,7 +48,7 @@ EngineManager::EngineManager(QObject *parent)
          {},
          {},
          {},
-         QStringLiteral("qrc:/qt/qml/Omachess/engine-art/reckless.svg"),
+         QStringLiteral("engine-art/reckless.svg"),
          QStringLiteral("Official Reckless project artwork; recklesschess.com"),
          {},
          0,
@@ -71,7 +61,7 @@ EngineManager::EngineManager(QObject *parent)
          {},
          {},
          {},
-         QStringLiteral("qrc:/qt/qml/Omachess/engine-art/komodo.svg"),
+         QStringLiteral("engine-art/komodo.svg"),
          QStringLiteral("Official Komodo mark; komodochess.com"),
          {},
          0,
@@ -100,8 +90,7 @@ EngineManager::EngineManager(QObject *parent)
             fail(QStringLiteral("search timeout"));
             break;
         case Stage::Shutdown:
-            stopProcess();
-            finishReady();
+            fail(QStringLiteral("shutdown timeout"));
             break;
         case Stage::Idle:
             break;
@@ -117,10 +106,13 @@ EngineManager::EngineManager(QObject *parent)
     connect(&m_process,
             qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
             this,
-            [this] {
+            [this](int exitCode, QProcess::ExitStatus exitStatus) {
                 if (m_stage == Stage::Shutdown) {
                     m_deadline.stop();
-                    finishReady();
+                    if (exitStatus == QProcess::NormalExit && exitCode == 0)
+                        finishReady();
+                    else
+                        fail(QStringLiteral("unclean shutdown"));
                 }
             });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -149,8 +141,6 @@ QVariant EngineManager::data(const QModelIndex &index, int role) const
     case AuthorRole: return profile.author;
     case OptionCountRole: return profile.optionCount;
     case RatingRole: return profile.rating;
-    case RatingLabelRole:
-        return QStringLiteral("≈ %1 Elo estimate").arg(profile.rating);
     case ArtworkRole: return profile.artwork;
     case ArtworkProvenanceRole: return profile.artworkProvenance;
     case FoundRole: return profile.found;
@@ -172,7 +162,6 @@ QHash<int, QByteArray> EngineManager::roleNames() const
             {AuthorRole, "author"},
             {OptionCountRole, "optionCount"},
             {RatingRole, "rating"},
-            {RatingLabelRole, "ratingLabel"},
             {ArtworkRole, "artwork"},
             {ArtworkProvenanceRole, "artworkProvenance"},
             {FoundRole, "found"},
@@ -244,7 +233,7 @@ void EngineManager::setDisplayRating(const QString &key, int rating)
         return;
     m_profiles[index].rating = rating;
     QSettings().setValue(QStringLiteral("engines/%1/displayRating").arg(key), rating);
-    emit dataChanged(this->index(index), this->index(index), {RatingRole, RatingLabelRole});
+    emit dataChanged(this->index(index), this->index(index), {RatingRole});
 }
 
 void EngineManager::startProbe(int index)
@@ -340,12 +329,14 @@ void EngineManager::consumeLine(const QString &line)
             }
             profile.identityMismatch = !identityMatches(profile);
             QByteArray defaults;
-            for (const QVariant &value : profile.options) {
-                const QString name = value.toMap().value(QStringLiteral("name")).toString();
-                if (name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0)
-                    defaults += "setoption name " + name.toUtf8() + " value 1\n";
-                else if (name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0)
-                    defaults += "setoption name " + name.toUtf8() + " value 16\n";
+            if (!profile.identityMismatch) {
+                for (const QVariant &value : profile.options) {
+                    const QString name = value.toMap().value(QStringLiteral("name")).toString();
+                    if (name.compare(QStringLiteral("Threads"), Qt::CaseInsensitive) == 0)
+                        defaults += "setoption name " + name.toUtf8() + " value 1\n";
+                    else if (name.compare(QStringLiteral("Hash"), Qt::CaseInsensitive) == 0)
+                        defaults += "setoption name " + name.toUtf8() + " value 16\n";
+                }
             }
             send(defaults + "isready\n");
             advance(Stage::Ready, deadline(5000));
@@ -358,7 +349,7 @@ void EngineManager::consumeLine(const QString &line)
         advance(Stage::Search, deadline(1500));
     } else if (m_stage == Stage::Search && line.startsWith(QStringLiteral("bestmove "))) {
         const QString move = line.sliced(9).section(QLatin1Char(' '), 0, 0).toLower();
-        if (!legalStartMoves.contains(move)) {
+        if (!omachess_standard_start_move_is_legal(move.toUtf8().constData())) {
             fail(QStringLiteral("illegal or malformed bestmove"));
             return;
         }
@@ -385,9 +376,9 @@ void EngineManager::fail(const QString &reason)
         ? QStringLiteral("Recognized — unsupported registration required")
         : QStringLiteral("Probe failed — %1").arg(reason);
     emit dataChanged(index(m_active), index(m_active));
+    m_stage = Stage::Idle;
     stopProcess();
     m_active = -1;
-    m_stage = Stage::Idle;
 }
 
 void EngineManager::finishReady()

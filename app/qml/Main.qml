@@ -472,7 +472,6 @@ ApplicationWindow {
                             required property string identity
                             required property int optionCount
                             required property int rating
-                            required property string ratingLabel
                             required property string artwork
                             required property string artworkProvenance
                             required property bool found

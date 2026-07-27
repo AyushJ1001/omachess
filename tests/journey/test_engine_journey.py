@@ -122,6 +122,7 @@ class EngineJourney(unittest.TestCase):
             "startup-timeout",
             "readiness-timeout",
             "search-timeout",
+            "shutdown-timeout",
             "missing-uciok",
             "malformed",
         ):
