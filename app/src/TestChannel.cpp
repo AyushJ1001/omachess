@@ -1,5 +1,7 @@
 #include "TestChannel.h"
 
+#include "ThemeController.h"
+
 #include <QCoreApplication>
 #include <QFile>
 #include <QGuiApplication>
@@ -64,6 +66,11 @@ QQuickItem *findItem(QQuickWindow *window, const QString &objectName)
             return item;
     }
     return nullptr;
+}
+
+QString colorHex(const QColor &color)
+{
+    return color.name(QColor::HexRgb);
 }
 
 } // namespace
@@ -176,6 +183,7 @@ QJsonObject TestChannel::snapshot() const
             {"name", item->objectName().mid(squarePrefix.size())},
             {"piece", item->property("piece").toString()},
             {"light", item->property("light").toBool()},
+            {"color", colorHex(item->property("color").value<QColor>())},
             // The marks a player can see on the square: where a picked-up
             // piece came from, where it may go, and the move just played.
             {"selected", item->property("selected").toBool()},
@@ -203,6 +211,27 @@ QJsonObject TestChannel::snapshot() const
             labels.insert(name, text.toString());
     }
 
+    // Theme roles the workspace is currently painting. Journeys assert these
+    // against the Quattro Palette fixture they installed, not against adapter
+    // internals.
+    ThemeController *activeTheme = ThemeController::instance();
+
+    const QString chromeBackground = activeTheme ? colorHex(activeTheme->background())
+                                                 : colorHex(m_window->color());
+    const QString chromeForeground =
+        activeTheme ? colorHex(activeTheme->foreground()) : QStringLiteral("#000000");
+    const QString lightSquare =
+        activeTheme ? colorHex(activeTheme->lightSquare()) : QStringLiteral("#ebecd0");
+    const QString darkSquare =
+        activeTheme ? colorHex(activeTheme->darkSquare()) : QStringLiteral("#739552");
+    const QString paletteSource =
+        activeTheme ? activeTheme->paletteSource() : QStringLiteral("builtin");
+    const QString themeName = activeTheme ? activeTheme->themeName() : QString();
+    const QString boardThemeId =
+        activeTheme ? activeTheme->boardThemeId() : QStringLiteral("follow");
+    const QString pieceSetId =
+        activeTheme ? activeTheme->pieceSetId() : QStringLiteral("cburnett");
+
     return QJsonObject{
         {"appId", QGuiApplication::desktopFileName()},
         {"title", m_window->title()},
@@ -211,6 +240,14 @@ QJsonObject TestChannel::snapshot() const
         {"height", m_window->height()},
         {"devicePixelRatio", m_window->devicePixelRatio()},
         {"platform", QGuiApplication::platformName()},
+        {"chromeBackground", chromeBackground},
+        {"chromeForeground", chromeForeground},
+        {"lightSquare", lightSquare},
+        {"darkSquare", darkSquare},
+        {"paletteSource", paletteSource},
+        {"themeName", themeName},
+        {"boardThemeId", boardThemeId},
+        {"pieceSetId", pieceSetId},
         {"squares", squares},
         {"labels", labels},
     };

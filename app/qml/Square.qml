@@ -5,10 +5,10 @@ import Omachess
 // One square, whatever piece the core placed on it, and the marks that tell a
 // player what they may do with it.
 //
-// Square colours come from the Built-in Palette; a later ticket derives the
-// Board Theme from the Quattro Palette. The piece is drawn from Piece Set
-// artwork whose light and dark identities belong to the artwork itself — this
-// file never recolours a piece.
+// Square colours come from the Board Theme. By default that theme is derived
+// from the Quattro Palette; a player may pin an Omachess-owned set instead.
+// The piece is drawn from Piece Set artwork whose light and dark identities
+// belong to the artwork itself — this file never recolours a piece.
 Rectangle {
     id: square
 
@@ -36,19 +36,19 @@ Rectangle {
 
     width: size
     height: size
-    color: light ? "#ebecd0" : "#739552"
+    color: light ? Theme.lightSquare : Theme.darkSquare
 
     // The move just played, so a player can see what changed.
     Rectangle {
         anchors.fill: parent
-        color: "#f6f669"
+        color: Theme.lastMove
         opacity: square.lastMove ? 0.42 : 0
     }
 
     // The square a piece was picked up from.
     Rectangle {
         anchors.fill: parent
-        color: "#2b9fd8"
+        color: Theme.selectedSquare
         opacity: square.selected ? 0.45 : 0
     }
 
@@ -74,7 +74,7 @@ Rectangle {
         width: square.size * 0.3
         height: width
         radius: width / 2
-        color: "#1c2b1c"
+        color: Theme.moveTarget
         opacity: 0.32
     }
 
@@ -82,7 +82,7 @@ Rectangle {
         anchors.fill: parent
         visible: square.target && square.piece !== ""
         color: "transparent"
-        border.color: "#1c2b1c"
+        border.color: Theme.moveTarget
         border.width: Math.max(2, square.size * 0.08)
         opacity: 0.38
     }
