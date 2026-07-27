@@ -74,6 +74,11 @@ void WorkspaceSession::toggleVariantRule(const QString &rule)
                    {{QStringLiteral("rule"), rule}}));
 }
 
+void WorkspaceSession::validateVariantDefinition()
+{
+    submit(command(QStringLiteral("validate_variant_definition")));
+}
+
 void WorkspaceSession::toggleBuiltinPiece(const QString &code)
 {
     submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
@@ -495,15 +500,24 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
     }
     if (type == QStringLiteral("variant_library_changed")) {
         const QString id = event.value(QStringLiteral("id")).toString();
-        for (const QVariant &record : std::as_const(m_libraryRecords))
-            if (record.toMap().value(QStringLiteral("id")).toString() == id)
+        for (int index = 0; index < m_libraryRecords.size(); ++index) {
+            QVariantMap record = m_libraryRecords.at(index).toMap();
+            if (record.value(QStringLiteral("id")).toString() == id) {
+                record.insert(QStringLiteral("variantPlayable"),
+                              event.value(QStringLiteral("playable")).toBool());
+                m_libraryRecords[index] = record;
+                emit libraryChanged();
                 return;
+            }
+        }
         m_libraryRecords.prepend(QVariantMap{
             {QStringLiteral("id"), id},
             {QStringLiteral("kind"), event.value(QStringLiteral("kind")).toString()},
             {QStringLiteral("title"), event.value(QStringLiteral("title")).toString()},
             {QStringLiteral("resultScore"), QString()},
             {QStringLiteral("plyCount"), 0},
+            {QStringLiteral("variantPlayable"),
+             event.value(QStringLiteral("playable")).toBool()},
         });
         emit libraryChanged();
         return;
@@ -524,6 +538,9 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         m_workshopPositionRuleValid = event.value(QStringLiteral("ruleValid")).toBool();
         m_variantRules = event.value(QStringLiteral("rules")).toObject().toVariantMap();
         m_ruleConflict = event.value(QStringLiteral("ruleConflict")).toString();
+        m_variantPlayable = event.value(QStringLiteral("playable")).toBool();
+        m_variantValidationMessage =
+            event.value(QStringLiteral("validationMessage")).toString();
         m_boardPresets.clear();
         for (const QJsonValue &value : event.value(QStringLiteral("presets")).toArray())
             m_boardPresets.append(value.toObject().toVariantMap());

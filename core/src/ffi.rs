@@ -6,11 +6,11 @@
 //!
 //! See `include/omachess_core.h` for the header the workspace compiles against.
 
-use std::ffi::{c_char, CStr, CString};
 use std::cell::RefCell;
+use std::ffi::{c_char, CStr, CString};
 
-use crate::session::{CommandError, Session};
 use crate::rules::Rules;
+use crate::session::{CommandError, Session};
 
 /// An opaque handle to a workspace session.
 pub struct OmachessSession {
@@ -29,17 +29,50 @@ pub const OMACHESS_ERR_STORE: i32 = 6;
 ///
 /// A null, non-UTF-8, or illegal move returns false.
 #[no_mangle]
-pub unsafe extern "C" fn omachess_standard_start_move_is_legal(
-    uci_move: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn omachess_standard_start_move_is_legal(uci_move: *const c_char) -> i32 {
     if uci_move.is_null() {
         return 0;
     }
     let Ok(uci_move) = CStr::from_ptr(uci_move).to_str() else {
         return 0;
     };
-    Rules::new("standard", None)
-        .is_some_and(|mut rules| rules.push(uci_move)) as i32
+    Rules::new("standard", None).is_some_and(|mut rules| rules.push(uci_move)) as i32
+}
+
+/// Runs one isolated Variant Definition engine stage.
+#[no_mangle]
+pub unsafe extern "C" fn omachess_variant_validation_worker(
+    stage: *const c_char,
+    fen: *const c_char,
+) -> i32 {
+    if stage.is_null() || fen.is_null() {
+        return 0;
+    }
+    let (Ok(stage), Ok(fen)) = (CStr::from_ptr(stage).to_str(), CStr::from_ptr(fen).to_str())
+    else {
+        return 0;
+    };
+    if std::env::var("OMACHESS_VARIANT_VALIDATION_WORKER").as_deref() == Ok("hang") {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+    let Some((adapter, fen)) = fen.split_once("\n--OMACHESS-FEN--\n") else {
+        return 0;
+    };
+    if !Rules::load_variant_adapter(adapter) {
+        return 0;
+    }
+    match stage {
+        "consistency" => 1,
+        "smoke" => {
+            let Some(mut rules) = Rules::new("omachess", Some(fen)) else {
+                return 0;
+            };
+            let moves = rules.legal_moves();
+            let searched = rules.bounded_search(1);
+            (!moves.is_empty() && searched) as i32
+        }
+        _ => 0,
+    }
 }
 
 thread_local! {
@@ -47,9 +80,8 @@ thread_local! {
 }
 
 fn set_last_error(message: impl Into<String>) {
-    let message = CString::new(message.into()).unwrap_or_else(|_| {
-        CString::new("Live Store error").expect("literal has no interior NUL")
-    });
+    let message = CString::new(message.into())
+        .unwrap_or_else(|_| CString::new("Live Store error").expect("literal has no interior NUL"));
     LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
 }
 
@@ -131,9 +163,7 @@ pub unsafe extern "C" fn omachess_session_submit(
 /// # Safety
 /// `session` must be a live handle.
 #[no_mangle]
-pub unsafe extern "C" fn omachess_session_poll_event(
-    session: *mut OmachessSession,
-) -> *mut c_char {
+pub unsafe extern "C" fn omachess_session_poll_event(session: *mut OmachessSession) -> *mut c_char {
     let Some(session) = session.as_mut() else {
         return std::ptr::null_mut();
     };
@@ -172,7 +202,9 @@ mod tests {
     }
 
     fn isolate_xdg() -> IsolatedDataHome {
-        let guard = XDG_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = XDG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::TempDir::new().unwrap();
         std::env::set_var("XDG_DATA_HOME", dir.path());
         IsolatedDataHome {
@@ -200,18 +232,27 @@ mod tests {
             let session = omachess_session_new();
             assert!(!session.is_null());
             let command = CString::new(r#"{"type":"describe_board"}"#).unwrap();
-            assert_eq!(omachess_session_submit(session, command.as_ptr()), OMACHESS_OK);
+            assert_eq!(
+                omachess_session_submit(session, command.as_ptr()),
+                OMACHESS_OK
+            );
             let events = drain(session);
             assert!(
-                events.iter().any(|event| event.contains(r#""orientation":"white""#)),
+                events
+                    .iter()
+                    .any(|event| event.contains(r#""orientation":"white""#)),
                 "describe_board must answer with the board: {events:?}"
             );
             assert!(
-                events.iter().any(|event| event.contains(r#""type":"library_changed""#)),
+                events
+                    .iter()
+                    .any(|event| event.contains(r#""type":"library_changed""#)),
                 "describe_board must list the Personal Library: {events:?}"
             );
             assert!(
-                events.iter().any(|event| event.contains(r#""type":"tabs_changed""#)),
+                events
+                    .iter()
+                    .any(|event| event.contains(r#""type":"tabs_changed""#)),
                 "describe_board must report open tabs: {events:?}"
             );
             omachess_session_free(session);

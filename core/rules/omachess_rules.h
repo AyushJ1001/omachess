@@ -44,6 +44,9 @@ typedef struct OmachessRules OmachessRules;
  * Returns null when the variant is unknown or the FEN is unusable. */
 OmachessRules *omachess_rules_new(const char *variant, const char *start_fen);
 
+/* Loads one compiled adapter into this disposable process. */
+int omachess_rules_load_variant(const char *adapter);
+
 /* Releases a game. Passing null is a no-op. */
 void omachess_rules_free(OmachessRules *rules);
 
@@ -61,6 +64,9 @@ const char *omachess_rules_san(OmachessRules *rules, const char *uci_move);
 /* Plays `uci_move`. Returns 1 when it was legal and applied, 0 otherwise;
  * an illegal move changes nothing. */
 int omachess_rules_push(OmachessRules *rules, const char *uci_move);
+
+/* Runs a depth-bounded Fairy-Stockfish search. */
+int omachess_rules_bounded_search(OmachessRules *rules, int depth);
 
 /* Takes back the last pushed move. Returns 1, or 0 at the starting
  * position. */

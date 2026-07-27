@@ -102,6 +102,9 @@ void omachess_string_free(char *text);
  * Rules Authority rather than a second move list in the workspace. */
 int32_t omachess_standard_start_move_is_legal(const char *uci_move);
 
+/* Worker entry point used only by the executable's isolated validation mode. */
+int32_t omachess_variant_validation_worker(const char *stage, const char *fen);
+
 #ifdef __cplusplus
 }
 #endif

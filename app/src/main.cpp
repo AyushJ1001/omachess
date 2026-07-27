@@ -1,11 +1,23 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
+#include <iostream>
+#include <iterator>
+#include <string>
+#include <string_view>
 
 #include "TestChannel.h"
+extern "C" {
+#include "omachess_core.h"
+}
 
 int main(int argc, char *argv[])
 {
+    if (argc == 3 && std::string_view(argv[1]) == "--variant-validation-worker") {
+        const std::string fen{std::istreambuf_iterator<char>(std::cin),
+                              std::istreambuf_iterator<char>()};
+        return omachess_variant_validation_worker(argv[2], fen.c_str()) == 1 ? 0 : 1;
+    }
 #if defined(Q_OS_LINUX)
     // Qt's xdgdesktopportal platform theme routes native file choosers through
     // org.freedesktop.portal.FileChooser. Respect an explicit user override,

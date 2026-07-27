@@ -15,11 +15,13 @@ type OmachessRules = std::ffi::c_void;
 
 extern "C" {
     fn omachess_rules_new(variant: *const c_char, start_fen: *const c_char) -> *mut OmachessRules;
+    fn omachess_rules_load_variant(adapter: *const c_char) -> c_int;
     fn omachess_rules_free(rules: *mut OmachessRules);
     fn omachess_rules_fen(rules: *mut OmachessRules) -> *const c_char;
     fn omachess_rules_legal_moves(rules: *mut OmachessRules) -> *const c_char;
     fn omachess_rules_san(rules: *mut OmachessRules, uci_move: *const c_char) -> *const c_char;
     fn omachess_rules_push(rules: *mut OmachessRules, uci_move: *const c_char) -> c_int;
+    fn omachess_rules_bounded_search(rules: *mut OmachessRules, depth: c_int) -> c_int;
     fn omachess_rules_pop(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_side_to_move(rules: *mut OmachessRules) -> c_int;
     fn omachess_rules_in_check(rules: *mut OmachessRules) -> c_int;
@@ -177,6 +179,10 @@ pub struct Rules {
 unsafe impl Send for Rules {}
 
 impl Rules {
+    pub fn load_variant_adapter(adapter: &str) -> bool {
+        CString::new(adapter)
+            .is_ok_and(|adapter| unsafe { omachess_rules_load_variant(adapter.as_ptr()) == 1 })
+    }
     /// Standard chess from its starting position.
     pub fn standard() -> Self {
         Self::new("standard", None).expect("the engine always knows standard chess")
@@ -233,6 +239,10 @@ impl Rules {
             return false;
         };
         unsafe { omachess_rules_push(self.handle, uci.as_ptr()) == 1 }
+    }
+
+    pub fn bounded_search(&mut self, depth: i32) -> bool {
+        unsafe { omachess_rules_bounded_search(self.handle, depth) == 1 }
     }
 
     /// Takes back the last move, or reports that the game is at its start.

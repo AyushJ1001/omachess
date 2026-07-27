@@ -104,6 +104,8 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(bool workshopPositionRuleValid READ workshopPositionRuleValid NOTIFY workshopChanged)
     Q_PROPERTY(QVariantMap variantRules READ variantRules NOTIFY workshopChanged)
     Q_PROPERTY(QString ruleConflict READ ruleConflict NOTIFY workshopChanged)
+    Q_PROPERTY(bool variantPlayable READ variantPlayable NOTIFY workshopChanged)
+    Q_PROPERTY(QString variantValidationMessage READ variantValidationMessage NOTIFY workshopChanged)
     Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
@@ -188,6 +190,8 @@ public:
     QString variantFen() const { return m_variantFen; }
     bool workshopPositionRuleValid() const { return m_workshopPositionRuleValid; }
     QVariantMap variantRules() const { return m_variantRules; }
+    bool variantPlayable() const { return m_variantPlayable; }
+    QString variantValidationMessage() const { return m_variantValidationMessage; }
     QString ruleConflict() const { return m_ruleConflict; }
     QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
@@ -245,6 +249,7 @@ public:
                                     const QString &betza);
     Q_INVOKABLE void placeWorkshopPiece(const QString &square, const QString &piece);
     Q_INVOKABLE void toggleVariantRule(const QString &rule);
+    Q_INVOKABLE void validateVariantDefinition();
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();
@@ -330,6 +335,8 @@ private:
     bool m_workshopPositionRuleValid = false;
     QVariantMap m_variantRules;
     QString m_ruleConflict;
+    bool m_variantPlayable = false;
+    QString m_variantValidationMessage;
     QVariantList m_pgnImportResults;
     QString m_exportPath;
     QVariantMap m_sourceSnapshot;

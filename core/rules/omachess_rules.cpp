@@ -13,6 +13,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "movegen.h"
 #include "piece.h"
 #include "position.h"
+#include "search.h"
 #include "thread.h"
 #include "uci.h"
 #include "variant.h"
@@ -67,6 +69,17 @@ const Variant *find_variant(const std::string &name)
 }
 
 } // namespace
+
+extern "C" int omachess_rules_load_variant(const char *adapter)
+{
+    if (!adapter)
+        return 0;
+    std::lock_guard<std::mutex> lock(engine_mutex());
+    initialise_engine_once();
+    std::istringstream input(adapter);
+    variants.parse_istream<false>(input);
+    return variants.find("omachess") != variants.end() ? 1 : 0;
+}
 
 // One game: a variant, the position reached so far, and the moves that
 // reached it. The move stack is what makes pop cheap.
@@ -196,6 +209,18 @@ int omachess_rules_push(OmachessRules *rules, const char *uci_move)
     rules->states->emplace_back();
     rules->position.do_move(move, rules->states->back());
     rules->played.push_back(move);
+    return 1;
+}
+
+int omachess_rules_bounded_search(OmachessRules *rules, int depth)
+{
+    if (!rules || depth < 1 || depth > 4)
+        return 0;
+    Borrowed borrowed(rules);
+    Search::LimitsType limits;
+    limits.depth = depth;
+    Threads.start_thinking(rules->position, rules->states, limits, false);
+    Threads.main()->wait_for_search_finished();
     return 1;
 }
 
