@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QFile>
+#include <QNetworkAccessManager>
 #include <QProcess>
 #include <QQmlEngine>
 #include <QTimer>
@@ -34,6 +36,7 @@ public:
         LaunchWorkingDirectoryRole,
         CapabilitiesRole,
         CustomRole,
+        InstallingRole,
     };
 
     explicit EngineManager(QObject *parent = nullptr);
@@ -42,6 +45,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE void grantConsent(const QString &key);
+    Q_INVOKABLE void install(const QString &key);
+    Q_INVOKABLE void cancelInstall(const QString &key);
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
     Q_INVOKABLE void registerCustomEngine(const QUrl &path,
                                           const QString &arguments,
@@ -69,6 +74,7 @@ private:
         QString arguments;
         QString workingDirectory;
         QStringList capabilities;
+        QString upstreamUrl;
     };
 
     enum class Stage { Idle, Starting, Uci, Ready, Search, Shutdown };
@@ -87,6 +93,9 @@ private:
     void finishReady();
     bool identityMatches(const Profile &profile) const;
     void stopProcess();
+    void finishInstall();
+    void failInstall(const QString &reason);
+    QString storeDirectory(const Profile &profile) const;
     int deadline(int productionMs) const;
 
     QList<Profile> m_profiles;
@@ -97,4 +106,8 @@ private:
     int m_active = -1;
     bool m_registrationRequired = false;
     bool m_sawMalformedHandshake = false;
+    QNetworkAccessManager m_network;
+    QNetworkReply *m_download = nullptr;
+    QFile m_downloadFile;
+    int m_installing = -1;
 };

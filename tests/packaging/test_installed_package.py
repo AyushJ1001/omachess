@@ -105,9 +105,28 @@ class InstalledFootprint(unittest.TestCase):
         self.assertTrue(expected <= places, f"missing {sorted(expected - places)}")
         for place in places:
             self.assertTrue(
-                place.startswith(("bin/", "share/applications/", "share/icons/", "share/doc/")),
+                place.startswith(
+                    ("bin/", "share/applications/", "share/icons/", "share/doc/",
+                     "share/licenses/")
+                ),
                 f"{place} is outside the program, launcher, icon, and documentation footprint",
             )
+
+    def test_license_component_notices_and_source_offer_ship_with_the_package(self) -> None:
+        license_file = self.prefix / "share/licenses/omachess/LICENSE"
+        self.assertTrue(license_file.is_file(), "the package omits Omachess's GPL text")
+
+        docs = self.prefix / "share/doc/omachess"
+        notices = (docs / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        source = (docs / "CORRESPONDING_SOURCE.md").read_text(encoding="utf-8")
+        for component in ("Cburnett", "Fairy-Stockfish", "incbin", "Stockfish",
+                          "Leela Chess Zero", "Reckless"):
+            self.assertIn(component, notices)
+        self.assertIn("GPL-2.0-or-later", notices)
+        self.assertIn("does not\nredistribute Komodo artwork", notices)
+        for build_input in ("Cargo.lock", "PKGBUILD", "pinned commit"):
+            self.assertIn(build_input, source)
+        self.assertIn("Release gate", source)
 
     def test_removal_guidance_ships_with_the_package(self) -> None:
         docs = self.prefix / "share/doc/omachess"
@@ -118,6 +137,17 @@ class InstalledFootprint(unittest.TestCase):
         # Uninstalling leaves the player's chess work alone, so the guidance has
         # to say where that work lives.
         self.assertIn("xdg_data_home", text)
+
+    def test_v01_release_limits_and_recovery_guidance_ship_with_the_package(self) -> None:
+        notes = (
+            self.prefix / "share/doc/omachess/RELEASE_NOTES_0.1.md"
+        ).read_text(encoding="utf-8").lower()
+        for promise in (
+            "experimental", "migration", "export", "recovery",
+            "stable extension api", "general linux support", "online play",
+            "accounts", "cloud services", "telemetry",
+        ):
+            self.assertIn(promise, notes)
 
 
 if __name__ == "__main__":

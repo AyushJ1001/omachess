@@ -198,6 +198,8 @@ class Workspace:
         theme_name: str = "journey-a",
         install_palette: bool = True,
         malformed_palette: bool = False,
+        import_pgn: Path | None = None,
+        export_pgn: Path | None = None,
         environment: dict[str, str] | None = None,
     ) -> None:
         self._executable = executable
@@ -218,6 +220,8 @@ class Workspace:
         self._theme_name = theme_name
         self._install_palette = install_palette
         self._malformed_palette = malformed_palette
+        self._import_pgn = import_pgn
+        self._export_pgn = export_pgn
         self._extra_environment = environment or {}
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
@@ -239,6 +243,10 @@ class Workspace:
         environment = dict(os.environ)
         environment["OMACHESS_TEST_CHANNEL"] = self._socket_path
         environment["QT_QPA_PLATFORM"] = self._platform
+        if self._import_pgn is not None:
+            environment["OMACHESS_TEST_IMPORT_PGN"] = str(self._import_pgn)
+        if self._export_pgn is not None:
+            environment["OMACHESS_TEST_EXPORT_PGN"] = str(self._export_pgn)
         # Isolate the run from the developer's own configuration and state.
         for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
             directory = self._root / variable.lower()
@@ -421,6 +429,19 @@ class Workspace:
 
     def resize(self, width: int, height: int) -> None:
         self._request({"command": "resize", "width": width, "height": height})
+
+    def close_window(self) -> None:
+        """Ask the window manager to close the workspace."""
+        self._request({"command": "close_window"})
+
+    def wait_until_closed(self, *, timeout: float = 10.0) -> None:
+        """Wait until an accepted workspace-close request exits the app."""
+        if self._process is None:
+            raise JourneyError("the workspace is not running")
+        try:
+            self._process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise JourneyError("the workspace did not close") from error
 
     def set_board_theme(self, theme_id: str) -> None:
         """Pin or unpin the Board Theme the way a player does from the chrome."""

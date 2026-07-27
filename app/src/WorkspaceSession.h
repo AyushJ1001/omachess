@@ -68,11 +68,26 @@ class WorkspaceSession : public QObject
     // Open record tabs and the active Game Record id.
     Q_PROPERTY(QVariantList openTabs READ openTabs NOTIFY tabsChanged)
     Q_PROPERTY(QString activeRecordId READ activeRecordId NOTIFY tabsChanged)
+    Q_PROPERTY(QString saveMode READ saveMode NOTIFY boardChanged)
+    Q_PROPERTY(bool dirty READ dirty NOTIFY boardChanged)
+    Q_PROPERTY(bool needsUnsavedDecision READ needsUnsavedDecision NOTIFY boardChanged)
 
     // Shown when a prior Game Record can be restored after restart.
     Q_PROPERTY(bool restoreAvailable READ restoreAvailable NOTIFY restoreChanged)
     Q_PROPERTY(QString restoreLabel READ restoreLabel NOTIFY restoreChanged)
     Q_PROPERTY(QString storeError READ storeError CONSTANT)
+    Q_PROPERTY(bool workshopActive READ workshopActive NOTIFY workshopChanged)
+    Q_PROPERTY(int workshopStep READ workshopStep NOTIFY workshopChanged)
+    Q_PROPERTY(int boardFiles READ boardFiles NOTIFY workshopChanged)
+    Q_PROPERTY(int boardRanks READ boardRanks NOTIFY workshopChanged)
+    Q_PROPERTY(QVariantList boardPresets READ boardPresets NOTIFY workshopChanged)
+    Q_PROPERTY(QVariantList pieceCatalogue READ pieceCatalogue NOTIFY workshopChanged)
+    Q_PROPERTY(QStringList selectedPieces READ selectedPieces NOTIFY workshopChanged)
+    Q_PROPERTY(QString customPieceName READ customPieceName NOTIFY workshopChanged)
+    Q_PROPERTY(QString customPieceLetter READ customPieceLetter NOTIFY workshopChanged)
+    Q_PROPERTY(QString customPieceBetza READ customPieceBetza NOTIFY workshopChanged)
+    Q_PROPERTY(QString betzaError READ betzaError NOTIFY workshopChanged)
+    Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
     explicit WorkspaceSession(QObject *parent = nullptr);
@@ -116,10 +131,28 @@ public:
     QVariantList libraryRecords() const { return m_libraryRecords; }
     QVariantList openTabs() const { return m_openTabs; }
     QString activeRecordId() const { return m_activeRecordId; }
+    QString saveMode() const { return field(QStringLiteral("saveMode")); }
+    bool dirty() const { return m_state.value(QStringLiteral("dirty")).toBool(); }
+    bool needsUnsavedDecision() const
+    {
+        return m_state.value(QStringLiteral("needsUnsavedDecision")).toBool();
+    }
 
     bool restoreAvailable() const { return m_restoreAvailable; }
     QString restoreLabel() const { return m_restoreLabel; }
     QString storeError() const { return m_storeError; }
+    bool workshopActive() const { return m_workshopActive; }
+    int workshopStep() const { return m_workshopStep; }
+    int boardFiles() const { return m_boardFiles; }
+    int boardRanks() const { return m_boardRanks; }
+    QVariantList boardPresets() const { return m_boardPresets; }
+    QVariantList pieceCatalogue() const { return m_pieceCatalogue; }
+    QStringList selectedPieces() const { return m_selectedPieces; }
+    QString customPieceName() const { return m_customPieceName; }
+    QString customPieceLetter() const { return m_customPieceLetter; }
+    QString customPieceBetza() const { return m_customPieceBetza; }
+    QString betzaError() const { return m_betzaError; }
+    QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
     // Asks the core to describe the board it owns. Called once at startup so
     // the first frame is drawn from core-owned state.
@@ -154,6 +187,9 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void setSaveMode(const QString &mode);
+    Q_INVOKABLE void saveRecord();
+    Q_INVOKABLE void discardChanges();
     Q_INVOKABLE void configureClock(int milliseconds);
     Q_INVOKABLE void tickClock();
     Q_INVOKABLE void updateMetadata(const QString &white, const QString &black,
@@ -164,6 +200,14 @@ public:
     Q_INVOKABLE void placeSetupPiece(const QString &square, const QString &piece);
     Q_INVOKABLE void relocateSetupPiece(const QString &from, const QString &to);
     Q_INVOKABLE void startSetupGame();
+    Q_INVOKABLE void newVariantDefinition();
+    Q_INVOKABLE void selectBoardPreset(const QString &id);
+    Q_INVOKABLE void setWorkshopStep(int step);
+    Q_INVOKABLE void toggleBuiltinPiece(const QString &code);
+    Q_INVOKABLE void setCustomPiece(const QString &name, const QString &letter,
+                                    const QString &betza);
+    Q_INVOKABLE void importPgn();
+    Q_INVOKABLE void exportPgn(const QStringList &recordIds);
 
     // --- What the core said a player may do -------------------------------
     //
@@ -194,6 +238,8 @@ signals:
     void libraryChanged();
     void tabsChanged();
     void restoreChanged();
+    void workshopChanged();
+    void pgnImportResultsChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -215,9 +261,25 @@ private:
     // one core-owned snapshot.
     QJsonObject m_state;
     QVariantList m_libraryRecords;
+    QVariantList m_boardPresets;
+    QVariantList m_pieceCatalogue;
     QVariantList m_openTabs;
     QString m_activeRecordId;
     bool m_restoreAvailable = false;
     QString m_restoreLabel;
     QString m_storeError;
+    bool m_workshopActive = false;
+    int m_workshopStep = 1;
+    int m_boardFiles = 8;
+    int m_boardRanks = 8;
+    QString m_boardPresetId = QStringLiteral("standard-8x8");
+    QStringList m_selectedPieces{QStringLiteral("K"), QStringLiteral("Q"),
+                                 QStringLiteral("R"), QStringLiteral("B"),
+                                 QStringLiteral("N"), QStringLiteral("P")};
+    QString m_customPieceName;
+    QString m_customPieceLetter;
+    QString m_customPieceBetza;
+    QString m_betzaError;
+    QVariantList m_pgnImportResults;
+    QString m_exportPath;
 };
