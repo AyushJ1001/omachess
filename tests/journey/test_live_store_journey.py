@@ -24,8 +24,12 @@ def board_is_drawn(screen: Screen) -> bool:
     return len(places) == 64
 
 
-def restore_is_offered(screen: Screen) -> bool:
-    return "restoreButton" in screen.labels
+def library_ids(screen: Screen) -> list[str]:
+    return sorted(
+        name.removeprefix("libraryTitle:")
+        for name in screen.labels
+        if name.startswith("libraryTitle:")
+    )
 
 
 class LiveStoreJourney(unittest.TestCase):
@@ -40,22 +44,20 @@ class LiveStoreJourney(unittest.TestCase):
         screen = self.workspace.screen_when(lambda s: len(s.moves()) == 3)
         self.assertEqual(screen.moves(), ["1. e4", "1... e5", "2. Nf3"])
         self.assertEqual(screen.pieces().get("f3"), "white_knight")
+        ids = library_ids(screen)
+        self.assertEqual(len(ids), 1)
 
         self.workspace.restart()
-        self.workspace.screen_when(board_is_drawn)
-        screen = self.workspace.screen_when(restore_is_offered)
-        self.assertEqual(screen.labels.get("restoreLabel"), "Restore previous game")
-        # Restart shows a fresh board until the player restores deliberately.
-        self.assertEqual(screen.moves(), [])
-        self.assertEqual(len(screen.pieces()), 32)
-
-        self.workspace.click("restoreButton")
-        screen = self.workspace.screen_when(lambda s: len(s.moves()) == 3)
+        # Open tabs restore the active board on restart; the Game Record also
+        # remains listed in the Personal Library.
+        screen = self.workspace.screen_when(
+            lambda s: board_is_drawn(s) and len(s.moves()) == 3 and len(library_ids(s)) == 1
+        )
         self.assertEqual(screen.moves(), ["1. e4", "1... e5", "2. Nf3"])
         self.assertEqual(screen.pieces().get("f3"), "white_knight")
         self.assertEqual(screen.pieces().get("e4"), "white_pawn")
         self.assertEqual(screen.pieces().get("e5"), "black_pawn")
-        self.assertNotIn("restoreButton", screen.labels)
+        self.assertEqual(library_ids(screen), ids)
 
 
 if __name__ == "__main__":

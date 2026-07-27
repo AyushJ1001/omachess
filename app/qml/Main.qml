@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Omachess
 
-// The Omachess workspace window.
+// The Omachess hybrid cockpit: Personal Library rail · board · right rail,
+// with tabs for the records currently open.
 //
 // Everything on screen comes from WorkspaceSession, which is filled by core
 // events. This file decides how a game looks, never what it contains.
@@ -12,10 +13,10 @@ ApplicationWindow {
 
     // An ordinary resizable window: no fixed size, no compositor hints, so
     // dwindle and scrolling layouts can tile it like any other application.
-    width: 1024
+    width: 1100
     height: 720
-    minimumWidth: 480
-    minimumHeight: 360
+    minimumWidth: 640
+    minimumHeight: 480
     visible: true
     title: qsTr("Omachess")
     color: Theme.background
@@ -68,6 +69,12 @@ ApplicationWindow {
                         + (WorkspaceSession.inCheck ? qsTr(" — in check") : "")
                 font.bold: WorkspaceSession.gameOver
                 elide: Text.ElideRight
+            }
+
+            Button {
+                objectName: "newGameButton"
+                text: qsTr("New game")
+                onClicked: WorkspaceSession.newGame()
             }
 
             // Board Theme: follow the Quattro Palette, or pin an Omachess-owned set.
@@ -167,146 +174,355 @@ ApplicationWindow {
 
         RowLayout {
             anchors.fill: parent
-            anchors.margins: 16
-            spacing: 16
+            spacing: 0
 
-            // The board takes the space the move list leaves, and stays
-            // square inside it.
-            ColumnLayout {
-                Layout.fillWidth: true
+            // ── Personal Library rail ────────────────────────────────────
+            Rectangle {
+                id: libraryRail
+                objectName: "libraryRail"
+                Layout.preferredWidth: 220
+                Layout.maximumWidth: 260
                 Layout.fillHeight: true
-                spacing: 12
+                color: Theme.panel
 
-                // Offered after restart when a prior Game Record can be restored.
-                // Clocks and engines are not resumed automatically.
-                Frame {
-                    objectName: "restoreCard"
-                    visible: WorkspaceSession.restoreAvailable
-                    Layout.fillWidth: true
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
 
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: 12
+                    Label {
+                        objectName: "libraryHeading"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12
+                        Layout.rightMargin: 12
+                        Layout.topMargin: 10
+                        Layout.bottomMargin: 8
+                        text: qsTr("Personal Library")
+                        font.bold: true
+                        font.pixelSize: 11
+                        font.capitalization: Font.AllUppercase
+                        color: Theme.muted
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.muted
+                        opacity: 0.4
+                    }
+
+                    ListView {
+                        id: libraryList
+                        objectName: "libraryList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: WorkspaceSession.libraryRecords
+
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            required property int index
+
+                            id: libraryItem
+                            objectName: "library:" + modelData.id
+                            width: libraryList.width
+                            highlighted: modelData.id === WorkspaceSession.activeRecordId
+
+                            contentItem: ColumnLayout {
+                                spacing: 2
+
+                                Label {
+                                    objectName: "libraryTitle:" + modelData.id
+                                    Layout.fillWidth: true
+                                    text: modelData.title
+                                    color: Theme.foreground
+                                    elide: Text.ElideRight
+                                    font.bold: true
+                                }
+
+                                Label {
+                                    objectName: "libraryMeta:" + modelData.id
+                                    Layout.fillWidth: true
+                                    text: {
+                                        const kind = modelData.kind === "analysis"
+                                                   ? qsTr("Analysis") : qsTr("Played")
+                                        const score = modelData.resultScore
+                                        return score && score.length > 0
+                                               ? kind + " · " + score
+                                               : kind
+                                    }
+                                    color: Theme.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+
+                            background: Rectangle {
+                                color: libraryItem.highlighted ? Theme.selection
+                                       : (libraryItem.hovered ? Theme.selection : "transparent")
+                                opacity: libraryItem.highlighted || libraryItem.hovered ? 1 : 0
+                            }
+
+                            onClicked: WorkspaceSession.openRecord(modelData.id)
+                        }
 
                         Label {
-                            objectName: "restoreLabel"
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: WorkspaceSession.restoreLabel
-                        }
-
-                        Button {
-                            objectName: "restoreButton"
-                            text: qsTr("Restore")
-                            onClicked: WorkspaceSession.restoreRecord()
-                        }
-
-                        Button {
-                            objectName: "dismissRestoreButton"
-                            text: qsTr("Dismiss")
-                            onClicked: WorkspaceSession.dismissRestore()
-                        }
-                    }
-                }
-
-                Item {
-                    id: boardArea
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-
-                    Board {
-                        id: board
-                        anchors.centerIn: parent
-                        side: Math.max(0, Math.min(boardArea.width, boardArea.height))
-
-                        onPromotionRequested: function (from, to, roles) {
-                            promotion.ask(from, to, roles)
+                            anchors.centerIn: parent
+                            visible: libraryList.count === 0
+                            text: qsTr("No records yet")
+                            color: Theme.muted
                         }
                     }
                 }
             }
 
-            // The Game Record as a player reads it: the moves in SAN, and where
-            // in them the board currently is.
-            ColumnLayout {
-                id: record
-                Layout.preferredWidth: 220
-                Layout.maximumWidth: 260
+            Rectangle {
+                Layout.preferredWidth: 1
                 Layout.fillHeight: true
-                spacing: 8
+                color: Theme.muted
+                opacity: 0.4
+            }
 
-                Label {
-                    text: qsTr("Moves")
-                    font.bold: true
-                    color: Theme.foreground
+            // ── Centre: tabs + full-size board ───────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 0
+
+                // Open-record tabs.
+                Rectangle {
+                    objectName: "tabBar"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: WorkspaceSession.openTabs.length > 0 ? 36 : 0
+                    visible: WorkspaceSession.openTabs.length > 0
+                    color: Theme.panel
+                    clip: true
+
+                    Row {
+                        id: tabRow
+                        anchors.fill: parent
+                        anchors.leftMargin: 4
+                        spacing: 2
+
+                        Repeater {
+                            model: WorkspaceSession.openTabs
+
+                            Rectangle {
+                                required property var modelData
+                                required property int index
+
+                                id: tabChip
+                                objectName: "tab:" + modelData.id
+                                height: parent.height - 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: tabLabel.implicitWidth + closeTabButton.width + 20
+                                radius: 4
+                                color: modelData.id === WorkspaceSession.activeRecordId
+                                       ? Theme.background : "transparent"
+                                border.color: modelData.id === WorkspaceSession.activeRecordId
+                                              ? Theme.muted : "transparent"
+                                border.width: 1
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 8
+                                    anchors.rightMargin: 4
+                                    spacing: 4
+
+                                    Label {
+                                        id: tabLabel
+                                        objectName: "tabTitle:" + modelData.id
+                                        Layout.fillWidth: true
+                                        text: modelData.title
+                                        color: Theme.foreground
+                                        elide: Text.ElideRight
+                                        font.bold: modelData.id === WorkspaceSession.activeRecordId
+                                    }
+
+                                    Button {
+                                        id: closeTabButton
+                                        objectName: "closeTab:" + modelData.id
+                                        Layout.preferredWidth: 22
+                                        Layout.preferredHeight: 22
+                                        flat: true
+                                        text: "×"
+                                        onClicked: WorkspaceSession.closeTab(modelData.id)
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    z: -1
+                                    onClicked: WorkspaceSession.openRecord(modelData.id)
+                                }
+                            }
+                        }
+                    }
                 }
 
-                ListView {
-                    id: moves
-                    objectName: "moveList"
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    visible: WorkspaceSession.openTabs.length > 0
+                    color: Theme.muted
+                    opacity: 0.4
+                }
+
+                Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
-                    model: WorkspaceSession.moveList
-                    // Follow play, and follow the player while they navigate.
-                    currentIndex: WorkspaceSession.cursor - 1
-                    onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
 
-                    delegate: ItemDelegate {
-                        required property int index
-                        required property var modelData
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
 
-                        objectName: "move:" + (index + 1)
-                        width: moves.width
-                        // The position after this move is the one on screen.
-                        highlighted: index + 1 === WorkspaceSession.cursor
-                        text: (modelData.side === "white"
-                               ? modelData.number + ". "
-                               : modelData.number + "... ") + modelData.san
+                        // Offered after restart when a prior Game Record can be
+                        // restored and open tabs did not already restore it.
+                        Frame {
+                            objectName: "restoreCard"
+                            visible: WorkspaceSession.restoreAvailable
+                            Layout.fillWidth: true
+
+                            RowLayout {
+                                anchors.fill: parent
+                                spacing: 12
+
+                                Label {
+                                    objectName: "restoreLabel"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: WorkspaceSession.restoreLabel
+                                }
+
+                                Button {
+                                    objectName: "restoreButton"
+                                    text: qsTr("Restore")
+                                    onClicked: WorkspaceSession.restoreRecord()
+                                }
+
+                                Button {
+                                    objectName: "dismissRestoreButton"
+                                    text: qsTr("Dismiss")
+                                    onClicked: WorkspaceSession.dismissRestore()
+                                }
+                            }
+                        }
+
+                        Item {
+                            id: boardArea
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+
+                            Board {
+                                id: board
+                                anchors.centerIn: parent
+                                side: Math.max(0, Math.min(boardArea.width, boardArea.height))
+
+                                onPromotionRequested: function (from, to, roles) {
+                                    promotion.ask(from, to, roles)
+                                }
+                            }
+                        }
                     }
                 }
+            }
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 4
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.fillHeight: true
+                color: Theme.muted
+                opacity: 0.4
+            }
 
-                    Button {
-                        objectName: "startButton"
-                        Layout.fillWidth: true
-                        text: qsTr("⏮")
-                        enabled: WorkspaceSession.cursor > 0
-                        onClicked: WorkspaceSession.navigate("start")
-                    }
-                    Button {
-                        objectName: "backwardButton"
-                        Layout.fillWidth: true
-                        text: qsTr("◀")
-                        enabled: WorkspaceSession.cursor > 0
-                        onClicked: WorkspaceSession.navigate("backward")
-                    }
-                    Button {
-                        objectName: "forwardButton"
-                        Layout.fillWidth: true
-                        text: qsTr("▶")
-                        enabled: WorkspaceSession.reviewing
-                        onClicked: WorkspaceSession.navigate("forward")
-                    }
-                    Button {
-                        objectName: "endButton"
-                        Layout.fillWidth: true
-                        text: qsTr("⏭")
-                        enabled: WorkspaceSession.reviewing
-                        onClicked: WorkspaceSession.navigate("end")
-                    }
-                }
+            // ── Right rail (moves now; Live Position Analysis later) ─────
+            Rectangle {
+                id: rightRail
+                objectName: "rightRail"
+                Layout.preferredWidth: 240
+                Layout.maximumWidth: 280
+                Layout.fillHeight: true
+                color: Theme.panel
 
-                Label {
-                    objectName: "reviewLabel"
-                    Layout.fillWidth: true
-                    visible: WorkspaceSession.reviewing
-                    wrapMode: Text.WordWrap
-                    color: Theme.foreground
-                    text: qsTr("Reviewing an earlier position — play continues at the last move.")
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 8
+
+                    Label {
+                        objectName: "rightRailHeading"
+                        text: qsTr("Moves")
+                        font.bold: true
+                        font.pixelSize: 11
+                        font.capitalization: Font.AllUppercase
+                        color: Theme.muted
+                    }
+
+                    ListView {
+                        id: moves
+                        objectName: "moveList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: WorkspaceSession.moveList
+                        // Follow play, and follow the player while they navigate.
+                        currentIndex: WorkspaceSession.cursor - 1
+                        onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
+
+                        delegate: ItemDelegate {
+                            required property int index
+                            required property var modelData
+
+                            objectName: "move:" + (index + 1)
+                            width: moves.width
+                            // The position after this move is the one on screen.
+                            highlighted: index + 1 === WorkspaceSession.cursor
+                            text: (modelData.side === "white"
+                                   ? modelData.number + ". "
+                                   : modelData.number + "... ") + modelData.san
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Button {
+                            objectName: "startButton"
+                            Layout.fillWidth: true
+                            text: qsTr("⏮")
+                            enabled: WorkspaceSession.cursor > 0
+                            onClicked: WorkspaceSession.navigate("start")
+                        }
+                        Button {
+                            objectName: "backwardButton"
+                            Layout.fillWidth: true
+                            text: qsTr("◀")
+                            enabled: WorkspaceSession.cursor > 0
+                            onClicked: WorkspaceSession.navigate("backward")
+                        }
+                        Button {
+                            objectName: "forwardButton"
+                            Layout.fillWidth: true
+                            text: qsTr("▶")
+                            enabled: WorkspaceSession.reviewing
+                            onClicked: WorkspaceSession.navigate("forward")
+                        }
+                        Button {
+                            objectName: "endButton"
+                            Layout.fillWidth: true
+                            text: qsTr("⏭")
+                            enabled: WorkspaceSession.reviewing
+                            onClicked: WorkspaceSession.navigate("end")
+                        }
+                    }
+
+                    Label {
+                        objectName: "reviewLabel"
+                        Layout.fillWidth: true
+                        visible: WorkspaceSession.reviewing
+                        wrapMode: Text.WordWrap
+                        color: Theme.foreground
+                        text: qsTr("Reviewing an earlier position — play continues at the last move.")
+                    }
                 }
             }
         }

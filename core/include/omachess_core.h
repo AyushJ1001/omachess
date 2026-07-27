@@ -15,13 +15,26 @@
  *                              move which position of the game is displayed
  *   {"type":"restore_record"}  reload the Game Record offered after restart
  *   {"type":"dismiss_restore"} decline the restore offer
+ *   {"type":"new_game"}        clear the board; the next move starts a new
+ *                              Game Record (prior records stay in the library)
+ *   {"type":"open_record","id":"..."}
+ *                              open a library Game Record in a tab and make it
+ *                              active (board and right-rail content follow)
+ *   {"type":"close_tab","id":"..."}
+ *                              close a tab without removing the Game Record
+ *                              from the Personal Library
  *
  * Events:
  *   {"type":"board_changed",...}
+ *   {"type":"library_changed","records":[{id,kind,title,plyCount,resultScore}]}
+ *                              Personal Library listing from the Live Store
+ *   {"type":"tabs_changed","openTabs":[{id,title}],"activeId":"..."}
+ *                              open record tabs and the active tab id
  *   {"type":"restore_available","recordId":"...","plyCount":N,
  *    "label":"Restore previous game"}
  *                              offered after describe_board when workspace
- *                              residue points at a prior Game Record
+ *                              residue points at a prior Game Record that is
+ *                              not already restored via open tabs
  *   {"type":"restore_cleared"} the restore offer is gone
  *
  *   The 64 squares are in reading order for the current orientation: the

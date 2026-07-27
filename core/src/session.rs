@@ -16,7 +16,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
-    GameRecord, GameRecordKind, GameRecordPayload, LiveStore, MoveEntry, OpenError, RecordResult,
+    GameRecord, GameRecordKind, GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry,
+    OpenError, RecordResult,
 };
 
 use crate::board::Orientation;
@@ -31,6 +32,8 @@ pub struct Session {
     store: Option<LiveStore>,
     /// The Game Record currently being played, when the session has a store.
     record_id: Option<String>,
+    /// Open workspace tabs, in open order — each names a Game Record id.
+    open_tabs: Vec<String>,
     /// A prior Game Record the player may restore, when residue points at one.
     restore_offer: Option<RestoreOffer>,
 }
@@ -66,6 +69,7 @@ impl Session {
             events: Vec::new(),
             store: None,
             record_id: None,
+            open_tabs: Vec::new(),
             restore_offer: None,
         }
     }
@@ -81,27 +85,50 @@ impl Session {
     }
 
     fn open_store(store: LiveStore) -> Result<Self, SessionOpenError> {
+        let open_tabs = match store.workspace().residue("open_tab_ids") {
+            Ok(Some(encoded)) => decode_tab_ids(&encoded),
+            _ => Vec::new(),
+        };
+        let active_id = store
+            .workspace()
+            .residue("active_record_id")
+            .ok()
+            .flatten()
+            .filter(|id| open_tabs.iter().any(|tab| tab == id));
         let restore_offer = match store.workspace().residue("active_record_id") {
             Ok(Some(record_id)) => match store.workspace().get_game_record(&record_id) {
                 Ok(Some(record)) if record.ply_count > 0 || record.payload.result.is_some() => {
-                    Some(RestoreOffer {
-                        record_id,
-                        ply_count: record.ply_count,
-                    })
+                    // When open tabs already remember this record, the tab
+                    // chrome is the restore surface — no separate restore card.
+                    if active_id.as_ref() == Some(&record_id) {
+                        None
+                    } else {
+                        Some(RestoreOffer {
+                            record_id,
+                            ply_count: record.ply_count,
+                        })
+                    }
                 }
                 _ => None,
             },
             _ => None,
         };
 
-        Ok(Session {
+        let mut session = Session {
             game: Game::standard(),
             orientation: Orientation::WhiteBottom,
             events: Vec::new(),
             store: Some(store),
             record_id: None,
+            open_tabs,
             restore_offer,
-        })
+        };
+        // Remembered open tabs restore their active board on open. Clocks and
+        // engines stay idle — that remains a later ticket's job.
+        if let Some(id) = active_id {
+            let _ = session.load_record(&id);
+        }
+        Ok(session)
     }
 
     /// Applies one command given as JSON, queueing the events it produces.
@@ -118,11 +145,18 @@ impl Session {
             "navigate" => self.navigate(command)?,
             "restore_record" => self.restore_record()?,
             "dismiss_restore" => self.dismiss_restore()?,
+            "new_game" => self.new_game()?,
+            "open_record" => self.open_record(command)?,
+            "close_tab" => self.close_tab(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         let event = self.board_changed_event();
         self.events.push(event);
         if kind == "describe_board" {
+            if self.store.is_some() {
+                self.emit_library_changed();
+                self.emit_tabs_changed();
+            }
             if let Some(offer) = &self.restore_offer {
                 self.events.push(restore_available_event(offer));
             }
@@ -174,12 +208,91 @@ impl Session {
         let Some(offer) = self.restore_offer.clone() else {
             return Err(CommandError::MalformedCommand);
         };
+        self.load_record(&offer.record_id)?;
+        self.ensure_tab_open(&offer.record_id);
+        self.restore_offer = None;
+        self.persist_residue()?;
+        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn dismiss_restore(&mut self) -> Result<(), CommandError> {
+        self.restore_offer = None;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .workspace()
+                .clear_residue("active_record_id")
+                .map_err(|_| CommandError::Store)?;
+        }
+        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        Ok(())
+    }
+
+    fn new_game(&mut self) -> Result<(), CommandError> {
+        // The previous Game Record stays in the Live Store; this only clears
+        // the board so the next move starts a new record.
+        self.game = Game::standard();
+        self.record_id = None;
+        self.orientation = Orientation::WhiteBottom;
+        self.restore_offer = None;
+        if let Some(store) = self.store.as_ref() {
+            let _ = store.workspace().clear_residue("active_record_id");
+        }
+        // Clear the active tab highlight so board/rail and tab chrome agree.
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn open_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(id) = json::read_string_field(command, "id") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        self.load_record(&id)?;
+        self.ensure_tab_open(&id);
+        self.restore_offer = None;
+        self.persist_residue()?;
+        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn close_tab(&mut self, command: &str) -> Result<(), CommandError> {
+        let Some(id) = json::read_string_field(command, "id") else {
+            return Err(CommandError::MalformedCommand);
+        };
+        let Some(index) = self.open_tabs.iter().position(|tab| tab == &id) else {
+            return Ok(());
+        };
+        self.open_tabs.remove(index);
+        let was_active = self.record_id.as_deref() == Some(id.as_str());
+        if was_active {
+            if let Some(next) = self.open_tabs.get(index).cloned().or_else(|| {
+                index
+                    .checked_sub(1)
+                    .and_then(|i| self.open_tabs.get(i).cloned())
+            }) {
+                self.load_record(&next)?;
+            } else {
+                self.game = Game::standard();
+                self.record_id = None;
+                if let Some(store) = self.store.as_ref() {
+                    let _ = store.workspace().clear_residue("active_record_id");
+                }
+            }
+        }
+        self.persist_residue()?;
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn load_record(&mut self, id: &str) -> Result<(), CommandError> {
         let Some(store) = self.store.as_ref() else {
             return Err(CommandError::Store);
         };
         let record = store
             .workspace()
-            .get_game_record(&offer.record_id)
+            .get_game_record(id)
             .map_err(|_| CommandError::Store)?
             .ok_or(CommandError::Store)?;
         let moves = record
@@ -198,22 +311,13 @@ impl Session {
             .collect();
         self.game = Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
         self.record_id = Some(record.id);
-        self.restore_offer = None;
-        self.persist_residue()?;
-        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
         Ok(())
     }
 
-    fn dismiss_restore(&mut self) -> Result<(), CommandError> {
-        self.restore_offer = None;
-        if let Some(store) = self.store.as_ref() {
-            store
-                .workspace()
-                .clear_residue("active_record_id")
-                .map_err(|_| CommandError::Store)?;
+    fn ensure_tab_open(&mut self, id: &str) {
+        if !self.open_tabs.iter().any(|tab| tab == id) {
+            self.open_tabs.push(id.to_owned());
         }
-        self.events.push(String::from("{\"type\":\"restore_cleared\"}"));
-        Ok(())
     }
 
     fn persist_current_record(&mut self) -> Result<(), CommandError> {
@@ -276,11 +380,48 @@ impl Session {
             .workspace()
             .upsert_game_record(&record)
             .map_err(|_| CommandError::Store)?;
-        self.record_id = Some(id);
+        self.record_id = Some(id.clone());
+        self.ensure_tab_open(&id);
         self.persist_residue()?;
         // Playing a new game dismisses any prior restore offer.
         self.restore_offer = None;
+        self.emit_library_changed();
+        self.emit_tabs_changed();
         Ok(())
+    }
+
+    fn emit_library_changed(&mut self) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Ok(summaries) = store.workspace().list_game_records() else {
+            return;
+        };
+        // Archived records stay out of the default Personal Library view.
+        let visible: Vec<_> = summaries.into_iter().filter(|s| !s.archived).collect();
+        self.events.push(library_changed_event(&visible));
+    }
+
+    fn emit_tabs_changed(&mut self) {
+        let titles = self.tab_titles();
+        self.events
+            .push(tabs_changed_event(&self.open_tabs, self.record_id.as_deref(), &titles));
+    }
+
+    fn tab_titles(&self) -> Vec<String> {
+        let Some(store) = self.store.as_ref() else {
+            return self.open_tabs.iter().map(|_| "Game Record".into()).collect();
+        };
+        self.open_tabs
+            .iter()
+            .map(|id| match store.workspace().get_game_record(id) {
+                Ok(Some(record)) => record
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| default_title_for(record.kind, record.ply_count)),
+                _ => "Game Record".into(),
+            })
+            .collect()
     }
 
     fn persist_residue(&self) -> Result<(), CommandError> {
@@ -293,6 +434,10 @@ impl Session {
                 .set_residue("active_record_id", id)
                 .map_err(|_| CommandError::Store)?;
         }
+        store
+            .workspace()
+            .set_residue("open_tab_ids", &encode_tab_ids(&self.open_tabs))
+            .map_err(|_| CommandError::Store)?;
         Ok(())
     }
 
@@ -412,6 +557,90 @@ fn restore_available_event(offer: &RestoreOffer) -> String {
     out
 }
 
+fn library_changed_event(records: &[GameRecordSummary]) -> String {
+    let mut out = String::from("{\"type\":\"library_changed\",\"records\":[");
+    for (index, record) in records.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"id\":");
+        json::write_string(&mut out, &record.id);
+        out.push_str(",\"kind\":");
+        json::write_string(&mut out, record.kind.as_str());
+        out.push_str(",\"title\":");
+        match &record.title {
+            Some(title) => json::write_string(&mut out, title),
+            None => json::write_string(&mut out, &default_record_title(record)),
+        }
+        out.push_str(",\"plyCount\":");
+        out.push_str(&record.ply_count.to_string());
+        out.push_str(",\"resultScore\":");
+        match &record.result_score {
+            Some(score) => json::write_string(&mut out, score),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn tabs_changed_event(open_tabs: &[String], active_id: Option<&str>, titles: &[String]) -> String {
+    let mut out = String::from("{\"type\":\"tabs_changed\",\"openTabs\":[");
+    for (index, id) in open_tabs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"id\":");
+        json::write_string(&mut out, id);
+        out.push_str(",\"title\":");
+        let title = titles.get(index).map(String::as_str).unwrap_or("Game Record");
+        json::write_string(&mut out, title);
+        out.push('}');
+    }
+    out.push_str("],\"activeId\":");
+    match active_id {
+        Some(id) => json::write_string(&mut out, id),
+        None => out.push_str("null"),
+    }
+    out.push('}');
+    out
+}
+
+fn encode_tab_ids(ids: &[String]) -> String {
+    ids.join(",")
+}
+
+fn decode_tab_ids(encoded: &str) -> Vec<String> {
+    if encoded.is_empty() {
+        return Vec::new();
+    }
+    encoded
+        .split(',')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn default_record_title(record: &GameRecordSummary) -> String {
+    default_title_for(record.kind, record.ply_count)
+}
+
+fn default_title_for(kind: GameRecordKind, ply_count: u32) -> String {
+    match kind {
+        GameRecordKind::Played => {
+            if ply_count == 0 {
+                "Played Game".into()
+            } else if ply_count == 1 {
+                "Played Game · 1 move".into()
+            } else {
+                format!("Played Game · {ply_count} moves")
+            }
+        }
+        GameRecordKind::Analysis => "Analysis Record".into(),
+    }
+}
+
 fn new_record_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -457,11 +686,13 @@ mod tests {
     /// The board as the core last described it, with nothing changed.
     fn describe(session: &mut Session) -> String {
         session.submit(r#"{"type":"describe_board"}"#).unwrap();
-        let mut latest = None;
+        let mut board = None;
         while let Some(event) = session.poll_event() {
-            latest = Some(event);
+            if event.contains(r#""type":"board_changed""#) {
+                board = Some(event);
+            }
         }
-        latest.expect("describing the board always answers")
+        board.expect("describing the board always answers")
     }
 
     fn play(session: &mut Session, from: &str, to: &str) {
@@ -483,6 +714,7 @@ mod tests {
         assert!(event.contains(r#""moveList":[]"#));
         assert!(event.contains(r#""lastMove":null"#));
         assert!(event.contains(r#""status":"playing""#));
+        // An ephemeral session has no Live Store, so no library or tab events.
         assert!(session.poll_event().is_none());
     }
 
@@ -654,27 +886,298 @@ mod tests {
 
         let mut session = Session::open(&path).unwrap();
         session.submit(r#"{"type":"describe_board"}"#).unwrap();
-        let mut events = Vec::new();
-        while let Some(event) = session.poll_event() {
-            events.push(event);
-        }
-        assert!(
-            events.iter().any(|event| event.contains(r#""type":"restore_available""#)),
-            "restart must offer to restore the previous Game Record: {events:?}"
-        );
-
-        session.submit(r#"{"type":"restore_record"}"#).unwrap();
-        let mut restored = None;
+        let mut board = None;
+        let mut tabs = None;
         while let Some(event) = session.poll_event() {
             if event.contains(r#""type":"board_changed""#) {
-                restored = Some(event);
+                board = Some(event);
+            } else if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
             }
         }
-        let event = restored.expect("restore answers with the board");
+        // Open tabs restore the active board on restart; the Game Record stays
+        // in the tab chrome rather than behind a separate restore card.
+        let tabs = tabs.expect("the open tab is restored after restart");
+        assert!(tabs.contains(r#""activeId":"gr_"#));
+        let event = board.expect("the active tab's board is restored");
         assert!(event.contains(r#""san":"e4"#));
         assert!(event.contains(r#""san":"e5"#));
         assert!(event.contains(r#""san":"Nf3"#));
         assert!(event.contains(r#""cursor":3"#));
         assert!(event.contains(r#""piece":"white_knight""#) && event.contains(r#""name":"f3""#));
+    }
+
+    #[test]
+    fn describing_the_board_lists_persisted_library_records() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+
+        {
+            let mut session = Session::open(&path).unwrap();
+            play(&mut session, "e2", "e4");
+            play(&mut session, "e7", "e5");
+            drop(session);
+        }
+
+        let mut session = Session::open(&path).unwrap();
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed""#) {
+                library = Some(event);
+            }
+        }
+        let event = library.expect("describe_board lists the Personal Library");
+        assert!(event.contains(r#""kind":"played""#));
+        assert!(event.contains(r#""plyCount":2"#));
+        assert!(event.contains(r#""id":"gr_"#));
+    }
+
+    #[test]
+    fn opening_a_library_record_opens_it_in_a_tab_and_loads_its_board() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+
+        let (first_id, second_id) = {
+            let mut session = Session::open(&path).unwrap();
+            play(&mut session, "e2", "e4");
+            play(&mut session, "e7", "e5");
+            session.submit(r#"{"type":"describe_board"}"#).unwrap();
+            let mut first_library = String::new();
+            while let Some(event) = session.poll_event() {
+                if event.contains(r#""type":"library_changed""#) {
+                    first_library = event;
+                }
+            }
+            let first_id = library_ids(&first_library)
+                .into_iter()
+                .next()
+                .expect("the first Game Record is listed");
+
+            // Start a second Game Record so the library has more than one entry.
+            session.submit(r#"{"type":"new_game"}"#).unwrap();
+            while session.poll_event().is_some() {}
+            play(&mut session, "d2", "d4");
+            session.submit(r#"{"type":"describe_board"}"#).unwrap();
+            let mut second_library = String::new();
+            while let Some(event) = session.poll_event() {
+                if event.contains(r#""type":"library_changed""#) {
+                    second_library = event;
+                }
+            }
+            let ids = library_ids(&second_library);
+            assert_eq!(ids.len(), 2, "library should hold both Game Records: {second_library}");
+            let second_id = ids
+                .into_iter()
+                .find(|id| id != &first_id)
+                .expect("the second Game Record is listed");
+            drop(session);
+            (first_id, second_id)
+        };
+
+        let mut session = Session::open(&path).unwrap();
+        let command = format!(r#"{{"type":"open_record","id":"{first_id}"}}"#);
+        session.submit(&command).unwrap();
+        let mut board = None;
+        let mut tabs = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"board_changed""#) {
+                board = Some(event);
+            } else if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
+            }
+        }
+        let tabs = tabs.expect("opening a record emits tabs_changed");
+        assert!(tabs.contains(&format!(r#""id":"{first_id}""#)));
+        assert!(tabs.contains(&format!(r#""activeId":"{first_id}""#)));
+        let board = board.expect("opening a record loads its board");
+        assert!(board.contains(r#""san":"e4"#));
+        assert!(board.contains(r#""san":"e5"#));
+        assert!(!board.contains(r#""san":"d4"#));
+        // The second record remains available to open; this assertion keeps the
+        // ids live so the fixture is clearly two distinct Game Records.
+        assert_ne!(first_id, second_id);
+    }
+
+    #[test]
+    fn switching_tabs_changes_the_board_and_closing_leaves_the_library_intact() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+
+        let (first_id, second_id) = two_played_games(&path);
+
+        let mut session = Session::open(&path).unwrap();
+        session
+            .submit(&format!(r#"{{"type":"open_record","id":"{first_id}"}}"#))
+            .unwrap();
+        while session.poll_event().is_some() {}
+        session
+            .submit(&format!(r#"{{"type":"open_record","id":"{second_id}"}}"#))
+            .unwrap();
+        while session.poll_event().is_some() {}
+
+        // Switch back to the first tab — board and active tab move together.
+        session
+            .submit(&format!(r#"{{"type":"open_record","id":"{first_id}"}}"#))
+            .unwrap();
+        let mut board = None;
+        let mut tabs = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"board_changed""#) {
+                board = Some(event);
+            } else if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
+            }
+        }
+        let tabs = tabs.expect("switching tabs emits tabs_changed");
+        assert!(tabs.contains(&format!(r#""activeId":"{first_id}""#)));
+        assert!(tabs.contains(&format!(r#""id":"{second_id}""#)));
+        let board = board.expect("switching tabs loads that record's board");
+        assert!(board.contains(r#""san":"e4"#));
+        assert!(board.contains(r#""san":"e5"#));
+        assert!(!board.contains(r#""san":"d4"#));
+
+        // Close the first tab; the record stays in the Personal Library.
+        session
+            .submit(&format!(r#"{{"type":"close_tab","id":"{first_id}"}}"#))
+            .unwrap();
+        let mut tabs = None;
+        let mut library = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
+            } else if event.contains(r#""type":"library_changed""#) {
+                library = Some(event);
+            }
+        }
+        let tabs = tabs.expect("closing a tab emits tabs_changed");
+        assert!(!tabs.contains(&format!(r#""id":"{first_id}""#)));
+        assert!(tabs.contains(&format!(r#""id":"{second_id}""#)));
+        assert!(tabs.contains(&format!(r#""activeId":"{second_id}""#)));
+
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed""#) {
+                library = Some(event);
+            }
+        }
+        let library = library.expect("the Personal Library is still listed");
+        let ids = library_ids(&library);
+        assert!(ids.contains(&first_id), "closed tab's record stays in the library: {library}");
+        assert!(ids.contains(&second_id), "open tab's record stays in the library: {library}");
+    }
+
+    #[test]
+    fn open_tabs_survive_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let (first_id, second_id) = two_played_games(&path);
+
+        {
+            let mut session = Session::open(&path).unwrap();
+            session
+                .submit(&format!(r#"{{"type":"open_record","id":"{first_id}"}}"#))
+                .unwrap();
+            while session.poll_event().is_some() {}
+            session
+                .submit(&format!(r#"{{"type":"open_record","id":"{second_id}"}}"#))
+                .unwrap();
+            while session.poll_event().is_some() {}
+            session
+                .submit(&format!(r#"{{"type":"close_tab","id":"{first_id}"}}"#))
+                .unwrap();
+            while session.poll_event().is_some() {}
+            drop(session);
+        }
+
+        let mut session = Session::open(&path).unwrap();
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut tabs = None;
+        let mut library = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
+            } else if event.contains(r#""type":"library_changed""#) {
+                library = Some(event);
+            }
+        }
+        let library = library.expect("library lists both Game Records after restart");
+        let ids = library_ids(&library);
+        assert!(ids.contains(&first_id));
+        assert!(ids.contains(&second_id));
+        let tabs = tabs.expect("open tabs are restored after restart");
+        assert!(!tabs.contains(&format!(r#""id":"{first_id}""#)));
+        assert!(tabs.contains(&format!(r#""id":"{second_id}""#)));
+        assert!(tabs.contains(&format!(r#""activeId":"{second_id}""#)));
+    }
+
+    #[test]
+    fn starting_a_new_game_clears_the_active_tab_without_closing_open_tabs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let (first_id, _) = two_played_games(&path);
+
+        let mut session = Session::open(&path).unwrap();
+        session
+            .submit(&format!(r#"{{"type":"open_record","id":"{first_id}"}}"#))
+            .unwrap();
+        while session.poll_event().is_some() {}
+        session.submit(r#"{"type":"new_game"}"#).unwrap();
+        let mut tabs = None;
+        let mut board = None;
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"tabs_changed""#) {
+                tabs = Some(event);
+            } else if event.contains(r#""type":"board_changed""#) {
+                board = Some(event);
+            }
+        }
+        let tabs = tabs.expect("new_game clears the active tab highlight");
+        assert!(tabs.contains(&format!(r#""id":"{first_id}""#)));
+        assert!(tabs.contains(r#""activeId":null"#));
+        let board = board.expect("new_game clears the board");
+        assert!(board.contains(r#""moveList":[]"#));
+    }
+
+    fn two_played_games(path: &std::path::Path) -> (String, String) {
+        let mut session = Session::open(path).unwrap();
+        play(&mut session, "e2", "e4");
+        play(&mut session, "e7", "e5");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed""#) {
+                library = event;
+            }
+        }
+        let first_id = library_ids(&library)
+            .into_iter()
+            .next()
+            .expect("the first Game Record is listed");
+
+        session.submit(r#"{"type":"new_game"}"#).unwrap();
+        while session.poll_event().is_some() {}
+        play(&mut session, "d2", "d4");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed""#) {
+                library = event;
+            }
+        }
+        let second_id = library_ids(&library)
+            .into_iter()
+            .find(|id| id != &first_id)
+            .expect("the second Game Record is listed");
+        drop(session);
+        (first_id, second_id)
+    }
+
+    fn library_ids(library_event: &str) -> Vec<String> {
+        library_event
+            .split(r#""id":""#)
+            .skip(1)
+            .filter_map(|chunk| chunk.split('"').next().map(str::to_owned))
+            .collect()
     }
 }

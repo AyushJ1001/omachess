@@ -184,8 +184,18 @@ mod tests {
             let command = CString::new(r#"{"type":"describe_board"}"#).unwrap();
             assert_eq!(omachess_session_submit(session, command.as_ptr()), OMACHESS_OK);
             let events = drain(session);
-            assert_eq!(events.len(), 1);
-            assert!(events[0].contains(r#""orientation":"white""#));
+            assert!(
+                events.iter().any(|event| event.contains(r#""orientation":"white""#)),
+                "describe_board must answer with the board: {events:?}"
+            );
+            assert!(
+                events.iter().any(|event| event.contains(r#""type":"library_changed""#)),
+                "describe_board must list the Personal Library: {events:?}"
+            );
+            assert!(
+                events.iter().any(|event| event.contains(r#""type":"tabs_changed""#)),
+                "describe_board must report open tabs: {events:?}"
+            );
             omachess_session_free(session);
         }
     }
