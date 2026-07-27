@@ -103,10 +103,16 @@ std::optional<EngineLaunch> consentedEngine()
 class AnalysisRunner final : public QObject {
     Q_OBJECT
 public:
-    AnalysisRunner(const QString &id, uint checkpoint, QObject *parent = nullptr)
+    AnalysisRunner(const QString &id,
+                   uint checkpoint,
+                   const QString &searchSettings,
+                   int searchTimeMs,
+                   QObject *parent = nullptr)
         : QObject(parent)
         , m_id(id)
         , m_nextIndex(checkpoint)
+        , m_searchSettings(searchSettings)
+        , m_searchTimeMs(qMax(1, searchTimeMs))
     {
         connect(&m_process, &QProcess::started, this, [this] {
             if (m_stopping)
@@ -222,6 +228,8 @@ private:
             return;
         if (m_stage == Stage::Uci && line == QStringLiteral("uciok")) {
             m_stage = Stage::Ready;
+            if (!m_searchSettings.isEmpty())
+                send(m_searchSettings.toUtf8());
             send("isready\n");
             m_deadline.start(deadlineMs());
             return;
@@ -229,7 +237,8 @@ private:
         if (m_stage == Stage::Ready && line == QStringLiteral("readyok")) {
             m_stage = Stage::Search;
             const Position &position = m_positions.at(static_cast<int>(m_nextIndex));
-            send("position fen " + position.fen.toUtf8() + "\ngo movetime 250\n");
+            send("position fen " + position.fen.toUtf8() + "\ngo movetime "
+                 + QByteArray::number(m_searchTimeMs) + "\n");
             m_deadline.start(deadlineMs());
             return;
         }
@@ -344,6 +353,8 @@ private:
     QByteArray m_output;
     Stage m_stage = Stage::Idle;
     QJsonArray m_evaluations;
+    QString m_searchSettings;
+    int m_searchTimeMs = 250;
     QString m_evaluation;
     QHash<int, QString> m_variations;
     bool m_stopping = false;
@@ -371,14 +382,19 @@ public slots:
         QTimer::singleShot(0, QCoreApplication::instance(), &QCoreApplication::quit);
         return true;
     }
-    QString StartComputerAnalysis(const QString &recordId, uint total)
+    QString StartComputerAnalysis(const QString &recordId,
+                                  uint total,
+                                  const QString &searchSettings,
+                                  int searchTimeMs,
+                                  int lineLimit)
     {
+        Q_UNUSED(lineLimit)
         const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QByteArray job = id.toUtf8();
         const QByteArray record = recordId.toUtf8();
         if (!omachess_background_job_create(job.constData(), record.constData(), total))
             return {};
-        startRunner(id, 0);
+        startRunner(id, 0, searchSettings, searchTimeMs);
         return id;
     }
     bool Pause(const QString &id)
@@ -390,15 +406,19 @@ public slots:
         stopRunner(id);
         return true;
     }
-    bool Resume(const QString &id)
+    bool Resume(const QString &id,
+                const QString &searchSettings,
+                int searchTimeMs,
+                int lineLimit)
     {
+        Q_UNUSED(lineLimit)
         const QByteArray job = id.toUtf8();
         const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());
         const uint total = omachess_background_job_total_value(job.constData());
         if (checkpoint == UINT_MAX || total == UINT_MAX
             || !omachess_background_job_checkpoint(job.constData(), checkpoint, "running"))
             return false;
-        startRunner(id, checkpoint);
+        startRunner(id, checkpoint, searchSettings, searchTimeMs);
         return true;
     }
     bool Cancel(const QString &id)
@@ -446,11 +466,14 @@ public slots:
         return result;
     }
 private:
-    void startRunner(const QString &id, uint checkpoint)
+    void startRunner(const QString &id,
+                     uint checkpoint,
+                     const QString &searchSettings,
+                     int searchTimeMs)
     {
         stopRunner(id);
         const QByteArray job = id.toUtf8();
-        auto *runner = new AnalysisRunner(id, checkpoint, this);
+        auto *runner = new AnalysisRunner(id, checkpoint, searchSettings, searchTimeMs, this);
         connect(runner, &AnalysisRunner::finished, this, [this, id, job](const QString &, bool success) {
             if (!success) {
                 const uint checkpoint = omachess_background_job_checkpoint_value(job.constData());

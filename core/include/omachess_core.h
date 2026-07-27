@@ -25,10 +25,39 @@
  *   {"type":"close_tab","id":"..."}
  *                              close a tab without removing the Game Record
  *                              from the Personal Library
+ *   {"type":"archive_record","id":"..."}
+ *                              reversibly hide a Game Record from the default
+ *                              Personal Library view
+ *   {"type":"unarchive_record","id":"..."}
+ *                              restore a Game Record to the default view
+ *   {"type":"set_library_view","view":"default|archived"}
+ *                              choose whether archived records are listed
+ *   {"type":"purge_record","id":"...",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove a Game Record
+ *   {"type":"purge_study","study_id":"...",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove a Study
+ *   {"type":"purge_variant_definition",
+ *    "confirmation":"PERMANENTLY_PURGE"}
+ *                              permanently remove an unbound draft Variant
+ *                              Definition
+ *   {"type":"export_library_package"}
+ *                              build the Library Portability Package for the
+ *                              whole library; the workspace writes the text
+ *                              the ready event carries to the file the player
+ *                              chose through the portal
+ *   {"type":"restore_library_package","package":"<package text>"}
+ *                              restore a Library Portability Package. It goes
+ *                              into an empty library outright; a library that
+ *                              already holds work answers with
+ *                              library_replacement_required instead and needs
+ *                              "confirmation":"REPLACE_LIBRARY" to proceed.
+ *                              Nothing is ever merged.
  *
  * Events:
  *   {"type":"board_changed",...}
- *   {"type":"library_changed","records":[{id,kind,title,plyCount,resultScore}]}
+ *   {"type":"library_changed","records":[{id,kind,title,plyCount,resultScore,archived}]}
  *                              Personal Library listing from the Live Store
  *   {"type":"tabs_changed","openTabs":[{id,title}],"activeId":"..."}
  *                              open record tabs and the active tab id
@@ -37,6 +66,18 @@
  *                              offered after describe_board when workspace
  *                              residue points at an unfinished Played Game
  *   {"type":"restore_cleared"} the restore offer is gone
+ *   {"type":"library_package_ready","package":"...","summary":"...",
+ *    "records":N,"studies":N,"variantDefinitions":N,"preferences":N}
+ *                              the exported package and what it carries
+ *   {"type":"library_replacement_required","message":"...",
+ *    "existing":{...},"incoming":{...}}
+ *                              a restore into a non-empty library, stating
+ *                              exactly what would be replaced; nothing changed
+ *   {"type":"library_package_restored","message":"...","records":N,...}
+ *                              the library now holds the package's contents
+ *   {"type":"library_package_rejected","message":"..."}
+ *                              an unreadable or incompatible package; the
+ *                              library was not changed
  *
  *   The 64 squares are in reading order for the current orientation: the
  *   top-left drawn square first, the bottom-right last.

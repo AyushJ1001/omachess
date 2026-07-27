@@ -46,8 +46,8 @@ Disposable probe and cache artifacts. Omachess recreates what it needs.
 ## Notes
 
 - Uninstalling the AUR package retains the data and config directories above.
-- A Library Portability Package (later) is the documented take-away format for
-  moving a complete library; filesystem copy of the paths above is the backup
-  contract for the Live Store itself.
+- A [Library Portability Package](library-portability-package.md) is the
+  documented take-away format for moving a complete library; filesystem copy of
+  the paths above is the backup contract for the Live Store itself.
 - The on-disk SQLite schema is internal. Do not treat the database file as a
   supported interchange API.

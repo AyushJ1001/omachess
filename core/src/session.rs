@@ -22,8 +22,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     AnalysisRecordData, AnalysisSideline, ComputerEvaluation, GameRecord, GameRecordKind,
-    GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine,
-    RecordResult, Study,
+    GameRecordPayload, GameRecordSummary, LibraryContents, LibraryPackage, LiveStore, MoveEntry,
+    OpenError, PinnedEngineLine, RecordResult, Study,
 };
 
 use crate::board::{Orientation, Piece, Position};
@@ -43,6 +43,8 @@ pub struct Session {
     open_tabs: Vec<String>,
     /// A prior Game Record the player may restore, when residue points at one.
     restore_offer: Option<RestoreOffer>,
+    /// Whether the Personal Library view includes archived records.
+    show_archived: bool,
     clock: Option<GameClock>,
     /// Suspended Games are fully loaded but inert until the player resumes.
     suspended: bool,
@@ -191,6 +193,7 @@ impl Session {
             record_id: None,
             open_tabs: Vec::new(),
             restore_offer: None,
+            show_archived: false,
             clock: None,
             suspended: false,
             metadata: GameMetadata::default(),
@@ -259,6 +262,7 @@ impl Session {
             record_id: None,
             open_tabs,
             restore_offer,
+            show_archived: false,
             clock: None,
             suspended: false,
             metadata: GameMetadata::default(),
@@ -298,6 +302,12 @@ impl Session {
             "new_game" => self.new_game()?,
             "open_record" => self.open_record(command)?,
             "close_tab" => self.close_tab(command)?,
+            "archive_record" => self.archive_record(command, true)?,
+            "unarchive_record" => self.archive_record(command, false)?,
+            "set_library_view" => self.set_library_view(command)?,
+            "purge_record" => self.purge_record(command)?,
+            "purge_study" => self.purge_study(command)?,
+            "purge_variant_definition" => self.purge_variant_definition(command)?,
             "configure_clock" => self.configure_clock(command)?,
             "tick_clock" => self.tick_clock()?,
             "update_metadata" => self.update_metadata(command)?,
@@ -320,6 +330,8 @@ impl Session {
             "edit_variant_definition" => self.edit_variant_definition()?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
+            "export_library_package" => self.export_library_package()?,
+            "restore_library_package" => self.restore_library_package(command)?,
             "derive_analysis_record" => self.derive_analysis_record()?,
             "complete_computer_analysis" => self.complete_computer_analysis(command)?,
             "designate_default_analysis" => self.designate_default_analysis()?,
@@ -378,46 +390,197 @@ impl Session {
     }
 
     fn create_study(&mut self, command: &str) -> Result<(), CommandError> {
-        let name = json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .create_study(&format!("study-{}", new_record_id()), &name, &timestamp_now())
+        let name =
+            json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .create_study(
+                &format!("study-{}", new_record_id()),
+                &name,
+                &timestamp_now(),
+            )
             .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
     }
 
+    fn archive_record(&mut self, command: &str, archived: bool) -> Result<(), CommandError> {
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        if archived {
+            store
+                .workspace()
+                .archive_game_record(&id)
+                .map_err(|_| CommandError::Store)?;
+        } else {
+            store
+                .workspace()
+                .unarchive_game_record(&id)
+                .map_err(|_| CommandError::Store)?;
+        }
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn set_library_view(&mut self, command: &str) -> Result<(), CommandError> {
+        self.show_archived = match json::read_string_field(command, "view").as_deref() {
+            Some("archived") => true,
+            Some("default") => false,
+            _ => return Err(CommandError::MalformedCommand),
+        };
+        self.emit_library_changed();
+        Ok(())
+    }
+
+    fn purge_record(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        let id = json::read_string_field(command, "id").ok_or(CommandError::MalformedCommand)?;
+        if self.record_id.as_deref() == Some(id.as_str()) && self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_game_record(&id)
+            .map_err(|_| CommandError::Store)?;
+
+        let removed_index = self.open_tabs.iter().position(|tab| tab == &id);
+        self.open_tabs.retain(|tab| tab != &id);
+        if self.record_id.as_deref() == Some(id.as_str()) {
+            let next = removed_index.and_then(|index| {
+                self.open_tabs.get(index).cloned().or_else(|| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|previous| self.open_tabs.get(previous).cloned())
+                })
+            });
+            if let Some(next) = next {
+                self.load_record(&next)?;
+            } else {
+                self.game = Game::standard();
+                self.record_id = None;
+                self.clock = None;
+                self.suspended = false;
+                self.metadata = GameMetadata::default();
+                self.setup = None;
+                self.variant_active = false;
+                self.variant_snapshot = None;
+                self.store
+                    .as_ref()
+                    .ok_or(CommandError::Store)?
+                    .workspace()
+                    .clear_residue("active_record_id")
+                    .map_err(|_| CommandError::Store)?;
+            }
+            self.restore_offer = None;
+        }
+        self.persist_residue()?;
+        self.emit_library_changed();
+        self.emit_studies_changed();
+        self.emit_tabs_changed();
+        self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn purge_study(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        let id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_study(&id)
+            .map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn purge_variant_definition(&mut self, command: &str) -> Result<(), CommandError> {
+        require_purge_confirmation(command)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .purge_variant_definition()
+            .map_err(|_| CommandError::RejectedMove)?;
+        self.workshop = None;
+        self.variant_active = false;
+        self.variant_snapshot = None;
+        self.game = Game::standard();
+        self.record_id = None;
+        self.metadata = GameMetadata::default();
+        self.emit_variant_library_removed();
+        self.emit_tabs_changed();
+        Ok(())
+    }
+
+    fn emit_variant_library_removed(&mut self) {
+        self.events.push(
+            "{\"type\":\"variant_library_changed\",\"id\":\"variant-draft\",\"removed\":true}"
+                .into(),
+        );
+    }
+
     fn add_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .add_study_record(&study_id, &record_id).map_err(|_| CommandError::RejectedMove)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .add_study_record(&study_id, &record_id)
+            .map_err(|_| CommandError::RejectedMove)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn remove_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .remove_study_record(&study_id, &record_id).map_err(|_| CommandError::Store)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .remove_study_record(&study_id, &record_id)
+            .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn reorder_study_record(&mut self, command: &str) -> Result<(), CommandError> {
-        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
-        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        let study_id =
+            json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id =
+            json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
         let position = json::read_string_field(command, "position")
-            .and_then(|value| value.parse().ok()).ok_or(CommandError::MalformedCommand)?;
-        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
-            .reorder_study_record(&study_id, &record_id, position).map_err(|_| CommandError::Store)?;
+            .and_then(|value| value.parse().ok())
+            .ok_or(CommandError::MalformedCommand)?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .reorder_study_record(&study_id, &record_id, position)
+            .map_err(|_| CommandError::Store)?;
         self.emit_studies_changed();
         Ok(())
     }
 
     fn emit_studies_changed(&mut self) {
-        let Some(store) = self.store.as_ref() else { return };
-        let Ok(studies) = store.workspace().list_studies() else { return };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Ok(studies) = store.workspace().list_studies() else {
+            return;
+        };
         self.events.push(studies_changed_event(&studies));
     }
 
@@ -447,8 +610,8 @@ impl Session {
         if self.has_unsaved_changes() {
             return Err(CommandError::RejectedMove);
         }
-        let encoded =
-            json::read_string_field(command, "evaluations").ok_or(CommandError::MalformedCommand)?;
+        let encoded = json::read_string_field(command, "evaluations")
+            .ok_or(CommandError::MalformedCommand)?;
         let mut evaluations: Vec<ComputerEvaluation> =
             serde_json::from_str(&encoded).map_err(|_| CommandError::MalformedCommand)?;
         if evaluations.len() != self.game.moves().len() + 1
@@ -496,7 +659,12 @@ impl Session {
             };
             let Some(mut line_game) = Game::from_history(
                 &self.game.start_fen(),
-                self.game.moves().iter().take(evaluation.ply as usize).cloned().collect(),
+                self.game
+                    .moves()
+                    .iter()
+                    .take(evaluation.ply as usize)
+                    .cloned()
+                    .collect(),
             ) else {
                 continue;
             };
@@ -597,15 +765,18 @@ impl Session {
                 uci: entry.uci.clone(),
                 san: entry.san.clone(),
                 number: entry.number,
-                side: if entry.side == "black" { "black" } else { "white" },
+                side: if entry.side == "black" {
+                    "black"
+                } else {
+                    "white"
+                },
             })
             .collect();
         if prefix.len() != after_ply as usize {
             return Err(CommandError::MalformedCommand);
         }
-        let mut sideline_game =
-            Game::from_history(&analysis.source_snapshot.start_fen, prefix)
-                .ok_or(CommandError::Store)?;
+        let mut sideline_game = Game::from_history(&analysis.source_snapshot.start_fen, prefix)
+            .ok_or(CommandError::Store)?;
         let base = sideline_game.moves().len();
         for uci in variation.split_whitespace() {
             let parsed = parse_uci(uci).ok_or(CommandError::MalformedCommand)?;
@@ -631,9 +802,8 @@ impl Session {
 
     fn pin_engine_line(&mut self, command: &str) -> Result<(), CommandError> {
         let id = self.analysis_record_id()?;
-        let required = |name| {
-            json::read_string_field(command, name).ok_or(CommandError::MalformedCommand)
-        };
+        let required =
+            |name| json::read_string_field(command, name).ok_or(CommandError::MalformedCommand);
         let line = PinnedEngineLine {
             position_fen: required("position_fen")?,
             evaluation: required("evaluation")?,
@@ -1085,6 +1255,108 @@ impl Session {
         }
         self.events
             .push(pgn_export_ready_event(&documents.join("\n")));
+        Ok(())
+    }
+
+    /// Exports the whole library as a Library Portability Package.
+    ///
+    /// The session hands the workspace the package text; the workspace writes
+    /// it to the file the player chose through the portal dialog.
+    fn export_library_package(&mut self) -> Result<(), CommandError> {
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        let package = store
+            .workspace()
+            .export_package()
+            .map_err(|_| CommandError::Store)?;
+        let contents = package.contents();
+        let text = package.to_json().map_err(|_| CommandError::Store)?;
+        self.events.push(package_ready_event(&text, &contents));
+        Ok(())
+    }
+
+    /// Restores a Library Portability Package into this library.
+    ///
+    /// A package never merges into a library. It goes into an empty one, or
+    /// through an explicit replacement the player confirms after being told
+    /// exactly what the restore would replace. Anything this build cannot
+    /// read — a damaged file, an incompatible format version — is refused
+    /// before a single row changes.
+    fn restore_library_package(&mut self, command: &str) -> Result<(), CommandError> {
+        let text =
+            json::read_string_field(command, "package").ok_or(CommandError::MalformedCommand)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+
+        let package = match LibraryPackage::parse(&text) {
+            Ok(package) => package,
+            Err(rejection) => {
+                self.events
+                    .push(package_rejected_event(&rejection.to_string()));
+                return Ok(());
+            }
+        };
+
+        let existing = store
+            .workspace()
+            .library_contents()
+            .map_err(|_| CommandError::Store)?;
+        let confirmed =
+            json::read_string_field(command, "confirmation").as_deref() == Some("REPLACE_LIBRARY");
+        if !existing.is_empty() && !confirmed {
+            self.events
+                .push(replacement_required_event(&existing, &package.contents()));
+            return Ok(());
+        }
+
+        store
+            .workspace()
+            .restore_package(&package)
+            .map_err(|_| CommandError::Store)?;
+
+        let had_variant_definition = self.workshop.is_some();
+        self.adopt_restored_library()?;
+        if had_variant_definition && self.workshop.is_none() {
+            self.emit_variant_library_removed();
+        }
+        self.emit_library_changed();
+        self.emit_studies_changed();
+        self.emit_tabs_changed();
+        self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        self.events
+            .push(package_restored_event(&package.contents()));
+        Ok(())
+    }
+
+    /// Rereads the session's state from the library a restore just wrote.
+    ///
+    /// Nothing from the replaced library survives: no open tabs, no active
+    /// record, no restore offer. The board returns to a fresh standard game
+    /// so no identity from the previous library is still on screen.
+    fn adopt_restored_library(&mut self) -> Result<(), CommandError> {
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        self.save_mode = match store.workspace().residue("save_mode") {
+            Ok(Some(mode)) if mode == "manual" => SaveMode::Manual,
+            _ => SaveMode::Autosave,
+        };
+        self.workshop = store
+            .workspace()
+            .residue("variant_definition_draft")
+            .ok()
+            .flatten()
+            .and_then(|value| decode_variant_definition(&value));
+        self.game = Game::standard();
+        self.orientation = Orientation::WhiteBottom;
+        self.record_id = None;
+        self.open_tabs.clear();
+        self.restore_offer = None;
+        self.show_archived = false;
+        self.clock = None;
+        self.suspended = false;
+        self.metadata = GameMetadata::default();
+        self.setup = None;
+        self.dirty = false;
+        self.variant_active = false;
+        self.variant_snapshot = None;
         Ok(())
     }
 
@@ -1575,17 +1847,13 @@ impl Session {
             .collect();
         if let Some(encoded) = variant.strip_prefix("omachess:v1:") {
             let snapshot = decode_variant_definition(encoded).ok_or(CommandError::Store)?;
-            let adapter =
-                String::from_utf8(compile_variant_adapter(&snapshot)).map_err(|_| CommandError::Store)?;
+            let adapter = String::from_utf8(compile_variant_adapter(&snapshot))
+                .map_err(|_| CommandError::Store)?;
             if !Rules::load_variant_adapter(&adapter) {
                 return Err(CommandError::Store);
             }
-            self.game = Game::variant_from_history(
-                "omachess",
-                &record.payload.start_fen,
-                moves,
-            )
-            .ok_or(CommandError::Store)?;
+            self.game = Game::variant_from_history("omachess", &record.payload.start_fen, moves)
+                .ok_or(CommandError::Store)?;
             self.variant_snapshot = Some(snapshot);
             self.variant_active = true;
         } else {
@@ -1686,13 +1954,14 @@ impl Session {
             .as_ref()
             .map(|record| record.created_at.clone())
             .unwrap_or_else(|| now.clone());
+        let archived = existing.as_ref().is_some_and(|record| record.archived);
         let record = GameRecord {
             id: id.clone(),
             kind,
             title: (!self.metadata.title.is_empty()).then(|| self.metadata.title.clone()),
             result_score,
             ply_count: payload.moves.len() as u32,
-            archived: false,
+            archived,
             created_at,
             updated_at: now,
             payload,
@@ -1740,7 +2009,10 @@ impl Session {
             return;
         };
         // Archived records stay out of the default Personal Library view.
-        let visible: Vec<_> = summaries.into_iter().filter(|s| !s.archived).collect();
+        let visible: Vec<_> = summaries
+            .into_iter()
+            .filter(|summary| self.show_archived || !summary.archived)
+            .collect();
         self.events.push(library_changed_event(&visible));
     }
 
@@ -1825,38 +2097,38 @@ impl Session {
         out.push_str(",\"squares\":[");
         if !self.variant_active {
             if let Some(definition) = &self.workshop {
-            let mut index = 0;
-            for rank in (1..=definition.ranks).rev() {
-                for file in 0..definition.files {
-                    if index > 0 {
-                        out.push(',');
+                let mut index = 0;
+                for rank in (1..=definition.ranks).rev() {
+                    for file in 0..definition.files {
+                        if index > 0 {
+                            out.push(',');
+                        }
+                        index += 1;
+                        out.push_str("{\"name\":");
+                        json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
+                        out.push_str(",\"light\":");
+                        out.push_str(if (rank + file) % 2 == 1 {
+                            "true"
+                        } else {
+                            "false"
+                        });
+                        out.push_str(",\"piece\":");
+                        let square = format!("{}{}", (b'a' + file) as char, rank);
+                        match definition
+                            .placement
+                            .get(&square)
+                            .and_then(|piece| workshop_piece_id(definition, piece))
+                        {
+                            Some(piece) => json::write_string(&mut out, &piece),
+                            None => out.push_str("null"),
+                        }
+                        out.push_str(",\"footprint\":");
+                        json::write_string(&mut out, rule_footprint(definition, &square));
+                        out.push('}');
                     }
-                    index += 1;
-                    out.push_str("{\"name\":");
-                    json::write_string(&mut out, &format!("{}{}", (b'a' + file) as char, rank));
-                    out.push_str(",\"light\":");
-                    out.push_str(if (rank + file) % 2 == 1 {
-                        "true"
-                    } else {
-                        "false"
-                    });
-                    out.push_str(",\"piece\":");
-                    let square = format!("{}{}", (b'a' + file) as char, rank);
-                    match definition
-                        .placement
-                        .get(&square)
-                        .and_then(|piece| workshop_piece_id(definition, piece))
-                    {
-                        Some(piece) => json::write_string(&mut out, &piece),
-                        None => out.push_str("null"),
-                    }
-                    out.push_str(",\"footprint\":");
-                    json::write_string(&mut out, rule_footprint(definition, &square));
-                    out.push('}');
                 }
-            }
-            out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
-            return out;
+                out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
+                return out;
             }
         }
         let position = self.setup.as_ref().map(|setup| &setup.position);
@@ -2648,23 +2920,37 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
             Some(score) => json::write_string(&mut out, score),
             None => out.push_str("null"),
         }
+        out.push_str(",\"archived\":");
+        out.push_str(if record.archived { "true" } else { "false" });
         out.push('}');
     }
     out.push_str("]}");
     out
 }
 
+fn require_purge_confirmation(command: &str) -> Result<(), CommandError> {
+    match json::read_string_field(command, "confirmation").as_deref() {
+        Some("PERMANENTLY_PURGE") => Ok(()),
+        Some(_) => Err(CommandError::RejectedMove),
+        None => Err(CommandError::MalformedCommand),
+    }
+}
+
 fn studies_changed_event(studies: &[Study]) -> String {
     let mut out = String::from("{\"type\":\"studies_changed\",\"studies\":[");
     for (index, study) in studies.iter().enumerate() {
-        if index > 0 { out.push(','); }
+        if index > 0 {
+            out.push(',');
+        }
         out.push_str("{\"id\":");
         json::write_string(&mut out, &study.id);
         out.push_str(",\"name\":");
         json::write_string(&mut out, &study.name);
         out.push_str(",\"recordIds\":[");
         for (record_index, id) in study.record_ids.iter().enumerate() {
-            if record_index > 0 { out.push(','); }
+            if record_index > 0 {
+                out.push(',');
+            }
             json::write_string(&mut out, id);
         }
         out.push_str("]}");
@@ -2774,9 +3060,17 @@ fn analysis_record_changed_event(
         out.push('}');
     }
     out.push_str("],\"computerAnalysisComplete\":");
-    out.push_str(if data.computer_analysis_complete { "true" } else { "false" });
+    out.push_str(if data.computer_analysis_complete {
+        "true"
+    } else {
+        "false"
+    });
     out.push_str(",\"defaultAnalysis\":");
-    out.push_str(if data.default_analysis { "true" } else { "false" });
+    out.push_str(if data.default_analysis {
+        "true"
+    } else {
+        "false"
+    });
     out.push('}');
     out
 }
@@ -2834,6 +3128,108 @@ fn import_results_event(results: &[ImportReport]) -> String {
         out.push('}');
     }
     out.push_str("]}");
+    out
+}
+
+/// Counts as a player reads them: "3 Game Records, 1 Study, and 1 Variant
+/// Definition", omitting whatever the library does not hold.
+fn describe_contents(contents: &LibraryContents) -> String {
+    let mut parts = Vec::new();
+    for (count, singular, plural) in [
+        (contents.records, "Game Record", "Game Records"),
+        (contents.studies, "Study", "Studies"),
+        (
+            contents.variant_definitions,
+            "Variant Definition",
+            "Variant Definitions",
+        ),
+        (
+            contents.preferences,
+            "portable preference",
+            "portable preferences",
+        ),
+    ] {
+        if count > 0 {
+            parts.push(format!(
+                "{count} {}",
+                if count == 1 { singular } else { plural }
+            ));
+        }
+    }
+    match parts.len() {
+        0 => "nothing".to_owned(),
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().expect("more than one part");
+            format!("{}, and {last}", parts.join(", "))
+        }
+    }
+}
+
+fn write_contents_fields(out: &mut String, contents: &LibraryContents) {
+    out.push_str("\"records\":");
+    out.push_str(&contents.records.to_string());
+    out.push_str(",\"studies\":");
+    out.push_str(&contents.studies.to_string());
+    out.push_str(",\"variantDefinitions\":");
+    out.push_str(&contents.variant_definitions.to_string());
+    out.push_str(",\"preferences\":");
+    out.push_str(&contents.preferences.to_string());
+}
+
+fn package_ready_event(package: &str, contents: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_package_ready\",\"package\":");
+    json::write_string(&mut out, package);
+    out.push_str(",\"summary\":");
+    json::write_string(
+        &mut out,
+        &format!(
+            "Library Portability Package format version {} · {}",
+            omachess_store::PACKAGE_FORMAT_VERSION,
+            describe_contents(contents)
+        ),
+    );
+    out.push(',');
+    write_contents_fields(&mut out, contents);
+    out.push('}');
+    out
+}
+
+fn package_rejected_event(message: &str) -> String {
+    let mut out = String::from("{\"type\":\"library_package_rejected\",\"message\":");
+    json::write_string(&mut out, message);
+    out.push('}');
+    out
+}
+
+fn replacement_required_event(existing: &LibraryContents, incoming: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_replacement_required\",\"message\":");
+    json::write_string(
+        &mut out,
+        &format!(
+            "Restoring replaces this library. It removes {} and puts {} in their place. \
+             Nothing is merged, and no removed record can be recovered inside Omachess.",
+            describe_contents(existing),
+            describe_contents(incoming)
+        ),
+    );
+    out.push_str(",\"existing\":{");
+    write_contents_fields(&mut out, existing);
+    out.push_str("},\"incoming\":{");
+    write_contents_fields(&mut out, incoming);
+    out.push_str("}}");
+    out
+}
+
+fn package_restored_event(contents: &LibraryContents) -> String {
+    let mut out = String::from("{\"type\":\"library_package_restored\",\"message\":");
+    json::write_string(
+        &mut out,
+        &format!("Restored {} from the package.", describe_contents(contents)),
+    );
+    out.push(',');
+    write_contents_fields(&mut out, contents);
+    out.push('}');
     out
 }
 
@@ -3416,6 +3812,225 @@ mod tests {
     }
 
     #[test]
+    fn archiving_hides_a_record_by_default_and_unarchiving_restores_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        play(&mut session, "e2", "e4");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed"#) {
+                library = event;
+            }
+        }
+        let id = library_ids(&library).into_iter().next().unwrap();
+
+        session
+            .submit(&format!(r#"{{"type":"archive_record","id":"{id}"}}"#))
+            .unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| session.poll_event()).collect();
+        let default_library = events
+            .iter()
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(!default_library.contains(&id));
+
+        session
+            .submit(r#"{"type":"set_library_view","view":"archived"}"#)
+            .unwrap();
+        let archived_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(archived_library.contains(&id));
+        assert!(archived_library.contains(r#""archived":true"#));
+
+        session
+            .submit(&format!(r#"{{"type":"unarchive_record","id":"{id}"}}"#))
+            .unwrap();
+        let restored_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(restored_library.contains(&id));
+        assert!(!restored_library.contains(r#""archived":true"#));
+    }
+
+    /// The package text a session just exported, with its JSON escaping intact
+    /// so it can be handed straight back in a restore command.
+    fn exported_package(session: &mut Session) -> String {
+        session
+            .submit(r#"{"type":"export_library_package"}"#)
+            .unwrap();
+        let event = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_package_ready"#))
+            .expect("exporting emits library_package_ready");
+        json::read_string_field(&event, "package").expect("the event carries the package")
+    }
+
+    fn restore_command(package: &str, confirmed: bool) -> String {
+        let mut out = String::from(r#"{"type":"restore_library_package","package":"#);
+        json::write_string(&mut out, package);
+        if confirmed {
+            out.push_str(r#","confirmation":"REPLACE_LIBRARY""#);
+        }
+        out.push('}');
+        out
+    }
+
+    #[test]
+    fn a_package_round_trips_into_an_empty_library() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        play(&mut source, "e7", "e5");
+        source
+            .submit(r#"{"type":"create_study","name":"Openings"}"#)
+            .unwrap();
+        let package = exported_package(&mut source);
+        assert!(package.contains("\"format_version\": 1"));
+        assert!(package.contains("Record Graph"));
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        target.submit(&restore_command(&package, false)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| target.poll_event()).collect();
+        assert!(events
+            .iter()
+            .any(|event| event.contains(r#""type":"library_package_restored"#)));
+        let library = events
+            .iter()
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert_eq!(library_ids(library).len(), 1);
+        assert!(library.contains(r#""plyCount":2"#));
+        let studies = events
+            .iter()
+            .find(|event| event.contains(r#""type":"studies_changed"#))
+            .unwrap();
+        assert!(studies.contains("Openings"));
+    }
+
+    #[test]
+    fn restoring_into_a_non_empty_library_needs_an_explicit_replacement() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        let package = exported_package(&mut source);
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut target, "d2", "d4");
+        target.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let existing = std::iter::from_fn(|| target.poll_event())
+            .filter(|event| event.contains(r#""type":"library_changed"#))
+            .last()
+            .unwrap();
+        let existing_id = library_ids(&existing).into_iter().next().unwrap();
+
+        target.submit(&restore_command(&package, false)).unwrap();
+        let asked = std::iter::from_fn(|| target.poll_event())
+            .find(|event| event.contains(r#""type":"library_replacement_required"#))
+            .expect("a populated library asks before replacing");
+        assert!(asked.contains("1 Game Record"));
+        assert!(asked.contains("Nothing is merged"));
+        // The library is untouched until the player confirms.
+        assert!(target
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .get_game_record(&existing_id)
+            .unwrap()
+            .is_some());
+
+        target.submit(&restore_command(&package, true)).unwrap();
+        assert!(std::iter::from_fn(|| target.poll_event())
+            .any(|event| event.contains(r#""type":"library_package_restored"#)));
+        assert!(target
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .get_game_record(&existing_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn an_incompatible_package_version_fails_closed_with_a_clear_message() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let mut source = Session::open(&source_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut source, "e2", "e4");
+        let package = exported_package(&mut source)
+            .replace("\"format_version\": 1", "\"format_version\": 99");
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let mut target = Session::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        play(&mut target, "d2", "d4");
+        target.submit(&restore_command(&package, true)).unwrap();
+        let rejection = std::iter::from_fn(|| target.poll_event())
+            .find(|event| event.contains(r#""type":"library_package_rejected"#))
+            .expect("an unreadable version is refused");
+        assert!(rejection.contains("version 99"));
+        assert!(rejection.contains("Nothing was changed"));
+        assert_eq!(
+            target
+                .store
+                .as_ref()
+                .unwrap()
+                .workspace()
+                .library_contents()
+                .unwrap()
+                .records,
+            1
+        );
+    }
+
+    #[test]
+    fn permanent_purge_requires_the_explicit_confirmation_phrase() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        let mut session = Session::open(&path).unwrap();
+        play(&mut session, "e2", "e4");
+        session.submit(r#"{"type":"describe_board"}"#).unwrap();
+        let mut library = String::new();
+        while let Some(event) = session.poll_event() {
+            if event.contains(r#""type":"library_changed"#) {
+                library = event;
+            }
+        }
+        let id = library_ids(&library).into_iter().next().unwrap();
+
+        assert_eq!(
+            session.submit(&format!(r#"{{"type":"purge_record","id":"{id}"}}"#)),
+            Err(CommandError::MalformedCommand)
+        );
+        assert_eq!(
+            session.submit(&format!(
+                r#"{{"type":"purge_record","id":"{id}","confirmation":"PURGE"}}"#
+            )),
+            Err(CommandError::RejectedMove)
+        );
+        session
+            .submit(&format!(
+                r#"{{"type":"purge_record","id":"{id}","confirmation":"PERMANENTLY_PURGE"}}"#
+            ))
+            .unwrap();
+        assert!(session
+            .store
+            .as_ref()
+            .unwrap()
+            .workspace()
+            .residue("active_record_id")
+            .unwrap()
+            .is_none());
+        let purged_library = std::iter::from_fn(|| session.poll_event())
+            .find(|event| event.contains(r#""type":"library_changed"#))
+            .unwrap();
+        assert!(purged_library.contains(r#""records":[]"#));
+    }
+
+    #[test]
     fn opening_a_library_record_opens_it_in_a_tab_and_loads_its_board() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
@@ -3651,7 +4266,9 @@ mod tests {
         }
         let source_id = session.record_id.clone().unwrap();
 
-        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        session
+            .submit(r#"{"type":"derive_analysis_record"}"#)
+            .unwrap();
         while session.poll_event().is_some() {}
         let first_id = session.record_id.clone().unwrap();
         session
@@ -3666,7 +4283,9 @@ mod tests {
             .submit(&format!(r#"{{"type":"open_record","id":"{source_id}"}}"#))
             .unwrap();
         while session.poll_event().is_some() {}
-        session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+        session
+            .submit(r#"{"type":"derive_analysis_record"}"#)
+            .unwrap();
         while session.poll_event().is_some() {}
         let second_id = session.record_id.clone().unwrap();
         drop(session);
@@ -3674,7 +4293,11 @@ mod tests {
         let store = LiveStore::open(&path).unwrap();
         assert_ne!(first_id, second_id);
         assert_eq!(
-            store.workspace().derivations_from(&source_id).unwrap().len(),
+            store
+                .workspace()
+                .derivations_from(&source_id)
+                .unwrap()
+                .len(),
             2
         );
         assert_eq!(
@@ -3706,7 +4329,9 @@ mod tests {
             for uci in ["f2f3", "e7e5", "g2g4", "d8h4"] {
                 play(&mut session, &uci[..2], &uci[2..4]);
             }
-            session.submit(r#"{"type":"derive_analysis_record"}"#).unwrap();
+            session
+                .submit(r#"{"type":"derive_analysis_record"}"#)
+                .unwrap();
             while session.poll_event().is_some() {}
             session.submit(r#"{"type":"pin_engine_line","position_fen":"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1","evaluation":"+0.22","variation":"e2e4 e7e5","engine":"Stockfish 18","search_context":"depth 8 · movetime 250 ms"}"#).unwrap();
             while session.poll_event().is_some() {}

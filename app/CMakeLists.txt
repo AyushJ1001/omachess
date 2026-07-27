@@ -94,6 +94,7 @@ install(FILES "${CMAKE_SOURCE_DIR}/packaging/icons/com.omachess.Omachess.svg"
 install(FILES
   "${CMAKE_SOURCE_DIR}/docs/install.md"
   "${CMAKE_SOURCE_DIR}/docs/backup.md"
+  "${CMAKE_SOURCE_DIR}/docs/library-portability-package.md"
   "${CMAKE_SOURCE_DIR}/docs/THIRD_PARTY_NOTICES.md"
   "${CMAKE_SOURCE_DIR}/docs/CORRESPONDING_SOURCE.md"
   "${CMAKE_SOURCE_DIR}/docs/RELEASE_NOTES_0.1.md"

@@ -8,6 +8,7 @@
 //! location, the schema version, fail-closed migration, and backup guidance
 //! in `docs/backup.md`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
@@ -108,7 +109,8 @@ pub struct LiveStore {
 }
 
 /// Whether a Game Record is a Played Game or an Analysis Record.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GameRecordKind {
     Played,
     Analysis,
@@ -151,7 +153,7 @@ pub struct RecordResult {
 /// The common history object: starting position plus move tree.
 ///
 /// Participation, clock, and result fields are present only when applicable.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct GameRecordPayload {
     pub variant: String,
     pub start_fen: String,
@@ -181,7 +183,7 @@ impl GameRecordPayload {
 }
 
 /// A Game Record as the Live Store holds it.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct GameRecord {
     pub id: String,
     pub kind: GameRecordKind,
@@ -255,7 +257,7 @@ pub struct AnalysisRecordData {
     pub default_analysis: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Study {
     pub id: String,
     pub name: String,
@@ -346,6 +348,146 @@ pub struct BackgroundJob {
     pub controls: Vec<String>,
     pub payload: String,
     pub updated_at: String,
+}
+
+/// The Library Portability Package format this build writes and accepts.
+pub const PACKAGE_FORMAT_VERSION: u32 = 1;
+
+/// The documented description of what a package carries, written into every
+/// package so a player reading the file knows what is and is not inside it.
+pub const PACKAGE_DESCRIPTION: &str = "Omachess Library Portability Package. \
+Carries every Game Record with its move tree and Game Metadata, the durable \
+annotations, sidelines, Pinned Engine Lines, Computer Analysis evaluations, \
+and Source Snapshot each Analysis Record owns, the Record Graph provenance \
+relationships between records, every Study with its name and member order, \
+the player-created Variant Definitions, and the portable preferences subset. \
+It does not carry engine binaries, Engine Profiles, transient sessions, or \
+caches. Restore accepts an empty library, or replaces a library wholesale \
+after an explicit confirmation; identities are never merged across libraries.";
+
+/// Residue keys that travel with a package as the portable preferences subset.
+///
+/// Everything else in the residue table is workspace state — which tabs were
+/// open, which record was active — and belongs to one machine's session, not
+/// to the player's library.
+pub const PORTABLE_PREFERENCE_KEYS: &[&str] = &["save_mode"];
+
+/// The residue key holding the library's player-created Variant Definition.
+const VARIANT_DEFINITION_KEY: &str = "variant_definition_draft";
+
+/// One Game Record as a package carries it: the record itself plus the
+/// analysis content it owns, when it is an Analysis Record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct PackagedRecord {
+    pub record: GameRecord,
+    #[serde(default)]
+    pub analysis: Option<AnalysisRecordData>,
+}
+
+/// One Record Graph provenance relationship between two Game Records.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RecordEdge {
+    pub source_id: String,
+    pub derived_id: String,
+    pub edge_type: String,
+    pub created_at: String,
+}
+
+/// A Study as a package carries it, member order included.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct PackagedStudy {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub record_ids: Vec<String>,
+}
+
+/// The versioned, documented export of a player's Omachess library.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LibraryPackage {
+    pub format_version: u32,
+    pub description: String,
+    pub records: Vec<PackagedRecord>,
+    pub edges: Vec<RecordEdge>,
+    pub studies: Vec<PackagedStudy>,
+    /// Player-created Variant Definitions in their encoded library form.
+    pub variant_definitions: Vec<String>,
+    pub preferences: BTreeMap<String, String>,
+}
+
+/// Why a Library Portability Package could not be read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PackageError {
+    /// The file is not a Library Portability Package at all.
+    Unreadable(String),
+    /// The package was written in a format version this build cannot read.
+    IncompatibleVersion(u32),
+}
+
+impl std::fmt::Display for PackageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackageError::Unreadable(detail) => write!(
+                f,
+                "This file is not a readable Library Portability Package ({detail}). \
+                 Nothing was changed."
+            ),
+            PackageError::IncompatibleVersion(found) => write!(
+                f,
+                "This package is Library Portability Package format version {found}; \
+                 this Omachess reads version {PACKAGE_FORMAT_VERSION}. Nothing was changed."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PackageError {}
+
+impl LibraryPackage {
+    /// Reads a package, failing closed on anything this build cannot restore.
+    pub fn parse(text: &str) -> Result<Self, PackageError> {
+        let package: LibraryPackage = serde_json::from_str(text)
+            .map_err(|error| PackageError::Unreadable(error.to_string()))?;
+        if package.format_version != PACKAGE_FORMAT_VERSION {
+            return Err(PackageError::IncompatibleVersion(package.format_version));
+        }
+        Ok(package)
+    }
+
+    /// The package as the text written to the file a player takes away.
+    pub fn to_json(&self) -> Result<String, StoreError> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| StoreError::Message(format!("could not write the package: {error}")))
+    }
+
+    /// What this package would put into a library.
+    pub fn contents(&self) -> LibraryContents {
+        LibraryContents {
+            records: self.records.len(),
+            studies: self.studies.len(),
+            variant_definitions: self.variant_definitions.len(),
+            preferences: self.preferences.len(),
+        }
+    }
+}
+
+/// What a library holds, so a replacement can state exactly what it replaces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LibraryContents {
+    pub records: usize,
+    pub studies: usize,
+    pub variant_definitions: usize,
+    pub preferences: usize,
+}
+
+impl LibraryContents {
+    /// Whether a restore may proceed without an explicit replacement.
+    pub fn is_empty(&self) -> bool {
+        self.records == 0
+            && self.studies == 0
+            && self.variant_definitions == 0
+            && self.preferences == 0
+    }
 }
 
 /// Workspace write partition: Game Records, residue, and other library tables.
@@ -585,9 +727,59 @@ impl<'a> WorkspaceWriter<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn archive_game_record(&self, id: &str) -> Result<(), StoreError> {
+        self.set_game_record_archived(id, true)
+    }
+
+    pub fn unarchive_game_record(&self, id: &str) -> Result<(), StoreError> {
+        self.set_game_record_archived(id, false)
+    }
+
+    fn set_game_record_archived(&self, id: &str, archived: bool) -> Result<(), StoreError> {
+        let changed = self.conn.execute(
+            "UPDATE game_records SET archived = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            rusqlite::params![id, if archived { 1 } else { 0 }],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Message("Game Record is unavailable".into()));
+        }
+        Ok(())
+    }
+
+    /// Permanently removes a Game Record and its owned analysis content.
+    ///
+    /// Derived Analysis Records carry their own Source Snapshot, so deleting
+    /// a source record does not delete or rewrite any derived record. The
+    /// provenance edge to the unavailable source is removed because the
+    /// source node no longer exists; the snapshot's source_id remains the
+    /// durable provenance pointer.
     pub fn purge_game_record(&self, id: &str) -> Result<(), StoreError> {
-        self.conn
-            .execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM game_records WHERE id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(StoreError::Message("Game Record is unavailable".into()));
+        }
+        transaction.execute("DELETE FROM analysis_records WHERE record_id = ?1", [id])?;
+        transaction.execute(
+            "DELETE FROM record_edges WHERE source_id = ?1 OR derived_id = ?1",
+            [id],
+        )?;
+        transaction.execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn purge_study(&self, id: &str) -> Result<(), StoreError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM studies WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StoreError::Message("Study is unavailable".into()));
+        }
         Ok(())
     }
 
@@ -750,6 +942,190 @@ impl<'a> WorkspaceWriter<'a> {
             "DELETE FROM workspace_residue WHERE key = ?1",
             rusqlite::params![key],
         )?;
+        Ok(())
+    }
+
+    /// Everything this library holds, for stating what a restore replaces.
+    pub fn library_contents(&self) -> Result<LibraryContents, StoreError> {
+        let count = |sql: &str| -> Result<usize, StoreError> {
+            Ok(self.conn.query_row(sql, [], |row| row.get::<_, i64>(0))? as usize)
+        };
+        let mut preferences = 0;
+        for key in PORTABLE_PREFERENCE_KEYS {
+            if self.residue(key)?.is_some() {
+                preferences += 1;
+            }
+        }
+        Ok(LibraryContents {
+            records: count("SELECT COUNT(*) FROM game_records")?,
+            studies: count("SELECT COUNT(*) FROM studies")?,
+            variant_definitions: usize::from(self.residue(VARIANT_DEFINITION_KEY)?.is_some()),
+            preferences,
+        })
+    }
+
+    /// Exports the whole library as a Library Portability Package.
+    pub fn export_package(&self) -> Result<LibraryPackage, StoreError> {
+        let mut records = Vec::new();
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM game_records ORDER BY created_at, id")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            let record = self
+                .get_game_record(&id)?
+                .ok_or_else(|| StoreError::Message("Game Record is unavailable".into()))?;
+            records.push(PackagedRecord {
+                analysis: self.analysis_record(&id)?,
+                record,
+            });
+        }
+
+        let mut statement = self.conn.prepare(
+            "SELECT source_id, derived_id, edge_type, created_at FROM record_edges
+             ORDER BY created_at, source_id, derived_id",
+        )?;
+        let edges = statement
+            .query_map([], |row| {
+                Ok(RecordEdge {
+                    source_id: row.get(0)?,
+                    derived_id: row.get(1)?,
+                    edge_type: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, name, created_at FROM studies ORDER BY created_at, id")?;
+        let listed = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut studies = Vec::new();
+        for (id, name, created_at) in listed {
+            let record_ids = self
+                .study(&id)?
+                .map(|study| study.record_ids)
+                .unwrap_or_default();
+            studies.push(PackagedStudy {
+                id,
+                name,
+                created_at,
+                record_ids,
+            });
+        }
+
+        let variant_definitions = self
+            .residue(VARIANT_DEFINITION_KEY)?
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let mut preferences = BTreeMap::new();
+        for key in PORTABLE_PREFERENCE_KEYS {
+            if let Some(value) = self.residue(key)? {
+                preferences.insert((*key).to_owned(), value);
+            }
+        }
+
+        Ok(LibraryPackage {
+            format_version: PACKAGE_FORMAT_VERSION,
+            description: PACKAGE_DESCRIPTION.to_owned(),
+            records,
+            edges,
+            studies,
+            variant_definitions,
+            preferences,
+        })
+    }
+
+    /// Replaces this library's whole contents with the package's.
+    ///
+    /// The caller decides whether replacement is allowed: an empty library
+    /// accepts a package outright, a populated one only through the explicit
+    /// replacement flow. Nothing is merged — every identity in the store is
+    /// dropped before the package's identities are written, so ids never
+    /// collide across libraries. One transaction carries the whole restore, so
+    /// a failure anywhere leaves the previous library untouched.
+    pub fn restore_package(&self, package: &LibraryPackage) -> Result<(), StoreError> {
+        if package.format_version != PACKAGE_FORMAT_VERSION {
+            return Err(StoreError::Message(
+                PackageError::IncompatibleVersion(package.format_version).to_string(),
+            ));
+        }
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute_batch(
+            "
+            DELETE FROM study_records;
+            DELETE FROM studies;
+            DELETE FROM record_edges;
+            DELETE FROM analysis_records;
+            DELETE FROM game_records;
+            DELETE FROM workspace_residue;
+            ",
+        )?;
+        {
+            let writer = WorkspaceWriter::new(&transaction);
+            for packaged in &package.records {
+                writer.upsert_game_record(&packaged.record)?;
+                if let Some(analysis) = &packaged.analysis {
+                    transaction.execute(
+                        "INSERT INTO analysis_records (record_id, content) VALUES (?1, ?2)",
+                        rusqlite::params![
+                            packaged.record.id,
+                            serde_json::to_string(analysis).map_err(json_error)?
+                        ],
+                    )?;
+                }
+            }
+        }
+        for edge in &package.edges {
+            transaction.execute(
+                "INSERT INTO record_edges (source_id, derived_id, edge_type, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    edge.source_id,
+                    edge.derived_id,
+                    edge.edge_type,
+                    edge.created_at
+                ],
+            )?;
+        }
+        for study in &package.studies {
+            transaction.execute(
+                "INSERT INTO studies (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                rusqlite::params![study.id, study.name, study.created_at],
+            )?;
+            for (position, record_id) in study.record_ids.iter().enumerate() {
+                transaction.execute(
+                    "INSERT INTO study_records (study_id, record_id, position)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![study.id, record_id, position as i64],
+                )?;
+            }
+        }
+        {
+            let writer = WorkspaceWriter::new(&transaction);
+            if let Some(definition) = package.variant_definitions.first() {
+                writer.set_residue(VARIANT_DEFINITION_KEY, definition)?;
+            }
+            // Unknown preference keys are ignored rather than written back:
+            // the portable subset is what this build promises to carry.
+            for key in PORTABLE_PREFERENCE_KEYS {
+                if let Some(value) = package.preferences.get(*key) {
+                    writer.set_residue(key, value)?;
+                }
+            }
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1759,6 +2135,134 @@ mod tests {
     }
 
     #[test]
+    fn archive_status_survives_restart_and_record_updates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("live-store.sqlite");
+        {
+            let store = LiveStore::open(&path).unwrap();
+            let mut record = completed_record("played-1", "Original");
+            store.workspace().upsert_game_record(&record).unwrap();
+            store.workspace().archive_game_record("played-1").unwrap();
+            assert!(
+                store
+                    .workspace()
+                    .get_game_record("played-1")
+                    .unwrap()
+                    .unwrap()
+                    .archived
+            );
+
+            record.title = Some("Renamed".into());
+            record.archived = true;
+            store.workspace().upsert_game_record(&record).unwrap();
+        }
+
+        let store = LiveStore::open(&path).unwrap();
+        let record = store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .unwrap();
+        assert!(record.archived);
+        assert_eq!(record.title.as_deref(), Some("Renamed"));
+        store.workspace().unarchive_game_record("played-1").unwrap();
+        assert!(
+            !store
+                .workspace()
+                .get_game_record("played-1")
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+    }
+
+    #[test]
+    fn purging_a_study_and_record_removes_membership_but_keeps_source_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        store
+            .workspace()
+            .upsert_game_record(&completed_record("played-1", "Original"))
+            .unwrap();
+        store
+            .workspace()
+            .derive_analysis_record("played-1", "analysis-1", "now")
+            .unwrap();
+        store
+            .workspace()
+            .create_study("study-1", "Review", "now")
+            .unwrap();
+        store
+            .workspace()
+            .add_study_record("study-1", "played-1")
+            .unwrap();
+        store
+            .workspace()
+            .add_study_record("study-1", "analysis-1")
+            .unwrap();
+
+        store.workspace().purge_study("study-1").unwrap();
+        assert!(store.workspace().study("study-1").unwrap().is_none());
+        assert!(store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .is_some());
+
+        store.workspace().purge_game_record("played-1").unwrap();
+        assert!(store
+            .workspace()
+            .get_game_record("played-1")
+            .unwrap()
+            .is_none());
+        let analysis = store
+            .workspace()
+            .analysis_record("analysis-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(analysis.source_snapshot.source_id, "played-1");
+        assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
+        assert!(store
+            .workspace()
+            .sources_of("analysis-1")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn variant_definition_purge_is_allowed_until_a_snapshot_binds_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        store
+            .workspace()
+            .set_residue("variant_definition_draft", "draft")
+            .unwrap();
+        store.workspace().purge_variant_definition().unwrap();
+        assert!(store
+            .workspace()
+            .residue("variant_definition_draft")
+            .unwrap()
+            .is_none());
+
+        let mut bound = completed_record("played-1", "Bound");
+        bound.payload.variant = "omachess:v1:immutable-snapshot".into();
+        store.workspace().upsert_game_record(&bound).unwrap();
+        store
+            .workspace()
+            .set_residue("variant_definition_draft", "draft")
+            .unwrap();
+        assert!(store.workspace().purge_variant_definition().is_err());
+        assert_eq!(
+            store
+                .workspace()
+                .residue("variant_definition_draft")
+                .unwrap()
+                .as_deref(),
+            Some("draft")
+        );
+    }
+
+    #[test]
     fn opening_a_new_live_store_records_current_schema_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("live-store.sqlite");
@@ -1998,6 +2502,190 @@ mod tests {
         let store = LiveStore::open(&path).unwrap();
         store.worker().ensure_ready().unwrap();
         assert!(store.workspace().list_game_records().unwrap().is_empty());
+    }
+
+    fn populated_library(path: &Path) -> LiveStore {
+        let store = LiveStore::open(path).unwrap();
+        let workspace = store.workspace();
+        workspace
+            .upsert_game_record(&completed_record("played-1", "Original"))
+            .unwrap();
+        workspace
+            .upsert_game_record(&completed_record("played-2", "Second"))
+            .unwrap();
+        workspace
+            .derive_analysis_record("played-1", "analysis-1", "2026-07-27T00:01:00Z")
+            .unwrap();
+        workspace
+            .add_annotation("analysis-1", 1, "Interesting")
+            .unwrap();
+        workspace.archive_game_record("played-2").unwrap();
+        workspace
+            .create_study("study-1", "Endgames", "2026-07-27T00:03:00Z")
+            .unwrap();
+        workspace.add_study_record("study-1", "played-1").unwrap();
+        workspace.add_study_record("study-1", "analysis-1").unwrap();
+        workspace
+            .reorder_study_record("study-1", "analysis-1", 0)
+            .unwrap();
+        workspace
+            .set_residue(VARIANT_DEFINITION_KEY, "preset=standard-8x8;files=8")
+            .unwrap();
+        workspace.set_residue("save_mode", "manual").unwrap();
+        // Workspace-only residue: it must not travel with the package.
+        workspace
+            .set_residue("active_record_id", "played-1")
+            .unwrap();
+        drop(workspace);
+        store
+    }
+
+    #[test]
+    fn a_round_trip_into_an_empty_library_reproduces_everything_portable() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let source = populated_library(&source_dir.path().join("live-store.sqlite"));
+        let package = source.workspace().export_package().unwrap();
+        let text = package.to_json().unwrap();
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let target = LiveStore::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        assert!(target.workspace().library_contents().unwrap().is_empty());
+        let parsed = LibraryPackage::parse(&text).unwrap();
+        target.workspace().restore_package(&parsed).unwrap();
+
+        assert_eq!(
+            target.workspace().export_package().unwrap().records,
+            package.records
+        );
+        assert_eq!(
+            target
+                .workspace()
+                .study("study-1")
+                .unwrap()
+                .unwrap()
+                .record_ids,
+            vec!["analysis-1".to_string(), "played-1".to_string()]
+        );
+        assert_eq!(
+            target.workspace().derivations_from("played-1").unwrap(),
+            vec!["analysis-1".to_string()]
+        );
+        assert_eq!(
+            target
+                .workspace()
+                .analysis_record("analysis-1")
+                .unwrap()
+                .unwrap()
+                .annotations
+                .len(),
+            1
+        );
+        assert_eq!(
+            target
+                .workspace()
+                .residue(VARIANT_DEFINITION_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("preset=standard-8x8;files=8")
+        );
+        assert_eq!(
+            target.workspace().residue("save_mode").unwrap().as_deref(),
+            Some("manual")
+        );
+        // Session residue belongs to one machine, not to the library.
+        assert_eq!(
+            target.workspace().residue("active_record_id").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_package_carries_its_format_version_and_a_description_of_its_contents() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = populated_library(&dir.path().join("live-store.sqlite"));
+        let package = store.workspace().export_package().unwrap();
+        assert_eq!(package.format_version, PACKAGE_FORMAT_VERSION);
+        assert_eq!(package.description, PACKAGE_DESCRIPTION);
+        assert!(package.description.contains("Record Graph"));
+        let text = package.to_json().unwrap();
+        assert!(text.contains("\"format_version\": 1"));
+    }
+
+    #[test]
+    fn a_package_from_an_incompatible_version_fails_closed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = populated_library(&dir.path().join("live-store.sqlite"));
+        let mut package = store.workspace().export_package().unwrap();
+        package.format_version = PACKAGE_FORMAT_VERSION + 1;
+        let text = package.to_json().unwrap();
+
+        let error = LibraryPackage::parse(&text).unwrap_err();
+        assert_eq!(
+            error,
+            PackageError::IncompatibleVersion(PACKAGE_FORMAT_VERSION + 1)
+        );
+        assert!(error.to_string().contains("Nothing was changed"));
+
+        // Even reached directly, the store refuses and changes nothing.
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let target = LiveStore::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        target
+            .workspace()
+            .upsert_game_record(&completed_record("kept-1", "Kept"))
+            .unwrap();
+        assert!(target.workspace().restore_package(&package).is_err());
+        assert!(target
+            .workspace()
+            .get_game_record("kept-1")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn an_unreadable_file_is_rejected_as_a_package() {
+        let error = LibraryPackage::parse("this is not a package").unwrap_err();
+        assert!(matches!(error, PackageError::Unreadable(_)));
+        assert!(error.to_string().contains("Nothing was changed"));
+    }
+
+    #[test]
+    fn a_populated_library_reports_exactly_what_a_restore_would_replace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = populated_library(&dir.path().join("live-store.sqlite"));
+        let contents = store.workspace().library_contents().unwrap();
+        assert!(!contents.is_empty());
+        assert_eq!(contents.records, 3);
+        assert_eq!(contents.studies, 1);
+        assert_eq!(contents.variant_definitions, 1);
+        assert_eq!(contents.preferences, 1);
+    }
+
+    #[test]
+    fn restoring_replaces_a_populated_library_without_merging_identities() {
+        let source_dir = tempfile::TempDir::new().unwrap();
+        let source = populated_library(&source_dir.path().join("live-store.sqlite"));
+        let package = source.workspace().export_package().unwrap();
+
+        let target_dir = tempfile::TempDir::new().unwrap();
+        let target = LiveStore::open(&target_dir.path().join("live-store.sqlite")).unwrap();
+        target
+            .workspace()
+            .upsert_game_record(&completed_record("other-1", "Other library"))
+            .unwrap();
+        target
+            .workspace()
+            .create_study("study-other", "Other Study", "2026-07-27T00:00:00Z")
+            .unwrap();
+
+        target.workspace().restore_package(&package).unwrap();
+
+        assert!(target
+            .workspace()
+            .get_game_record("other-1")
+            .unwrap()
+            .is_none());
+        assert!(target.workspace().study("study-other").unwrap().is_none());
+        assert_eq!(target.workspace().library_contents().unwrap().records, 3);
     }
 
     #[test]

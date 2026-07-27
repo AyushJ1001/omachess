@@ -21,7 +21,9 @@ ApplicationWindow {
     visible: true
 
     function requestLivePositionAnalysis() {
-        if (analysisToggle.checked && WorkspaceSession.activity !== "variant_play")
+        if (!computerAnalysisRunning && computerAnalysisRunState !== "Failed"
+                && analysisToggle.checked
+                && WorkspaceSession.activity !== "variant_play")
             EngineManager.analyzePosition(WorkspaceSession.displayedFen,
                                           WorkspaceSession.displayedPositionRuleValid)
     }
@@ -34,19 +36,51 @@ ApplicationWindow {
 
     Connections {
         target: WorkspaceSession
-        function onBoardChanged() { workspace.requestLivePositionAnalysis() }
+        function onBoardChanged() {
+            workspace.requestLivePositionAnalysis()
+            if (!workspace.computerAnalysisRunning
+                    && WorkspaceSession.activity === "played_game"
+                    && WorkspaceSession.gameOver)
+                EngineManager.setComputerAnalysisBudget(
+                    workspace.computerAnalysisBudgetKey,
+                    WorkspaceSession.moveList.length + 1)
+        }
     }
     title: qsTr("Omachess")
     color: Theme.background
     property var selectedLibraryIds: []
+    property bool showArchivedRecords: false
     property bool computerAnalysisRunning: false
     property string computerAnalysisRunState: ""
     property int computerAnalysisTargetPly: 0
     property int computerAnalysisTotal: 0
     property var computerAnalysisResults: []
+    property string computerAnalysisBudgetKey: "standard"
+    property string computerAnalysisFailureMessage: ""
     property string backgroundComputerAnalysisId: ""
     property var backgroundComputerAnalysisJob: null
     property bool backgroundComputerAnalysisCloseApproved: false
+
+    Timer {
+        id: computerAnalysisNextPositionTimer
+        interval: 20
+        repeat: false
+        onTriggered: workspace.requestComputerPosition()
+    }
+
+    function computerAnalysisBudgetSummary(key) {
+        if (key === "quick")
+            return qsTr("Quick · 250 ms · one line · Low resources")
+        if (key === "deep")
+            return qsTr("Deep · 5 s · three lines · High resources")
+        return qsTr("Standard · 1 s · two lines · Moderate resources")
+    }
+
+    function selectComputerAnalysisBudget(key) {
+        computerAnalysisBudgetKey = key
+        EngineManager.setComputerAnalysisBudget(
+            key, WorkspaceSession.moveList.length + 1)
+    }
 
     function backgroundJobControlsContain(control) {
         return backgroundComputerAnalysisJob !== null
@@ -82,7 +116,11 @@ ApplicationWindow {
         backgroundComputerAnalysisId = job.id
         backgroundComputerAnalysisJob = job
         computerAnalysisTotal = job.total
-        computerAnalysisResults = Array(job.checkpoint).fill({})
+        const previousCheckpoint = computerAnalysisResults.length
+        const checkpoint = Math.min(job.checkpoint, job.total)
+        for (let completed = previousCheckpoint; completed < checkpoint; ++completed)
+            EngineManager.recordComputerAnalysisPosition()
+        computerAnalysisResults = Array(checkpoint).fill({})
         if (job.state === "complete") {
             computerAnalysisResults = Array(job.total).fill({})
             if (WorkspaceSession.importBackgroundComputerAnalysis(job.id)) {
@@ -91,14 +129,29 @@ ApplicationWindow {
                 computerAnalysisRunning = false
                 computerAnalysisRunState = "Complete"
                 backgroundComputerAnalysisCloseApproved = false
+                EngineManager.endComputerAnalysis()
                 return
             }
             computerAnalysisRunning = false
             computerAnalysisRunState = "Ready to import"
+            EngineManager.endComputerAnalysis()
             return
         }
         computerAnalysisRunning = job.state === "running"
         computerAnalysisRunState = job.state.charAt(0).toUpperCase() + job.state.slice(1)
+    }
+
+    function visibleLibraryRecords() {
+        return WorkspaceSession.libraryRecords.filter(function(record) {
+            return showArchivedRecords || !record.archived
+        })
+    }
+
+    function askPurge(kind, id, label) {
+        permanentPurgeDialog.kind = kind
+        permanentPurgeDialog.targetId = id
+        permanentPurgeDialog.targetLabel = label
+        permanentPurgeDialog.open()
     }
 
     function requestComputerPosition() {
@@ -108,7 +161,16 @@ ApplicationWindow {
     }
 
     function startComputerAnalysis() {
-        const backgroundJobId = WorkspaceSession.startBackgroundComputerAnalysis()
+        computerAnalysisFailureMessage = ""
+        computerAnalysisTargetPly = 0
+        computerAnalysisTotal = WorkspaceSession.moveList.length + 1
+        computerAnalysisResults = []
+        EngineManager.beginComputerAnalysis(
+            computerAnalysisBudgetKey, computerAnalysisTotal)
+        const backgroundJobId = WorkspaceSession.startBackgroundComputerAnalysis(
+            EngineManager.computerAnalysisSearchSettings(),
+            EngineManager.computerAnalysisSearchTimeMs(),
+            EngineManager.computerAnalysisLineLimit())
         if (backgroundJobId !== "") {
             backgroundComputerAnalysisCloseApproved = false
             backgroundComputerAnalysisId = backgroundJobId
@@ -123,14 +185,13 @@ ApplicationWindow {
             }
             computerAnalysisRunning = true
             computerAnalysisRunState = "Running in background worker"
-            computerAnalysisTotal = WorkspaceSession.moveList.length + 1
-            computerAnalysisResults = []
             return
         }
         computerAnalysisRunning = false
         computerAnalysisRunState = "Background worker unavailable"
         computerAnalysisTotal = 0
         computerAnalysisResults = []
+        EngineManager.endComputerAnalysis()
     }
 
     function cancelComputerAnalysis() {
@@ -140,6 +201,8 @@ ApplicationWindow {
         backgroundComputerAnalysisJob = null
         computerAnalysisRunning = false
         computerAnalysisRunState = "Cancelled"
+        computerAnalysisNextPositionTimer.stop()
+        EngineManager.endComputerAnalysis()
         EngineManager.clearAnalysis()
     }
 
@@ -160,16 +223,20 @@ ApplicationWindow {
             better_line: best.length > 0 ? best : null
         })
         computerAnalysisResults = computerAnalysisResults.slice()
-        if (computerAnalysisResults.length === computerAnalysisTotal) {
+        const complete = computerAnalysisResults.length === computerAnalysisTotal
+        computerAnalysisTargetPly = complete ? computerAnalysisTotal
+                                               : computerAnalysisTargetPly + 1
+        EngineManager.recordComputerAnalysisPosition()
+        if (complete) {
             computerAnalysisRunning = false
             computerAnalysisRunState = "Complete"
+            EngineManager.endComputerAnalysis()
             const encoded = JSON.stringify(computerAnalysisResults)
             WorkspaceSession.completeComputerAnalysis(encoded)
             return
         }
-        computerAnalysisTargetPly += 1
         WorkspaceSession.navigate("forward")
-        Qt.callLater(requestComputerPosition)
+        computerAnalysisNextPositionTimer.start()
     }
 
     property string pendingCloseRecordId: ""
@@ -307,7 +374,21 @@ ApplicationWindow {
     }
     Connections {
         target: EngineManager
-        function onAnalysisChanged() { workspace.collectComputerPosition() }
+        function onAnalysisChanged() {
+            if (workspace.computerAnalysisRunning
+                    && workspace.backgroundComputerAnalysisId === ""
+                    && !EngineManager.analyzing
+                    && !EngineManager.analysisReady
+                    && EngineManager.analysisMessage.indexOf("unavailable —") >= 0) {
+                computerAnalysisNextPositionTimer.stop()
+                workspace.computerAnalysisFailureMessage = EngineManager.analysisMessage
+                workspace.computerAnalysisRunning = false
+                workspace.computerAnalysisRunState = "Failed"
+                EngineManager.endComputerAnalysis()
+                return
+            }
+            workspace.collectComputerPosition()
+        }
     }
 
     Dialog {
@@ -669,7 +750,11 @@ ApplicationWindow {
                 Layout.maximumWidth: 92
                 text: qsTr("Resume")
                 onClicked: {
-                    WorkspaceSession.resumeBackgroundJob(workspace.backgroundComputerAnalysisId)
+                    WorkspaceSession.resumeBackgroundJob(
+                        workspace.backgroundComputerAnalysisId,
+                        EngineManager.computerAnalysisSearchSettings(),
+                        EngineManager.computerAnalysisSearchTimeMs(),
+                        EngineManager.computerAnalysisLineLimit())
                     workspace.refreshBackgroundComputerAnalysisJobs()
                 }
             }
@@ -894,18 +979,33 @@ ApplicationWindow {
                     anchors.fill: parent
                     spacing: 0
 
-                    Label {
-                        objectName: "libraryHeading"
+                    RowLayout {
                         Layout.fillWidth: true
+                        Layout.topMargin: 8
                         Layout.leftMargin: 12
-                        Layout.rightMargin: 12
-                        Layout.topMargin: 10
-                        Layout.bottomMargin: 8
-                        text: qsTr("Personal Library")
-                        font.bold: true
-                        font.pixelSize: 11
-                        font.capitalization: Font.AllUppercase
-                        color: Theme.muted
+                        Layout.rightMargin: 8
+                        Layout.bottomMargin: 6
+                        Label {
+                            objectName: "libraryHeading"
+                            Layout.fillWidth: true
+                            text: qsTr("Personal Library")
+                            font.bold: true
+                            font.pixelSize: 11
+                            font.capitalization: Font.AllUppercase
+                            color: Theme.muted
+                        }
+                        Button {
+                            objectName: "toggleArchivedView"
+                            text: showArchivedRecords ? qsTr("All") : qsTr("Archived")
+                            ToolTip.text: showArchivedRecords
+                                         ? qsTr("Show default records")
+                                         : qsTr("Show archived records")
+                            onClicked: {
+                                showArchivedRecords = !showArchivedRecords
+                                WorkspaceSession.setLibraryView(
+                                    showArchivedRecords ? "archived" : "default")
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -945,6 +1045,37 @@ ApplicationWindow {
                             enabled: workspace.selectedLibraryIds.length > 0
                             onClicked: WorkspaceSession.exportPgn(workspace.selectedLibraryIds)
                         }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 8
+                        Layout.rightMargin: 8
+                        Button {
+                            objectName: "exportLibraryPackageButton"
+                            text: qsTr("Export library…")
+                            ToolTip.text: qsTr("Take the whole library away as a "
+                                               + "Library Portability Package")
+                            onClicked: WorkspaceSession.exportLibraryPackage()
+                        }
+                        Button {
+                            objectName: "restoreLibraryPackageButton"
+                            text: qsTr("Restore library…")
+                            ToolTip.text: qsTr("Bring a Library Portability Package back")
+                            onClicked: WorkspaceSession.restoreLibraryPackage()
+                        }
+                    }
+
+                    Label {
+                        objectName: "libraryPackageMessage"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 8
+                        Layout.rightMargin: 8
+                        visible: WorkspaceSession.libraryPackageMessage.length > 0
+                        text: WorkspaceSession.libraryPackageMessage
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                        color: Theme.muted
                     }
 
                     Rectangle {
@@ -987,12 +1118,21 @@ ApplicationWindow {
                             required property int index
                             width: studiesList.width
                             spacing: 2
-                            Label {
-                                objectName: "studyTitle:" + modelData.id
+                            RowLayout {
                                 Layout.fillWidth: true
-                                Layout.leftMargin: 10
-                                text: modelData.name
-                                font.bold: true
+                                Label {
+                                    objectName: "studyTitle:" + modelData.id
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 10
+                                    text: modelData.name
+                                    font.bold: true
+                                }
+                                Button {
+                                    objectName: "purgeStudy:" + modelData.id
+                                    text: qsTr("Purge")
+                                    onClicked: workspace.askPurge(
+                                                   "study", modelData.id, modelData.name)
+                                }
                             }
                             Repeater {
                                 model: modelData.recordIds
@@ -1042,7 +1182,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
-                        model: WorkspaceSession.libraryRecords
+                        model: workspace.visibleLibraryRecords()
 
                         delegate: ItemDelegate {
                             required property var modelData
@@ -1089,8 +1229,12 @@ ApplicationWindow {
                             Row {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                width: 102
+                                spacing: 0
                                 CheckBox {
                                     objectName: "selectRecord:" + modelData.id
+                                    width: 18
+                                    implicitWidth: 18
                                     checked: workspace.selectedLibraryIds.indexOf(modelData.id) >= 0
                                     onClicked: {
                                         let ids = workspace.selectedLibraryIds.slice()
@@ -1104,8 +1248,37 @@ ApplicationWindow {
                                 }
                                 Button {
                                     objectName: "exportRecord:" + modelData.id
-                                    text: qsTr("Export")
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: qsTr("↗")
+                                    ToolTip.text: qsTr("Export")
+                                    ToolTip.visible: hovered
                                     onClicked: WorkspaceSession.exportPgn([modelData.id])
+                                }
+                                Button {
+                                    objectName: (modelData.archived ? "unarchiveRecord:" : "archiveRecord:")
+                                                 + modelData.id
+                                    visible: modelData.kind !== "variant"
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: modelData.archived ? qsTr("R") : qsTr("A")
+                                    ToolTip.text: modelData.archived
+                                                 ? qsTr("Restore") : qsTr("Archive")
+                                    ToolTip.visible: hovered
+                                    onClicked: modelData.archived
+                                              ? WorkspaceSession.unarchiveRecord(modelData.id)
+                                              : WorkspaceSession.archiveRecord(modelData.id)
+                                }
+                                Button {
+                                    objectName: "purgeVariantDefinitionRow:" + modelData.id
+                                    visible: modelData.kind === "variant"
+                                    width: 28
+                                    implicitWidth: 28
+                                    text: qsTr("P")
+                                    ToolTip.text: qsTr("Permanent purge")
+                                    ToolTip.visible: hovered
+                                    onClicked: workspace.askPurge(
+                                                   "variant", modelData.id, modelData.title)
                                 }
                             }
 
@@ -1773,6 +1946,84 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
+                        visible: (WorkspaceSession.activity === "played_game"
+                                  && WorkspaceSession.activeRecordId.length > 0
+                                  && WorkspaceSession.gameOver)
+                                 || workspace.computerAnalysisRunState.length > 0
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Label {
+                            objectName: "computerAnalysisSettingsHeading"
+                            Layout.fillWidth: true
+                            text: qsTr("Computer-analysis settings")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "analysisBudgetSelection"
+                            Layout.fillWidth: true
+                            text: workspace.computerAnalysisBudgetSummary(
+                                      workspace.computerAnalysisBudgetKey)
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Button {
+                            objectName: "analysisBudget:quick"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "quick"
+                            text: qsTr("Quick · 250 ms · one line · Low resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("quick")
+                        }
+                        Button {
+                            objectName: "analysisBudget:standard"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "standard"
+                            text: qsTr("Standard · 1 s · two lines · Moderate resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("standard")
+                        }
+                        Button {
+                            objectName: "analysisBudget:deep"
+                            Layout.fillWidth: true
+                            checkable: true
+                            checked: workspace.computerAnalysisBudgetKey === "deep"
+                            text: qsTr("Deep · 5 s · three lines · High resources")
+                            onClicked: workspace.selectComputerAnalysisBudget("deep")
+                        }
+                        Label {
+                            objectName: "computerAnalysisDisclosure"
+                            Layout.fillWidth: true
+                            visible: (WorkspaceSession.activity === "played_game"
+                                      && WorkspaceSession.activeRecordId.length > 0
+                                      && WorkspaceSession.gameOver)
+                                     || workspace.computerAnalysisRunState.length > 0
+                            text: EngineManager.computerAnalysisDisclosure
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "computerAnalysisEstimate"
+                            Layout.fillWidth: true
+                            visible: (WorkspaceSession.activity === "played_game"
+                                      && WorkspaceSession.activeRecordId.length > 0
+                                      && WorkspaceSession.gameOver)
+                                     || workspace.computerAnalysisRunState.length > 0
+                            text: EngineManager.computerAnalysisEstimate
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                        Label {
+                            objectName: "computerAnalysisError"
+                            Layout.fillWidth: true
+                            visible: workspace.computerAnalysisFailureMessage.length > 0
+                            text: workspace.computerAnalysisFailureMessage
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                        }
+                    }
+
+                    ColumnLayout {
                         Layout.fillWidth: true
                         visible: analysisToggle.checked
                                  && WorkspaceSession.activity !== "variant_play"
@@ -2089,6 +2340,26 @@ ApplicationWindow {
                         text: qsTr("Game Metadata")
                         font.bold: true
                         color: Theme.muted
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !WorkspaceSession.workshopActive
+                                 && WorkspaceSession.activeRecordId.length > 0
+                        Button {
+                            objectName: "archiveActiveRecordButton"
+                            Layout.fillWidth: true
+                            text: qsTr("Archive active")
+                            onClicked: WorkspaceSession.archiveRecord(
+                                           WorkspaceSession.activeRecordId)
+                        }
+                        Button {
+                            objectName: "purgeRecord:" + WorkspaceSession.activeRecordId
+                            Layout.fillWidth: true
+                            text: qsTr("Purge active")
+                            onClicked: workspace.askPurge(
+                                           "record", WorkspaceSession.activeRecordId,
+                                           WorkspaceSession.gameTitle)
+                        }
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -2419,6 +2690,102 @@ ApplicationWindow {
                         color: Theme.foreground
                         text: qsTr("Reviewing an earlier position — play continues at the last move.")
                     }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: libraryReplacementDialog
+        objectName: "libraryReplacementDialog"
+        anchors.centerIn: parent
+        width: Math.min(520, workspace.width - 40)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Replace this library")
+
+        // A package never merges into a library. A player restoring into a
+        // library that already holds work is told exactly what goes, and
+        // decides.
+        visible: WorkspaceSession.libraryReplacementPending
+        onRejected: WorkspaceSession.cancelLibraryReplacement()
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "libraryReplacementWarning"
+                Layout.fillWidth: true
+                text: WorkspaceSession.libraryReplacementMessage
+                color: Theme.danger
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    objectName: "cancelLibraryReplacement"
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: WorkspaceSession.cancelLibraryReplacement()
+                }
+                Button {
+                    objectName: "confirmLibraryReplacement"
+                    Layout.fillWidth: true
+                    text: qsTr("Replace this library")
+                    onClicked: WorkspaceSession.confirmLibraryReplacement()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: permanentPurgeDialog
+        objectName: "permanentPurgeDialog"
+        anchors.centerIn: parent
+        width: Math.min(520, workspace.width - 40)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: qsTr("Permanent purge")
+
+        property string kind: "record"
+        property string targetId: ""
+        property string targetLabel: ""
+
+        function confirmPurge() {
+            if (kind === "record")
+                WorkspaceSession.purgeRecord(targetId)
+            else if (kind === "study")
+                WorkspaceSession.purgeStudy(targetId)
+            else
+                WorkspaceSession.purgeVariantDefinition()
+            close()
+        }
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "permanentPurgeTarget"
+                Layout.fillWidth: true
+                text: qsTr("Permanently purge “%1”? ").arg(permanentPurgeDialog.targetLabel)
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                objectName: "permanentPurgeWarning"
+                Layout.fillWidth: true
+                text: qsTr("This is irreversible. Omachess offers no in-app undelete.")
+                color: Theme.danger
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    objectName: "cancelPermanentPurge"
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: permanentPurgeDialog.close()
+                }
+                Button {
+                    objectName: "confirmPermanentPurge"
+                    Layout.fillWidth: true
+                    text: qsTr("Permanently purge")
+                    onClicked: permanentPurgeDialog.confirmPurge()
                 }
             }
         }
