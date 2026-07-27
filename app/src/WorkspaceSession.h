@@ -47,6 +47,8 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(bool gameOver READ gameOver NOTIFY boardChanged)
     Q_PROPERTY(bool clockEnabled READ clockEnabled NOTIFY boardChanged)
     Q_PROPERTY(bool clockRunning READ clockRunning NOTIFY boardChanged)
+    Q_PROPERTY(bool gameSuspended READ gameSuspended NOTIFY boardChanged)
+    Q_PROPERTY(bool canSuspendGame READ canSuspendGame NOTIFY boardChanged)
     Q_PROPERTY(int whiteClockMs READ whiteClockMs NOTIFY boardChanged)
     Q_PROPERTY(int blackClockMs READ blackClockMs NOTIFY boardChanged)
     Q_PROPERTY(QString whitePlayer READ whitePlayer NOTIFY boardChanged)
@@ -95,6 +97,8 @@ public:
     bool gameOver() const;
     bool clockEnabled() const { return clockField(QStringLiteral("enabled")).toBool(); }
     bool clockRunning() const { return clockField(QStringLiteral("running")).toBool(); }
+    bool gameSuspended() const { return m_state.value(QStringLiteral("suspended")).toBool(); }
+    bool canSuspendGame() const { return m_state.value(QStringLiteral("canSuspend")).toBool(); }
     int whiteClockMs() const { return clockField(QStringLiteral("whiteMs")).toInt(); }
     int blackClockMs() const { return clockField(QStringLiteral("blackMs")).toInt(); }
     QString whitePlayer() const { return metadataField(QStringLiteral("white")); }
@@ -136,6 +140,8 @@ public:
 
     // Player intent: restore the Game Record offered after restart.
     Q_INVOKABLE void restoreRecord();
+    Q_INVOKABLE void suspendGame();
+    Q_INVOKABLE void resumeGame();
 
     // Player intent: decline the restore offer and keep the fresh board.
     Q_INVOKABLE void dismissRestore();

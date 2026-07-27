@@ -14,6 +14,8 @@
  *   {"type":"navigate","to":"backward|forward|start|end"}
  *                              move which position of the game is displayed
  *   {"type":"restore_record"}  reload the Game Record offered after restart
+ *   {"type":"suspend_game"}    freeze an unfinished Played Game and its clock
+ *   {"type":"resume_game"}     deliberately resume a Suspended Game
  *   {"type":"dismiss_restore"} decline the restore offer
  *   {"type":"new_game"}        clear the board; the next move starts a new
  *                              Game Record (prior records stay in the library)
@@ -31,10 +33,9 @@
  *   {"type":"tabs_changed","openTabs":[{id,title}],"activeId":"..."}
  *                              open record tabs and the active tab id
  *   {"type":"restore_available","recordId":"...","plyCount":N,
- *    "label":"Restore previous game"}
+ *    "label":"Restore suspended Played Game · N moves"}
  *                              offered after describe_board when workspace
- *                              residue points at a prior Game Record that is
- *                              not already restored via open tabs
+ *                              residue points at an unfinished Played Game
  *   {"type":"restore_cleared"} the restore offer is gone
  *
  *   The 64 squares are in reading order for the current orientation: the
