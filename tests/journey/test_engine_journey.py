@@ -53,6 +53,8 @@ def fake_engine(path: Path, behavior: str, execution_log: Path) -> None:
                     if behavior == "search-timeout":
                         time.sleep(5)
                     else:
+                        if behavior == "slow-analysis":
+                            time.sleep(0.35)
                         if "4P3" in position:
                             print("info depth 8 multipv 1 score cp 31 pv c7c5 g1f3", flush=True)
                             print("info depth 8 multipv 2 score cp 18 pv e7e5 g1f3", flush=True)

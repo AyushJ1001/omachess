@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +22,21 @@ def library_ids(screen) -> set[str]:
         for name in screen.labels
         if name.startswith(("libraryTitle:", "library:", "tabTitle:"))
     }
+
+
+def background_worker_pid() -> int:
+    try:
+        output = subprocess.check_output(
+            ["busctl", "--user", "--no-pager", "status", "com.omachess.Omachess.BackgroundWorker"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        raise unittest.SkipTest("busctl could not inspect the D-Bus background worker") from error
+    for line in output.splitlines():
+        if line.startswith("PID="):
+            return int(line.split("=", 1)[1])
+    raise unittest.SkipTest("D-Bus background worker PID was not reported")
 
 
 class AnalysisRecordsJourney(unittest.TestCase):
@@ -125,6 +143,77 @@ class AnalysisRecordsJourney(unittest.TestCase):
             self.assertIn("backgroundConsentStop", prompt.labels)
             workspace.click("backgroundConsentStop")
             workspace.wait_until_closed()
+
+    def test_consented_close_continues_background_analysis_and_imports_on_next_launch(self) -> None:
+        root = tempfile.TemporaryDirectory(prefix="omachess-background-continue-")
+        self.addCleanup(root.cleanup)
+        data_home = Path(root.name)
+        engine = data_home / "xdg_data_home" / "omachess" / "engines" / "stockfish" / "stockfish"
+        fake_engine(engine, "slow-analysis", data_home / "engine-executed")
+        environment = {"OMACHESS_TEST_ENGINE_DEADLINE_MS": "2000"}
+        workspace = Workspace(executable_under_test(), data_home=data_home, environment=environment)
+        workspace.start()
+        self.addCleanup(workspace.stop)
+        workspace.click("engineProfilesButton")
+        workspace.click("engineConsent:stockfish")
+        workspace.screen_when(lambda screen: screen.labels.get("engineState:stockfish") == "Ready")
+        workspace.play_all(CHECKMATE)
+        workspace.screen_when(lambda screen: "computerAnalysisButton" in screen.labels)
+        workspace.click("computerAnalysisButton")
+        workspace.close_window()
+        workspace.screen_when(lambda screen: "backgroundConsentContinue" in screen.labels)
+        workspace.click("backgroundConsentContinue")
+        workspace.wait_until_closed()
+        workspace.stop(cleanup=False)
+
+        relaunched = Workspace(executable_under_test(), data_home=data_home, environment=environment)
+        relaunched.start()
+        self.addCleanup(relaunched.stop)
+        imported = relaunched.screen_when(
+            lambda screen: screen.labels.get("computerEvaluationCount") == "5 positions",
+            timeout=20.0,
+        )
+        self.assertEqual(imported.labels["computerAnalysisState"], "Complete")
+        self.assertEqual(imported.labels["defaultAnalysis"], "Default Analysis")
+
+    def test_worker_crash_recovers_as_interrupted_and_resume_imports_from_checkpoint(self) -> None:
+        root = tempfile.TemporaryDirectory(prefix="omachess-background-interrupted-")
+        self.addCleanup(root.cleanup)
+        data_home = Path(root.name)
+        engine = data_home / "xdg_data_home" / "omachess" / "engines" / "stockfish" / "stockfish"
+        fake_engine(engine, "slow-analysis", data_home / "engine-executed")
+        workspace = Workspace(
+            executable_under_test(),
+            data_home=data_home,
+            environment={"OMACHESS_TEST_ENGINE_DEADLINE_MS": "2000"},
+        )
+        workspace.start()
+        self.addCleanup(workspace.stop)
+        workspace.click("engineProfilesButton")
+        workspace.click("engineConsent:stockfish")
+        workspace.screen_when(lambda screen: screen.labels.get("engineState:stockfish") == "Ready")
+        workspace.play_all(CHECKMATE)
+        workspace.screen_when(lambda screen: "computerAnalysisButton" in screen.labels)
+        workspace.click("computerAnalysisButton")
+        workspace.screen_when(
+            lambda screen: screen.labels.get("computerAnalysisStatus") == "1 / 5 positions",
+            timeout=20.0,
+        )
+
+        os.kill(background_worker_pid(), signal.SIGKILL)
+        interrupted = workspace.screen_when(
+            lambda screen: screen.labels.get("computerAnalysisState") == "Interrupted"
+            and "resumeComputerAnalysisButton" in screen.labels,
+            timeout=20.0,
+        )
+        self.assertIn("dismissComputerAnalysisButton", interrupted.labels)
+
+        workspace.click("resumeComputerAnalysisButton")
+        finished = workspace.screen_when(
+            lambda screen: screen.labels.get("computerEvaluationCount") == "5 positions",
+            timeout=20.0,
+        )
+        self.assertEqual(finished.labels["computerAnalysisState"], "Complete")
 
     def test_derive_diverge_and_derive_again_keeps_every_record_independent(self) -> None:
         with Workspace(executable_under_test()) as workspace:

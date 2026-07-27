@@ -113,10 +113,17 @@ int32_t omachess_background_job_create(const char *id, const char *record_id,
                                        uint32_t total);
 int32_t omachess_background_job_checkpoint(const char *id, uint32_t checkpoint,
                                            const char *state);
+int32_t omachess_background_job_checkpoint_with_payload(const char *id,
+                                                        uint32_t checkpoint,
+                                                        const char *state,
+                                                        const char *payload);
 uint32_t omachess_background_job_checkpoint_value(const char *id);
 uint32_t omachess_background_job_total_value(const char *id);
 char *omachess_background_job_json(const char *id);
+char *omachess_background_jobs_json(void);
+char *omachess_background_job_positions_json(const char *id);
 int32_t omachess_background_job_complete(const char *id);
+int32_t omachess_background_job_complete_with_payload(const char *id, const char *payload);
 
 #ifdef __cplusplus
 }

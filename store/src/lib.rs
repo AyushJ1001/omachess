@@ -32,10 +32,7 @@ pub enum OpenError {
         source: rusqlite::Error,
     },
     /// The launch migration failed. The previous store is untouched.
-    Migration {
-        path: PathBuf,
-        detail: String,
-    },
+    Migration { path: PathBuf, detail: String },
 }
 
 impl std::fmt::Display for OpenError {
@@ -49,7 +46,11 @@ impl std::fmt::Display for OpenError {
                 )
             }
             OpenError::OpenFile { path, source } => {
-                write!(f, "could not open Live Store at {}: {source}", path.display())
+                write!(
+                    f,
+                    "could not open Live Store at {}: {source}",
+                    path.display()
+                )
             }
             OpenError::Configure { path, source } => {
                 write!(
@@ -279,28 +280,57 @@ pub enum BackgroundJobState {
 impl BackgroundJobState {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Queued => "queued", Self::Running => "running", Self::Paused => "paused",
-            Self::Interrupted => "interrupted", Self::Complete => "complete",
-            Self::Cancelled => "cancelled", Self::Failed => "failed", Self::Dismissed => "dismissed",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Interrupted => "interrupted",
+            Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Dismissed => "dismissed",
         }
     }
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
-            "queued" => Self::Queued, "running" => Self::Running, "paused" => Self::Paused,
-            "interrupted" => Self::Interrupted, "complete" => Self::Complete,
-            "cancelled" => Self::Cancelled, "failed" => Self::Failed, "dismissed" => Self::Dismissed, _ => return None,
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "paused" => Self::Paused,
+            "interrupted" => Self::Interrupted,
+            "complete" => Self::Complete,
+            "cancelled" => Self::Cancelled,
+            "failed" => Self::Failed,
+            "dismissed" => Self::Dismissed,
+            _ => return None,
         })
     }
 
     /// Parse the stable D-Bus / C-ABI spelling of a lifecycle state.
-    pub fn parse_public(value: &str) -> Option<Self> { Self::parse(value) }
+    pub fn parse_public(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
 
     fn can_transition_to(self, next: Self) -> bool {
-        matches!((self, next),
+        matches!(
+            (self, next),
             (Self::Queued, Self::Running)
-            | (Self::Running, Self::Paused | Self::Interrupted | Self::Complete | Self::Cancelled | Self::Failed)
-            | (Self::Paused, Self::Running | Self::Cancelled)
-            | (Self::Interrupted, Self::Running | Self::Cancelled | Self::Dismissed))
+                | (
+                    Self::Running,
+                    Self::Paused
+                        | Self::Interrupted
+                        | Self::Complete
+                        | Self::Cancelled
+                        | Self::Failed
+                )
+                | (Self::Paused, Self::Running | Self::Cancelled)
+                | (
+                    Self::Interrupted,
+                    Self::Running | Self::Cancelled | Self::Dismissed
+                )
+                | (
+                    Self::Complete | Self::Cancelled | Self::Failed,
+                    Self::Dismissed
+                )
+        )
     }
 }
 
@@ -435,7 +465,10 @@ impl<'a> WorkspaceWriter<'a> {
         }
         transaction.execute(
             "INSERT INTO analysis_records (record_id, content) VALUES (?1, ?2)",
-            rusqlite::params![derived_id, serde_json::to_string(&data).map_err(json_error)?],
+            rusqlite::params![
+                derived_id,
+                serde_json::to_string(&data).map_err(json_error)?
+            ],
         )?;
         transaction.execute(
             "INSERT INTO record_edges (source_id, derived_id, edge_type) VALUES (?1, ?2, 'derived_from')",
@@ -486,11 +519,7 @@ impl<'a> WorkspaceWriter<'a> {
         self.update_analysis(id, |data| data.sidelines.push(sideline))
     }
 
-    pub fn pin_engine_line(
-        &self,
-        id: &str,
-        line: &PinnedEngineLine,
-    ) -> Result<(), StoreError> {
+    pub fn pin_engine_line(&self, id: &str, line: &PinnedEngineLine) -> Result<(), StoreError> {
         self.update_analysis(id, |data| data.pinned_lines.push(line.clone()))
     }
 
@@ -557,7 +586,8 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn purge_game_record(&self, id: &str) -> Result<(), StoreError> {
-        self.conn.execute("DELETE FROM game_records WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM game_records WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -620,9 +650,14 @@ impl<'a> WorkspaceWriter<'a> {
         record_id: &str,
         position: usize,
     ) -> Result<(), StoreError> {
-        let ids = self.study(study_id)?.ok_or_else(|| StoreError::Message("Study is unavailable".into()))?.record_ids;
+        let ids = self
+            .study(study_id)?
+            .ok_or_else(|| StoreError::Message("Study is unavailable".into()))?
+            .record_ids;
         let Some(from) = ids.iter().position(|id| id == record_id) else {
-            return Err(StoreError::Message("Game Record is not in the Study".into()));
+            return Err(StoreError::Message(
+                "Game Record is not in the Study".into(),
+            ));
         };
         let mut reordered = ids;
         let id = reordered.remove(from);
@@ -651,24 +686,35 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn study(&self, id: &str) -> Result<Option<Study>, StoreError> {
-        let name = match self.conn.query_row(
-            "SELECT name FROM studies WHERE id = ?1", [id], |row| row.get::<_, String>(0)
-        ) {
-            Ok(name) => name,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
+        let name =
+            match self
+                .conn
+                .query_row("SELECT name FROM studies WHERE id = ?1", [id], |row| {
+                    row.get::<_, String>(0)
+                }) {
+                Ok(name) => name,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
         let mut statement = self.conn.prepare(
-            "SELECT record_id FROM study_records WHERE study_id = ?1 ORDER BY position, record_id"
+            "SELECT record_id FROM study_records WHERE study_id = ?1 ORDER BY position, record_id",
         )?;
-        let record_ids = statement.query_map([id], |row| row.get(0))?
+        let record_ids = statement
+            .query_map([id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(Study { id: id.into(), name, record_ids }))
+        Ok(Some(Study {
+            id: id.into(),
+            name,
+            record_ids,
+        }))
     }
 
     pub fn list_studies(&self) -> Result<Vec<Study>, StoreError> {
-        let mut statement = self.conn.prepare("SELECT id FROM studies ORDER BY created_at, id")?;
-        let study_ids = statement.query_map([], |row| row.get::<_, String>(0))?
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM studies ORDER BY created_at, id")?;
+        let study_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         study_ids
             .iter()
@@ -700,8 +746,10 @@ impl<'a> WorkspaceWriter<'a> {
     }
 
     pub fn clear_residue(&self, key: &str) -> Result<(), StoreError> {
-        self.conn
-            .execute("DELETE FROM workspace_residue WHERE key = ?1", rusqlite::params![key])?;
+        self.conn.execute(
+            "DELETE FROM workspace_residue WHERE key = ?1",
+            rusqlite::params![key],
+        )?;
         Ok(())
     }
 
@@ -758,7 +806,7 @@ pub struct GameRecordSummary {
     pub updated_at: String,
 }
 
-/// Worker write partition: Background Jobs (and later Analysis Record completion).
+/// Worker write partition: Background Jobs.
 pub struct WorkerWriter<'a> {
     conn: &'a Connection,
 }
@@ -792,33 +840,85 @@ impl<'a> WorkerWriter<'a> {
     }
 
     pub fn job(&self, id: &str) -> Result<Option<BackgroundJob>, StoreError> {
-        match self.conn.query_row("SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload FROM background_jobs WHERE id = ?1", [id], |row| {
-            let state: String = row.get(2)?;
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, state, row.get::<_, String>(3)?, row.get::<_, u32>(4)?, row.get::<_, u32>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, String>(8)?))
-        }) {
-            Ok((id, kind, state, record_id, checkpoint, total, controls, updated_at, payload)) => Ok(Some(BackgroundJob { id, kind, state: BackgroundJobState::parse(&state).ok_or_else(|| StoreError::Message(format!("unknown Background Job state: {state}")))?, record_id, checkpoint, total, controls: controls.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect(), payload, updated_at })),
+        match self.conn.query_row("SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload FROM background_jobs WHERE id = ?1", [id], row_to_background_job) {
+            Ok(job) => Ok(Some(job)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
 
+    pub fn jobs(&self) -> Result<Vec<BackgroundJob>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, kind, state, record_id, checkpoint, total, controls, updated_at, payload
+             FROM background_jobs
+             WHERE state != 'dismissed'
+             ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([], row_to_background_job)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Atomically records a completed move boundary and its lifecycle state.
-    pub fn checkpoint(&self, id: &str, checkpoint: u32, state: BackgroundJobState, updated_at: &str) -> Result<(), StoreError> {
-        let current = self.job(id)?.ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
-        if checkpoint > current.total || checkpoint < current.checkpoint
-            || !current.state.can_transition_to(state) && current.state != state {
-            return Err(StoreError::Message("invalid Background Job lifecycle transition".into()));
+    pub fn checkpoint(
+        &self,
+        id: &str,
+        checkpoint: u32,
+        state: BackgroundJobState,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        self.checkpoint_with_payload(id, checkpoint, state, None, updated_at)
+    }
+
+    /// Atomically records a completed move boundary, lifecycle state, and optional payload.
+    pub fn checkpoint_with_payload(
+        &self,
+        id: &str,
+        checkpoint: u32,
+        state: BackgroundJobState,
+        payload: Option<&str>,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        let current = self
+            .job(id)?
+            .ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
+        if checkpoint > current.total
+            || checkpoint < current.checkpoint
+            || !current.state.can_transition_to(state) && current.state != state
+        {
+            return Err(StoreError::Message(
+                "invalid Background Job lifecycle transition".into(),
+            ));
         }
-        let controls = match state {
-            BackgroundJobState::Running => "pause,cancel,open",
-            BackgroundJobState::Paused => "resume,cancel,open",
-            BackgroundJobState::Interrupted => "resume,cancel,dismiss,open",
-            BackgroundJobState::Complete | BackgroundJobState::Cancelled | BackgroundJobState::Failed => "dismiss,open",
-            BackgroundJobState::Dismissed => "",
-            BackgroundJobState::Queued => "cancel,open",
-        };
-        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, controls = ?4, updated_at = ?5 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), controls, updated_at])?;
-        if changed == 0 { return Err(StoreError::Message("Background Job checkpoint was not accepted".into())); }
+        let controls = controls_for(state);
+        let payload = payload.unwrap_or(&current.payload);
+        let changed = self.conn.execute("UPDATE background_jobs SET checkpoint = ?2, state = ?3, controls = ?4, payload = ?5, updated_at = ?6 WHERE id = ?1 AND checkpoint <= ?2", rusqlite::params![id, checkpoint, state.as_str(), controls, payload, updated_at])?;
+        if changed == 0 {
+            return Err(StoreError::Message(
+                "Background Job checkpoint was not accepted".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stores the result blob and closes the worker-owned job after its final checkpoint.
+    pub fn complete_job(
+        &self,
+        id: &str,
+        payload: &str,
+        updated_at: &str,
+    ) -> Result<(), StoreError> {
+        let current = self
+            .job(id)?
+            .ok_or_else(|| StoreError::Message("Background Job is unavailable".into()))?;
+        if current.state != BackgroundJobState::Running || current.checkpoint != current.total {
+            return Err(StoreError::Message(
+                "Background Job is not at its final running checkpoint".into(),
+            ));
+        }
+        self.conn.execute(
+            "UPDATE background_jobs SET state = 'complete', controls = ?2, payload = ?3, updated_at = ?4 WHERE id = ?1",
+            rusqlite::params![id, controls_for(BackgroundJobState::Complete), payload, updated_at],
+        )?;
         Ok(())
     }
 
@@ -827,6 +927,46 @@ impl<'a> WorkerWriter<'a> {
         self.conn.execute("UPDATE background_jobs SET state = 'interrupted', controls = 'resume,cancel,dismiss,open', updated_at = ?1 WHERE state = 'running'", [updated_at])?;
         Ok(())
     }
+}
+
+fn controls_for(state: BackgroundJobState) -> &'static str {
+    match state {
+        BackgroundJobState::Running => "pause,cancel,open",
+        BackgroundJobState::Paused => "resume,cancel,open",
+        BackgroundJobState::Interrupted => "resume,cancel,dismiss,open",
+        BackgroundJobState::Complete
+        | BackgroundJobState::Cancelled
+        | BackgroundJobState::Failed => "dismiss,open",
+        BackgroundJobState::Dismissed => "",
+        BackgroundJobState::Queued => "cancel,open",
+    }
+}
+
+fn row_to_background_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackgroundJob> {
+    let state_name: String = row.get(2)?;
+    let controls: String = row.get(6)?;
+    let state = BackgroundJobState::parse(&state_name).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            format!("unknown Background Job state: {state_name}").into(),
+        )
+    })?;
+    Ok(BackgroundJob {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        state,
+        record_id: row.get(3)?,
+        checkpoint: row.get(4)?,
+        total: row.get(5)?,
+        controls: controls
+            .split(',')
+            .filter(|control| !control.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        updated_at: row.get(7)?,
+        payload: row.get(8)?,
+    })
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> Result<GameRecord, StoreError> {
@@ -922,7 +1062,9 @@ fn decode_payload(text: &str) -> Result<GameRecordPayload, StoreError> {
 
 fn decode_moves(text: &str) -> Result<Vec<MoveEntry>, StoreError> {
     let Some(array) = extract_array(text, "moves") else {
-        return Err(StoreError::Message("Game Record payload missing moves".into()));
+        return Err(StoreError::Message(
+            "Game Record payload missing moves".into(),
+        ));
     };
     if array.trim().is_empty() {
         return Ok(Vec::new());
@@ -1065,7 +1207,10 @@ fn read_quoted(input: &str) -> Result<String, StoreError> {
 fn extract_array<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("\"{name}\"");
     let start = input.find(&needle)?;
-    let rest = input[start + needle.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let rest = input[start + needle.len()..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
     if !rest.starts_with('[') {
         return None;
     }
@@ -1088,7 +1233,10 @@ fn extract_array<'a>(input: &'a str, name: &str) -> Option<&'a str> {
 fn extract_object<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("\"{name}\"");
     let start = input.find(&needle)?;
-    let rest = input[start + needle.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let rest = input[start + needle.len()..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
     if !rest.starts_with('{') {
         return None;
     }
@@ -1123,9 +1271,8 @@ fn split_top_level_objects(array_body: &str) -> Result<Vec<&str>, StoreError> {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    let from = start.ok_or_else(|| {
-                        StoreError::Message("malformed moves array".into())
-                    })?;
+                    let from =
+                        start.ok_or_else(|| StoreError::Message("malformed moves array".into()))?;
                     objects.push(&array_body[from..=offset]);
                     start = None;
                 }
@@ -1175,10 +1322,11 @@ impl LiveStore {
 
         match migrate(&conn) {
             Ok(()) => {
-                conn.execute_batch("COMMIT").map_err(|source| OpenError::Migration {
-                    path: path.to_path_buf(),
-                    detail: format!("could not commit the launch migration: {source}"),
-                })?;
+                conn.execute_batch("COMMIT")
+                    .map_err(|source| OpenError::Migration {
+                        path: path.to_path_buf(),
+                        detail: format!("could not commit the launch migration: {source}"),
+                    })?;
             }
             Err(detail) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1497,7 +1645,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.source_snapshot.moves, source.payload.moves);
-        assert_eq!(first.source_snapshot.metadata.as_deref(), source.payload.participation.as_deref());
+        assert_eq!(
+            first.source_snapshot.metadata.as_deref(),
+            source.payload.participation.as_deref()
+        );
         assert!(second.annotations.is_empty());
         assert_eq!(
             store.workspace().derivations_from("played-1").unwrap(),
@@ -1516,9 +1667,15 @@ mod tests {
         {
             let store = LiveStore::open(&path).unwrap();
             let writer = store.workspace();
-            writer.upsert_game_record(&completed_record("completed", "Completed")).unwrap();
-            writer.derive_analysis_record("completed", "analysis-1", "now").unwrap();
-            writer.derive_analysis_record("completed", "analysis-2", "later").unwrap();
+            writer
+                .upsert_game_record(&completed_record("completed", "Completed"))
+                .unwrap();
+            writer
+                .derive_analysis_record("completed", "analysis-1", "now")
+                .unwrap();
+            writer
+                .derive_analysis_record("completed", "analysis-2", "later")
+                .unwrap();
             let mut unfinished = completed_record("unfinished", "Unfinished");
             unfinished.payload.result = None;
             unfinished.result_score = None;
@@ -1530,17 +1687,29 @@ mod tests {
             writer.add_study_record("study-1", "analysis-2").unwrap();
             writer.add_study_record("study-2", "analysis-1").unwrap();
             assert!(writer.add_study_record("study-1", "unfinished").is_err());
-            writer.reorder_study_record("study-1", "analysis-2", 0).unwrap();
+            writer
+                .reorder_study_record("study-1", "analysis-2", 0)
+                .unwrap();
             writer.remove_study_record("study-1", "analysis-1").unwrap();
             assert!(writer.get_game_record("analysis-1").unwrap().is_some());
         }
         let store = LiveStore::open(&path).unwrap();
         assert_eq!(
-            store.workspace().study("study-1").unwrap().unwrap().record_ids,
+            store
+                .workspace()
+                .study("study-1")
+                .unwrap()
+                .unwrap()
+                .record_ids,
             vec!["analysis-2", "completed"]
         );
         assert_eq!(
-            store.workspace().study("study-2").unwrap().unwrap().record_ids,
+            store
+                .workspace()
+                .study("study-2")
+                .unwrap()
+                .unwrap()
+                .record_ids,
             vec!["analysis-1"]
         );
     }
@@ -1583,7 +1752,10 @@ mod tests {
             .unwrap();
         assert_eq!(analysis.source_snapshot.moves[0].uci, "e2e4");
         assert_eq!(analysis.pinned_lines[0].engine, "Stockfish 18");
-        assert_eq!(analysis.pinned_lines[0].search_context, "depth 8 · movetime 250 ms");
+        assert_eq!(
+            analysis.pinned_lines[0].search_context,
+            "depth 8 · movetime 250 ms"
+        );
     }
 
     #[test]
@@ -1601,14 +1773,25 @@ mod tests {
         {
             let store = LiveStore::open(&path).unwrap();
             let worker = store.worker();
-            worker.create_job(&BackgroundJob {
-                id: "job-1".into(), kind: "computer_analysis".into(),
-                state: BackgroundJobState::Running, record_id: "played-1".into(),
-                checkpoint: 0, total: 5, controls: vec!["pause".into(), "cancel".into(), "open".into()],
-                payload: "{}".into(), updated_at: "one".into(),
-            }).unwrap();
-            worker.checkpoint("job-1", 3, BackgroundJobState::Running, "two").unwrap();
-            assert!(worker.checkpoint("job-1", 2, BackgroundJobState::Running, "bad").is_err());
+            worker
+                .create_job(&BackgroundJob {
+                    id: "job-1".into(),
+                    kind: "computer_analysis".into(),
+                    state: BackgroundJobState::Running,
+                    record_id: "played-1".into(),
+                    checkpoint: 0,
+                    total: 5,
+                    controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                    payload: "{}".into(),
+                    updated_at: "one".into(),
+                })
+                .unwrap();
+            worker
+                .checkpoint("job-1", 3, BackgroundJobState::Running, "two")
+                .unwrap();
+            assert!(worker
+                .checkpoint("job-1", 2, BackgroundJobState::Running, "bad")
+                .is_err());
         }
         let store = LiveStore::open(&path).unwrap();
         let worker = store.worker();
@@ -1617,10 +1800,70 @@ mod tests {
         assert_eq!(job.checkpoint, 3);
         assert_eq!(job.state, BackgroundJobState::Interrupted);
         assert_eq!(job.controls, vec!["resume", "cancel", "dismiss", "open"]);
-        assert!(worker.checkpoint("job-1", 3, BackgroundJobState::Running, "resume").is_ok());
-        assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Complete, "complete").is_ok());
-        assert!(worker.checkpoint("job-1", 5, BackgroundJobState::Running, "bad").is_err());
-        assert!(worker.checkpoint("job-1", 6, BackgroundJobState::Complete, "bad").is_err());
+        assert!(worker
+            .checkpoint("job-1", 3, BackgroundJobState::Running, "resume")
+            .is_ok());
+        assert!(worker
+            .checkpoint("job-1", 5, BackgroundJobState::Complete, "complete")
+            .is_ok());
+        assert!(worker
+            .checkpoint("job-1", 5, BackgroundJobState::Running, "bad")
+            .is_err());
+        assert!(worker
+            .checkpoint("job-1", 6, BackgroundJobState::Complete, "bad")
+            .is_err());
+    }
+
+    #[test]
+    fn worker_jobs_list_open_work_and_complete_with_payload() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = LiveStore::open(&dir.path().join("live-store.sqlite")).unwrap();
+        let worker = store.worker();
+        worker
+            .create_job(&BackgroundJob {
+                id: "older".into(),
+                kind: "computer_analysis".into(),
+                state: BackgroundJobState::Running,
+                record_id: "played-1".into(),
+                checkpoint: 0,
+                total: 2,
+                controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                payload: "{}".into(),
+                updated_at: "one".into(),
+            })
+            .unwrap();
+        worker
+            .create_job(&BackgroundJob {
+                id: "newer".into(),
+                kind: "computer_analysis".into(),
+                state: BackgroundJobState::Running,
+                record_id: "played-2".into(),
+                checkpoint: 0,
+                total: 1,
+                controls: vec!["pause".into(), "cancel".into(), "open".into()],
+                payload: "{}".into(),
+                updated_at: "two".into(),
+            })
+            .unwrap();
+        worker
+            .checkpoint("newer", 1, BackgroundJobState::Running, "three")
+            .unwrap();
+        worker
+            .complete_job("newer", r#"[{"ply":0}]"#, "four")
+            .unwrap();
+        worker
+            .checkpoint("older", 0, BackgroundJobState::Cancelled, "five")
+            .unwrap();
+        worker
+            .checkpoint("older", 0, BackgroundJobState::Dismissed, "six")
+            .unwrap();
+
+        let jobs = worker.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "newer");
+        assert_eq!(jobs[0].state, BackgroundJobState::Complete);
+        assert_eq!(jobs[0].controls, vec!["dismiss", "open"]);
+        assert_eq!(jobs[0].payload, r#"[{"ply":0}]"#);
     }
 
     #[test]
@@ -1653,7 +1896,10 @@ mod tests {
                 },
             };
             store.workspace().upsert_game_record(&record).unwrap();
-            store.workspace().set_residue("active_record_id", &record.id).unwrap();
+            store
+                .workspace()
+                .set_residue("active_record_id", &record.id)
+                .unwrap();
             record.id
         };
 
@@ -1671,7 +1917,11 @@ mod tests {
         assert!(loaded.payload.participation.is_none());
         assert!(loaded.payload.clock.is_none());
         assert_eq!(
-            store.workspace().residue("active_record_id").unwrap().as_deref(),
+            store
+                .workspace()
+                .residue("active_record_id")
+                .unwrap()
+                .as_deref(),
             Some("gr_opening")
         );
     }

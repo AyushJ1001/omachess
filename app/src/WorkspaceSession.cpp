@@ -1,12 +1,18 @@
 #include "WorkspaceSession.h"
 
+#include <QCoreApplication>
+#include <QDBusConnectionInterface>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QProcess>
 #include <QStandardPaths>
+#include <QThread>
 #include <QDBusInterface>
 #include <QDBusReply>
 
@@ -26,6 +32,110 @@ QByteArray command(const QString &type, const QVariantMap &members = {})
     for (auto member = members.cbegin(); member != members.cend(); ++member)
         object.insert(member.key(), member.value().toString());
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
+QDBusInterface backgroundWorker()
+{
+    return QDBusInterface(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
+                          QStringLiteral("/BackgroundJobs"),
+                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
+                          QDBusConnection::sessionBus());
+}
+
+QString currentWorkerDataLocation()
+{
+    return QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+}
+
+QString currentWorkerConfigLocation()
+{
+    return QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation));
+}
+
+bool startBundledBackgroundWorker()
+{
+    const QString workerPath =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/omachess-background-worker");
+    if (!QFileInfo::exists(workerPath))
+        return false;
+    if (!QProcess::startDetached(workerPath, {}))
+        return false;
+    auto *bus = QDBusConnection::sessionBus().interface();
+    if (!bus)
+        return false;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        const QDBusReply<bool> registered =
+            bus->isServiceRegistered(QStringLiteral("com.omachess.Omachess.BackgroundWorker"));
+        if (registered.isValid() && registered.value())
+            return true;
+        QThread::msleep(50);
+    }
+    return false;
+}
+
+bool waitUntilBackgroundWorkerUnregistered()
+{
+    auto *bus = QDBusConnection::sessionBus().interface();
+    if (!bus)
+        return false;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        const QDBusReply<bool> registered =
+            bus->isServiceRegistered(QStringLiteral("com.omachess.Omachess.BackgroundWorker"));
+        if (registered.isValid() && !registered.value())
+            return true;
+        QThread::msleep(50);
+    }
+    return false;
+}
+
+bool workerMatchesCurrentContext(QDBusInterface &worker)
+{
+    QDBusReply<bool> reply =
+        worker.call(QStringLiteral("MatchesContext"),
+                    currentWorkerDataLocation(),
+                    currentWorkerConfigLocation());
+    return reply.isValid() && reply.value();
+}
+
+bool ensureBackgroundWorkerAvailable()
+{
+    QDBusInterface worker = backgroundWorker();
+    if (worker.isValid() && workerMatchesCurrentContext(worker))
+        return true;
+
+    if (worker.isValid()) {
+        QDBusReply<bool> quit =
+            worker.call(QStringLiteral("QuitIfIdle"),
+                        currentWorkerDataLocation(),
+                        currentWorkerConfigLocation());
+        if (!quit.isValid() || !quit.value() || !waitUntilBackgroundWorkerUnregistered())
+            return false;
+    }
+
+    if (!startBundledBackgroundWorker())
+        return false;
+    QDBusInterface started = backgroundWorker();
+    return started.isValid() && workerMatchesCurrentContext(started);
+}
+
+bool callBackgroundWorkerBool(const QString &method, const QVariantList &arguments)
+{
+    QDBusReply<bool> reply;
+    if (ensureBackgroundWorkerAvailable()) {
+        QDBusInterface worker = backgroundWorker();
+        reply = worker.callWithArgumentList(QDBus::Block, method, arguments);
+    }
+    return reply.isValid() && reply.value();
+}
+
+QString callBackgroundWorkerString(const QString &method, const QVariantList &arguments = {})
+{
+    QDBusReply<QString> reply;
+    if (ensureBackgroundWorkerAvailable()) {
+        QDBusInterface worker = backgroundWorker();
+        reply = worker.callWithArgumentList(QDBus::Block, method, arguments);
+    }
+    return reply.isValid() ? reply.value() : QString();
 }
 
 } // namespace
@@ -126,39 +236,70 @@ QString WorkspaceSession::startBackgroundComputerAnalysis()
 {
     if (m_activeRecordId.isEmpty() || !gameOver())
         return {};
-    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
-                          QStringLiteral("/BackgroundJobs"),
-                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
-                          QDBusConnection::sessionBus());
-    if (!worker.isValid())
-        return {};
-    const QDBusReply<QString> reply = worker.call(QStringLiteral("StartComputerAnalysis"),
-                                                   m_activeRecordId, moveList().size() + 1);
-    return reply.isValid() ? reply.value() : QString();
+    return callBackgroundWorkerString(QStringLiteral("StartComputerAnalysis"),
+                                      {m_activeRecordId,
+                                       QVariant::fromValue(static_cast<uint>(moveList().size() + 1))});
+}
+
+void WorkspaceSession::pauseBackgroundJob(const QString &id)
+{
+    if (!id.isEmpty())
+        callBackgroundWorkerBool(QStringLiteral("Pause"), {id});
+}
+
+void WorkspaceSession::resumeBackgroundJob(const QString &id)
+{
+    if (!id.isEmpty())
+        callBackgroundWorkerBool(QStringLiteral("Resume"), {id});
 }
 
 void WorkspaceSession::cancelBackgroundJob(const QString &id)
 {
-    if (id.isEmpty())
-        return;
-    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
-                          QStringLiteral("/BackgroundJobs"),
-                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
-                          QDBusConnection::sessionBus());
-    if (worker.isValid())
-        worker.call(QStringLiteral("Cancel"), id);
+    if (!id.isEmpty())
+        callBackgroundWorkerBool(QStringLiteral("Cancel"), {id});
+}
+
+void WorkspaceSession::dismissBackgroundJob(const QString &id)
+{
+    if (!id.isEmpty())
+        callBackgroundWorkerBool(QStringLiteral("Dismiss"), {id});
 }
 
 QString WorkspaceSession::backgroundJob(const QString &id)
 {
-    QDBusInterface worker(QStringLiteral("com.omachess.Omachess.BackgroundWorker"),
-                          QStringLiteral("/BackgroundJobs"),
-                          QStringLiteral("com.omachess.Omachess.BackgroundJobs"),
-                          QDBusConnection::sessionBus());
-    if (!worker.isValid())
+    if (id.isEmpty())
         return {};
-    const QDBusReply<QString> reply = worker.call(QStringLiteral("Job"), id);
-    return reply.isValid() ? reply.value() : QString();
+    return callBackgroundWorkerString(QStringLiteral("Job"), {id});
+}
+
+QString WorkspaceSession::backgroundJobs()
+{
+    return callBackgroundWorkerString(QStringLiteral("Jobs"));
+}
+
+bool WorkspaceSession::importBackgroundComputerAnalysis(const QString &id)
+{
+    const QString encodedJob = backgroundJob(id);
+    const QJsonDocument document = QJsonDocument::fromJson(encodedJob.toUtf8());
+    if (!document.isObject())
+        return false;
+    const QJsonObject job = document.object();
+    if (job.value(QStringLiteral("kind")).toString() != QStringLiteral("computer_analysis")
+            || job.value(QStringLiteral("state")).toString() != QStringLiteral("complete"))
+        return false;
+    const QString recordId = job.value(QStringLiteral("recordId")).toString();
+    const QString payload = job.value(QStringLiteral("payload")).toString();
+    if (recordId.isEmpty() || payload.isEmpty())
+        return false;
+    if (m_activeRecordId != recordId)
+        openRecord(recordId);
+    if (m_activeRecordId != recordId)
+        return false;
+    if (!submitAndDrain(command(QStringLiteral("complete_computer_analysis"),
+                                {{QStringLiteral("evaluations"), payload}})))
+        return false;
+    dismissBackgroundJob(id);
+    return true;
 }
 
 void WorkspaceSession::restoreRecord()
@@ -491,9 +632,14 @@ QString WorkspaceSession::metadataField(const QString &name) const
 
 void WorkspaceSession::submit(const QByteArray &commandJson)
 {
+    submitAndDrain(commandJson);
+}
+
+bool WorkspaceSession::submitAndDrain(const QByteArray &commandJson)
+{
     if (!m_session) {
         qCWarning(lcSession) << "no Live Store session; ignoring" << commandJson;
-        return;
+        return false;
     }
 
     const int32_t status = omachess_session_submit(m_session, commandJson.constData());
@@ -506,13 +652,14 @@ void WorkspaceSession::submit(const QByteArray &commandJson)
         else
             qCWarning(lcSession) << "core rejected command" << commandJson << "with status"
                                  << status;
-        return;
+        return false;
     }
 
     while (char *event = omachess_session_poll_event(m_session)) {
         applyEvent(QByteArray(event));
         omachess_string_free(event);
     }
+    return true;
 }
 
 void WorkspaceSession::applyEvent(const QByteArray &eventJson)

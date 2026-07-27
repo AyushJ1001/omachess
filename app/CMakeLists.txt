@@ -73,7 +73,12 @@ qt_add_executable(omachess-background-worker
 )
 target_link_libraries(omachess-background-worker PRIVATE Qt6::Core Qt6::DBus omachess::core)
 install(TARGETS omachess-background-worker RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(FILES "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.BackgroundWorker.service"
+configure_file(
+  "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.BackgroundWorker.service.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/com.omachess.Omachess.BackgroundWorker.service"
+  @ONLY
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/com.omachess.Omachess.BackgroundWorker.service"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/dbus-1/services")
 
 install(TARGETS omachess RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
