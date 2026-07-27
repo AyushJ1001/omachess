@@ -80,6 +80,8 @@ class SaveModesJourney(unittest.TestCase):
         self.assertNotIn("unsavedCloseTitle", self.workspace.screen().labels)
 
         self.workspace.restart()
+        self.workspace.screen_when(lambda s: "restoreButton" in s.labels)
+        self.workspace.click("restoreButton")
         screen = self.workspace.screen_when(lambda s: s.moves() == ["1. d4"])
         self.assertEqual(screen.pieces().get("d4"), "white_pawn")
         self.assertEqual(screen.pieces().get("d7"), "black_pawn")

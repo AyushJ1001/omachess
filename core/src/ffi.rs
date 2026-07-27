@@ -10,6 +10,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::cell::RefCell;
 
 use crate::session::{CommandError, Session};
+use crate::rules::Rules;
 
 /// An opaque handle to a workspace session.
 pub struct OmachessSession {
@@ -23,6 +24,23 @@ pub const OMACHESS_ERR_NULL_ARGUMENT: i32 = 3;
 pub const OMACHESS_ERR_INVALID_UTF8: i32 = 4;
 pub const OMACHESS_ERR_REJECTED_MOVE: i32 = 5;
 pub const OMACHESS_ERR_STORE: i32 = 6;
+
+/// Checks a smoke-probe move against the Rules Authority's standard start.
+///
+/// A null, non-UTF-8, or illegal move returns false.
+#[no_mangle]
+pub unsafe extern "C" fn omachess_standard_start_move_is_legal(
+    uci_move: *const c_char,
+) -> i32 {
+    if uci_move.is_null() {
+        return 0;
+    }
+    let Ok(uci_move) = CStr::from_ptr(uci_move).to_str() else {
+        return 0;
+    };
+    Rules::new("standard", None)
+        .is_some_and(|mut rules| rules.push(uci_move)) as i32
+}
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
