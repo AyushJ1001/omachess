@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -35,6 +36,8 @@ class SquareOnScreen:
     name: str
     piece: str
     light: bool
+    # The Board Theme colour currently painted on this square.
+    color: str
     # The marks a player can see: the square a piece was picked up from, a
     # square it may be dropped on, and the squares of the move just played.
     selected: bool
@@ -61,6 +64,16 @@ class Screen:
     height: int
     device_pixel_ratio: float
     platform: str
+    # Chrome and Board Theme colours currently in use, as #rrggbb.
+    chrome_background: str
+    chrome_foreground: str
+    light_square: str
+    dark_square: str
+    # Where those colours came from: "quattro", "last_valid", or "builtin".
+    palette_source: str
+    theme_name: str
+    board_theme_id: str
+    piece_set_id: str
     squares: tuple[SquareOnScreen, ...]
     # The text of every named item that shows any, by item name.
     labels: dict[str, str]
@@ -119,6 +132,57 @@ class Screen:
         }
 
 
+# A Quattro Palette fixture with an obvious light/dark square pair: the
+# preferred lighter_background / background pairing clears ≥2:1 contrast, so
+# a journey can assert those exact colours without re-deriving them.
+VALID_PALETTE_A = {
+    "mode": "dark",
+    "accent": "#7aa2f7",
+    "selection": "#292e42",
+    "muted": "#414868",
+    "background": "#101820",
+    "dark_background": "#0a1014",
+    "darker_background": "#05080a",
+    "lighter_background": "#c0d0e0",
+    "foreground": "#e8eef4",
+    "red": "#f7768e",
+    "yellow": "#e0af68",
+    "green": "#9ece6a",
+    "orange": "#eb927b",
+}
+
+VALID_PALETTE_B = {
+    "mode": "light",
+    "accent": "#1e66f5",
+    "selection": "#ccd0da",
+    "muted": "#acb0be",
+    "background": "#1a2a1a",
+    "dark_background": "#101810",
+    "darker_background": "#080c08",
+    "lighter_background": "#dce8c8",
+    "foreground": "#1e1e2e",
+    "red": "#d20f39",
+    "yellow": "#df8e1d",
+    "green": "#40a02b",
+    "orange": "#d84e2b",
+}
+
+# Worked expectations for the fixtures above (lighter_background / background).
+PALETTE_A_LIGHT_SQUARE = VALID_PALETTE_A["lighter_background"]
+PALETTE_A_DARK_SQUARE = VALID_PALETTE_A["background"]
+PALETTE_B_LIGHT_SQUARE = VALID_PALETTE_B["lighter_background"]
+PALETTE_B_DARK_SQUARE = VALID_PALETTE_B["background"]
+
+# The Built-in Palette's classic Board Theme, independent of Quattro.
+BUILTIN_LIGHT_SQUARE = "#ebecd0"
+BUILTIN_DARK_SQUARE = "#739552"
+BUILTIN_CHROME_BACKGROUND = "#1a1b26"
+
+
+def _toml_colors(values: dict[str, str]) -> str:
+    return "".join(f'{key} = "{value}"\n' for key, value in values.items())
+
+
 class Workspace:
     """A running Omachess application under test."""
 
@@ -128,6 +192,11 @@ class Workspace:
         *,
         platform: str | None = None,
         data_home: Path | None = None,
+        omarchy_version: str | None = "4.0.0.alpha",
+        palette: dict[str, str] | None = None,
+        theme_name: str = "journey-a",
+        install_palette: bool = True,
+        malformed_palette: bool = False,
     ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
@@ -140,6 +209,13 @@ class Workspace:
             self._root = data_home
             self._root.mkdir(parents=True, exist_ok=True)
         self._socket_path = str(self._root / "control")
+        self._omarchy_prefix = self._root / "omarchy-prefix"
+        self._state_home = self._root / "xdg_state_home"
+        self._omarchy_version = omarchy_version
+        self._initial_palette = palette
+        self._theme_name = theme_name
+        self._install_palette = install_palette
+        self._malformed_palette = malformed_palette
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
@@ -166,6 +242,23 @@ class Workspace:
             directory.mkdir(parents=True, exist_ok=True)
             environment[variable] = str(directory)
 
+        # Always point the adapter at an isolated prefix so journeys never read
+        # the developer's real /usr/share/omarchy/version.
+        self._omarchy_prefix.mkdir(parents=True, exist_ok=True)
+        environment["OMACHESS_OMARCHY_PREFIX"] = str(self._omarchy_prefix)
+        if self._omarchy_version is not None:
+            (self._omarchy_prefix / "version").write_text(
+                self._omarchy_version + "\n", encoding="utf-8"
+            )
+
+        if self._malformed_palette:
+            self.install_theme(None, name=self._theme_name, malformed=True)
+        elif self._install_palette:
+            self.install_theme(
+                self._initial_palette or VALID_PALETTE_A,
+                name=self._theme_name,
+            )
+
         # A prior run may have left a stale control socket in a reused data dir.
         try:
             os.unlink(self._socket_path)
@@ -179,6 +272,37 @@ class Workspace:
             stderr=subprocess.STDOUT,
         )
         self._connection = self._connect()
+
+    def install_theme(
+        self,
+        palette: dict[str, str] | None,
+        *,
+        name: str = "journey",
+        malformed: bool = False,
+    ) -> None:
+        """Install (or replace) the active Quattro theme the way Omarchy does.
+
+        Stages a new theme directory, replaces `current/theme` atomically, then
+        writes `theme.name`. A missing palette removes colors.toml; a malformed
+        one writes structurally incompatible contents.
+        """
+        current = self._state_home / "omarchy" / "current"
+        current.mkdir(parents=True, exist_ok=True)
+        staging = self._root / f"theme-staging-{name}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+
+        if malformed:
+            (staging / "colors.toml").write_text("this is not a palette\n", encoding="utf-8")
+        elif palette is not None:
+            (staging / "colors.toml").write_text(_toml_colors(palette), encoding="utf-8")
+
+        target = current / "theme"
+        if target.exists() or target.is_symlink():
+            shutil.rmtree(target)
+        staging.rename(target)
+        (current / "theme.name").write_text(name + "\n", encoding="utf-8")
 
     def restart(self) -> None:
         """Quit and relaunch against the same XDG homes, keeping the Live Store."""
@@ -290,6 +414,24 @@ class Workspace:
     def resize(self, width: int, height: int) -> None:
         self._request({"command": "resize", "width": width, "height": height})
 
+    def set_board_theme(self, theme_id: str) -> None:
+        """Pin or unpin the Board Theme the way a player does from the chrome."""
+        self.click(f"boardTheme:{theme_id}")
+
+    def set_piece_set(self, piece_set_id: str) -> None:
+        """Choose a Piece Set from the chrome."""
+        self.click(f"pieceSet:{piece_set_id}")
+
+    def replace_theme(
+        self,
+        palette: dict[str, str] | None,
+        *,
+        name: str = "journey-swap",
+        malformed: bool = False,
+    ) -> None:
+        """Replace the active Quattro theme while the app is running."""
+        self.install_theme(palette, name=name, malformed=malformed)
+
     # --- Observing the application -----------------------------------------
 
     def screen(self) -> Screen:
@@ -302,12 +444,21 @@ class Workspace:
             height=raw["height"],
             device_pixel_ratio=raw["devicePixelRatio"],
             platform=raw["platform"],
+            chrome_background=raw["chromeBackground"],
+            chrome_foreground=raw["chromeForeground"],
+            light_square=raw["lightSquare"],
+            dark_square=raw["darkSquare"],
+            palette_source=raw["paletteSource"],
+            theme_name=raw["themeName"],
+            board_theme_id=raw["boardThemeId"],
+            piece_set_id=raw["pieceSetId"],
             labels=dict(raw["labels"]),
             squares=tuple(
                 SquareOnScreen(
                     name=square["name"],
                     piece=square["piece"],
                     light=square["light"],
+                    color=square["color"],
                     selected=square["selected"],
                     target=square["target"],
                     last_move=square["lastMove"],

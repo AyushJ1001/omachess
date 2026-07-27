@@ -37,6 +37,10 @@ qt_add_qml_module(omachess
   SOURCES
     src/WorkspaceSession.h
     src/WorkspaceSession.cpp
+    src/OmarchyAdapter.h
+    src/OmarchyAdapter.cpp
+    src/ThemeController.h
+    src/ThemeController.cpp
 )
 
 target_compile_definitions(omachess PRIVATE OMACHESS_VERSION="${PROJECT_VERSION}")

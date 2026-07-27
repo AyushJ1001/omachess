@@ -18,6 +18,7 @@ ApplicationWindow {
     minimumHeight: 360
     visible: true
     title: qsTr("Omachess")
+    color: Theme.background
 
     Component.onCompleted: WorkspaceSession.describeBoard()
 
@@ -26,7 +27,7 @@ ApplicationWindow {
         anchors.fill: parent
         visible: WorkspaceSession.storeError.length > 0
         z: 10
-        color: palette.window
+        color: Theme.background
 
         Label {
             objectName: "storeErrorLabel"
@@ -39,6 +40,8 @@ ApplicationWindow {
     }
 
     header: ToolBar {
+        background: Rectangle { color: Theme.panel }
+
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 12
@@ -48,12 +51,14 @@ ApplicationWindow {
             Label {
                 objectName: "variantLabel"
                 text: qsTr("Standard chess")
+                color: Theme.foreground
             }
 
             Label {
                 objectName: "statusLabel"
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
+                color: Theme.foreground
                 // A finished game reports its result; an unfinished one reports
                 // whose turn it is, and whether that side is in check.
                 text: WorkspaceSession.gameOver
@@ -63,6 +68,61 @@ ApplicationWindow {
                         + (WorkspaceSession.inCheck ? qsTr(" — in check") : "")
                 font.bold: WorkspaceSession.gameOver
                 elide: Text.ElideRight
+            }
+
+            // Board Theme: follow the Quattro Palette, or pin an Omachess-owned set.
+            ComboBox {
+                id: boardThemePicker
+                objectName: "boardThemePicker"
+                model: Theme.boardThemeIds
+                displayText: qsTr("Board: %1").arg(currentText)
+                implicitWidth: 140
+                Component.onCompleted: currentIndex = model.indexOf(Theme.boardThemeId)
+                onActivated: Theme.setBoardTheme(model[currentIndex])
+                Connections {
+                    target: Theme
+                    function onThemeChanged() {
+                        boardThemePicker.currentIndex =
+                            boardThemePicker.model.indexOf(Theme.boardThemeId)
+                    }
+                }
+            }
+
+            // Click targets for journeys: opacity 0 but visible so the control
+            // channel can press them under the offscreen QPA.
+            Repeater {
+                model: Theme.boardThemeIds
+                Button {
+                    required property string modelData
+                    objectName: "boardTheme:" + modelData
+                    opacity: 0
+                    width: 1
+                    height: 1
+                    onClicked: Theme.setBoardTheme(modelData)
+                }
+            }
+
+            // Piece Set selection is independent of any palette.
+            ComboBox {
+                id: pieceSetPicker
+                objectName: "pieceSetPicker"
+                model: Theme.pieceSetIds
+                displayText: qsTr("Pieces: %1").arg(currentText)
+                implicitWidth: 140
+                Component.onCompleted: currentIndex = model.indexOf(Theme.pieceSetId)
+                onActivated: Theme.setPieceSet(model[currentIndex])
+            }
+
+            Repeater {
+                model: Theme.pieceSetIds
+                Button {
+                    required property string modelData
+                    objectName: "pieceSet:" + modelData
+                    opacity: 0
+                    width: 1
+                    height: 1
+                    onClicked: Theme.setPieceSet(modelData)
+                }
             }
 
             Button {
@@ -178,6 +238,7 @@ ApplicationWindow {
                 Label {
                     text: qsTr("Moves")
                     font.bold: true
+                    color: Theme.foreground
                 }
 
                 ListView {
@@ -244,6 +305,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     visible: WorkspaceSession.reviewing
                     wrapMode: Text.WordWrap
+                    color: Theme.foreground
                     text: qsTr("Reviewing an earlier position — play continues at the last move.")
                 }
             }
