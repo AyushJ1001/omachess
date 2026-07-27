@@ -69,6 +69,30 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: experimentalReleaseDialog
+        objectName: "experimentalReleaseDialog"
+        title: qsTr("Omachess v0.1 — experimental")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, parent.width - 40)
+        standardButtons: Dialog.Close
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "experimentalReleaseTitle"
+                text: qsTr("Protect your library while v0.1 evolves")
+                font.bold: true
+            }
+            Label {
+                objectName: "experimentalReleaseGuidance"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Before migration or upgrade, close Omachess and copy the whole Live Store for recovery. Export important Game Records as PGN too. The Library Portability Package is not available in v0.1; see the installed release notes and backup guide for exact XDG paths.")
+            }
+        }
+    }
+
     function focusPane(delta) {
         let current = paneIndexForItem(workspace.activeFocusItem)
         if (current < 0)
@@ -307,6 +331,13 @@ ApplicationWindow {
                 objectName: "newGameButton"
                 text: qsTr("New game")
                 onClicked: WorkspaceSession.newGame()
+            }
+
+            Button {
+                objectName: "experimentalReleaseButton"
+                text: qsTr("v0.1 experimental")
+                flat: true
+                onClicked: experimentalReleaseDialog.open()
             }
 
             Button {
