@@ -15,17 +15,103 @@ CHECKMATE = "f2f3 e7e5 g2g4 d8h4"
 
 def library_ids(screen) -> set[str]:
     return {
-        name.removeprefix("libraryTitle:")
+        name.split(":", 1)[1]
         for name in screen.labels
-        if name.startswith("libraryTitle:")
+        if name.startswith(("libraryTitle:", "library:", "tabTitle:"))
     }
 
 
 class AnalysisRecordsJourney(unittest.TestCase):
+    def test_computer_analysis_survives_restart_with_every_position_reviewed(self) -> None:
+        root = tempfile.TemporaryDirectory(prefix="omachess-computer-analysis-")
+        self.addCleanup(root.cleanup)
+        data_home = Path(root.name)
+        engine = data_home / "xdg_data_home" / "omachess" / "engines" / "stockfish" / "stockfish"
+        fake_engine(engine, "ready", data_home / "engine-executed")
+        workspace = Workspace(
+            executable_under_test(),
+            data_home=data_home,
+            environment={"OMACHESS_TEST_ENGINE_DEADLINE_MS": "150"},
+        )
+        workspace.start()
+        self.addCleanup(workspace.stop)
+        workspace.click("engineProfilesButton")
+        workspace.click("engineConsent:stockfish")
+        workspace.screen_when(
+            lambda screen: screen.labels.get("engineState:stockfish") == "Ready"
+        )
+        workspace.play_all(CHECKMATE)
+        completed = workspace.screen_when(
+            lambda screen: "(" in screen.status()
+            and bool(library_ids(screen))
+            and "computerAnalysisButton" in screen.labels
+        )
+        source_id = next(iter(library_ids(completed)))
+
+        workspace.click("computerAnalysisButton")
+        workspace.screen_when(
+            lambda screen: screen.labels.get("computerAnalysisStatus") == "5 / 5 positions"
+        )
+        finished = workspace.screen_when(
+            lambda screen: screen.labels.get("computerAnalysisState") == "Complete"
+        )
+        analysis_id = next(iter(library_ids(finished) - {source_id}))
+        self.assertEqual(finished.labels["computerEvaluationCount"], "5 positions")
+        self.assertIn("computerEvaluation:1", finished.labels)
+        self.assertIn("computerEvaluation:5", finished.labels)
+        self.assertIn("computerGlyph:1", finished.labels)
+        self.assertIn("computerSideline:1", finished.labels)
+        self.assertEqual(finished.labels["defaultAnalysis"], "Default Analysis")
+
+        workspace.restart()
+        restored = workspace.screen_when(
+            lambda screen: screen.labels.get("computerEvaluationCount") == "5 positions"
+        )
+        self.assertEqual(restored.labels["computerAnalysisState"], "Complete")
+        self.assertEqual(restored.labels["computerEvaluation:1"], "After ply 0 · +0.22")
+        self.assertEqual(restored.labels["computerGlyph:1"], "?")
+        self.assertEqual(restored.labels["computerSideline:1"], "e2e4 e7e5")
+        self.assertIn("computerEvaluation:5", restored.labels)
+        self.assertEqual(restored.labels["defaultAnalysis"], "Default Analysis")
+
+    def test_cancelling_computer_analysis_does_not_create_an_analysis_record(self) -> None:
+        root = tempfile.TemporaryDirectory(prefix="omachess-cancel-analysis-")
+        self.addCleanup(root.cleanup)
+        data_home = Path(root.name)
+        engine = data_home / "xdg_data_home" / "omachess" / "engines" / "stockfish" / "stockfish"
+        fake_engine(engine, "ready", data_home / "engine-executed")
+        workspace = Workspace(
+            executable_under_test(),
+            data_home=data_home,
+            environment={"OMACHESS_TEST_ENGINE_DEADLINE_MS": "150"},
+        )
+        workspace.start()
+        self.addCleanup(workspace.stop)
+        workspace.click("engineProfilesButton")
+        workspace.click("engineConsent:stockfish")
+        workspace.screen_when(
+            lambda screen: screen.labels.get("engineState:stockfish") == "Ready"
+        )
+        workspace.play_all(CHECKMATE)
+        before = workspace.screen_when(
+            lambda screen: "(" in screen.status()
+            and "computerAnalysisButton" in screen.labels
+        )
+        ids = library_ids(before)
+
+        workspace.click("computerAnalysisButton")
+        workspace.click("cancelComputerAnalysisButton")
+        cancelled = workspace.screen_when(
+            lambda screen: screen.labels.get("computerAnalysisState") == "Cancelled"
+        )
+        self.assertEqual(library_ids(cancelled), ids)
+
     def test_derive_diverge_and_derive_again_keeps_every_record_independent(self) -> None:
         with Workspace(executable_under_test()) as workspace:
             workspace.play_all(CHECKMATE)
-            completed = workspace.screen_when(lambda screen: "(" in screen.status())
+            completed = workspace.screen_when(
+                lambda screen: "(" in screen.status() and bool(library_ids(screen))
+            )
             source_id = next(iter(library_ids(completed)))
 
             workspace.click("deriveAnalysisButton")

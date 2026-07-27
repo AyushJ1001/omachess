@@ -21,8 +21,9 @@ use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
-    AnalysisRecordData, AnalysisSideline, GameRecord, GameRecordKind, GameRecordPayload,
-    GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine, RecordResult,
+    AnalysisRecordData, AnalysisSideline, ComputerEvaluation, GameRecord, GameRecordKind,
+    GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine,
+    RecordResult,
 };
 
 use crate::board::{Orientation, Piece, Position};
@@ -313,6 +314,8 @@ impl Session {
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
             "derive_analysis_record" => self.derive_analysis_record()?,
+            "complete_computer_analysis" => self.complete_computer_analysis(command)?,
+            "designate_default_analysis" => self.designate_default_analysis()?,
             "add_analysis_annotation" => self.add_analysis_annotation(command)?,
             "add_analysis_sideline" => self.add_analysis_sideline(command)?,
             "pin_engine_line" => self.pin_engine_line(command)?,
@@ -376,6 +379,123 @@ impl Session {
         self.emit_library_changed();
         self.emit_tabs_changed();
         self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn complete_computer_analysis(&mut self, command: &str) -> Result<(), CommandError> {
+        if self.has_unsaved_changes() {
+            return Err(CommandError::RejectedMove);
+        }
+        let encoded =
+            json::read_string_field(command, "evaluations").ok_or(CommandError::MalformedCommand)?;
+        let mut evaluations: Vec<ComputerEvaluation> =
+            serde_json::from_str(&encoded).map_err(|_| CommandError::MalformedCommand)?;
+        if evaluations.len() != self.game.moves().len() + 1
+            || evaluations
+                .iter()
+                .enumerate()
+                .any(|(ply, value)| value.ply as usize != ply)
+        {
+            return Err(CommandError::MalformedCommand);
+        }
+        for (ply, evaluation) in evaluations.iter_mut().enumerate() {
+            let Some(played) = self.game.moves().get(ply) else {
+                evaluation.glyph.clear();
+                evaluation.better_line = None;
+                continue;
+            };
+            let engine_move = evaluation
+                .better_line
+                .as_deref()
+                .and_then(|line| line.split_whitespace().next());
+            evaluation.glyph = if engine_move == Some(played.uci.as_str()) {
+                "!".into()
+            } else {
+                "?".into()
+            };
+            if engine_move == Some(played.uci.as_str()) {
+                evaluation.better_line = None;
+            }
+        }
+        let better_lines = evaluations.clone();
+        let source_id = self.record_id.clone().ok_or(CommandError::RejectedMove)?;
+        let store = self.store.as_ref().ok_or(CommandError::Store)?;
+        let id = new_record_id();
+        store
+            .workspace()
+            .derive_analysis_record(&source_id, &id, &timestamp_now())
+            .map_err(|_| CommandError::Store)?;
+        store
+            .workspace()
+            .complete_computer_analysis(&id, evaluations, true)
+            .map_err(|_| CommandError::Store)?;
+        for evaluation in better_lines {
+            let Some(variation) = evaluation.better_line else {
+                continue;
+            };
+            let Some(mut line_game) = Game::from_history(
+                &self.game.start_fen(),
+                self.game.moves().iter().take(evaluation.ply as usize).cloned().collect(),
+            ) else {
+                continue;
+            };
+            let base = line_game.moves().len();
+            let mut valid = true;
+            for uci in variation.split_whitespace() {
+                let Some(parsed) = parse_uci(uci) else {
+                    valid = false;
+                    break;
+                };
+                if line_game
+                    .play(&parsed.from, &parsed.to, parsed.promotion.as_deref())
+                    .is_err()
+                {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid {
+                let moves = line_game.moves()[base..]
+                    .iter()
+                    .map(|played| MoveEntry {
+                        uci: played.uci.clone(),
+                        san: played.san.clone(),
+                        number: played.number,
+                        side: played.side.to_owned(),
+                    })
+                    .collect();
+                store
+                    .workspace()
+                    .add_sideline(
+                        &id,
+                        AnalysisSideline {
+                            after_ply: evaluation.ply,
+                            moves,
+                        },
+                    )
+                    .map_err(|_| CommandError::Store)?;
+            }
+        }
+        self.load_record(&id)?;
+        self.suspended = false;
+        self.ensure_tab_open(&id);
+        self.persist_residue()?;
+        self.emit_library_changed();
+        self.emit_tabs_changed();
+        self.emit_record_graph_changed();
+        self.emit_analysis_record_changed();
+        Ok(())
+    }
+
+    fn designate_default_analysis(&mut self) -> Result<(), CommandError> {
+        let id = self.analysis_record_id()?;
+        self.store
+            .as_ref()
+            .ok_or(CommandError::Store)?
+            .workspace()
+            .designate_default_analysis(&id)
+            .map_err(|_| CommandError::Store)?;
         self.emit_analysis_record_changed();
         Ok(())
     }
@@ -2457,7 +2577,31 @@ fn analysis_record_changed_event(
         json::write_string(&mut out, &line.search_context);
         out.push('}');
     }
-    out.push_str("]}");
+    out.push_str("],\"computerEvaluations\":[");
+    for (index, evaluation) in data.computer_evaluations.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"ply\":");
+        out.push_str(&evaluation.ply.to_string());
+        out.push_str(",\"positionFen\":");
+        json::write_string(&mut out, &evaluation.position_fen);
+        out.push_str(",\"evaluation\":");
+        json::write_string(&mut out, &evaluation.evaluation);
+        out.push_str(",\"glyph\":");
+        json::write_string(&mut out, &evaluation.glyph);
+        out.push_str(",\"betterLine\":");
+        match &evaluation.better_line {
+            Some(line) => json::write_string(&mut out, line),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("],\"computerAnalysisComplete\":");
+    out.push_str(if data.computer_analysis_complete { "true" } else { "false" });
+    out.push_str(",\"defaultAnalysis\":");
+    out.push_str(if data.default_analysis { "true" } else { "false" });
+    out.push('}');
     out
 }
 
@@ -3399,6 +3543,10 @@ mod tests {
             .iter()
             .find(|event| event.contains(r#""type":"analysis_record_changed""#))
             .expect("the active Analysis Record is described after restart");
+        assert_eq!(
+            crate::json::read_string_field(analysis, "type").as_deref(),
+            Some("analysis_record_changed")
+        );
         assert!(analysis.contains(r#""evaluation":"+0.22""#));
         assert!(analysis.contains(r#""variation":"e2e4 e7e5""#));
         assert!(analysis.contains(r#""engine":"Stockfish 18""#));

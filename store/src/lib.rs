@@ -228,6 +228,16 @@ pub struct PinnedEngineLine {
     pub search_context: String,
 }
 
+/// Engine review material for one position in a completed finite pass.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ComputerEvaluation {
+    pub ply: u32,
+    pub position_fen: String,
+    pub evaluation: String,
+    pub glyph: String,
+    pub better_line: Option<String>,
+}
+
 /// Analysis-owned content. None of it is shared with the source or sibling derivations.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct AnalysisRecordData {
@@ -236,6 +246,12 @@ pub struct AnalysisRecordData {
     pub sidelines: Vec<AnalysisSideline>,
     pub annotations: Vec<AnalysisAnnotation>,
     pub pinned_lines: Vec<PinnedEngineLine>,
+    #[serde(default)]
+    pub computer_evaluations: Vec<ComputerEvaluation>,
+    #[serde(default)]
+    pub computer_analysis_complete: bool,
+    #[serde(default)]
+    pub default_analysis: bool,
 }
 
 /// Workspace write partition: Game Records, residue, and other library tables.
@@ -307,9 +323,9 @@ impl<'a> WorkspaceWriter<'a> {
         let source = self
             .get_game_record(source_id)?
             .ok_or_else(|| StoreError::Message("source Game Record is unavailable".into()))?;
-        if source.kind != GameRecordKind::Played || source.payload.result.is_none() {
+        if source.kind == GameRecordKind::Played && source.payload.result.is_none() {
             return Err(StoreError::Message(
-                "only a Completed Game can produce an Analysis Record".into(),
+                "only a Completed Game or Analysis Record can produce an Analysis Record".into(),
             ));
         }
         let snapshot = SourceSnapshot {
@@ -326,6 +342,9 @@ impl<'a> WorkspaceWriter<'a> {
             sidelines: Vec::new(),
             annotations: Vec::new(),
             pinned_lines: Vec::new(),
+            computer_evaluations: Vec::new(),
+            computer_analysis_complete: false,
+            default_analysis: false,
         };
         let mut payload = source.payload.clone();
         payload.result = None;
@@ -409,6 +428,48 @@ impl<'a> WorkspaceWriter<'a> {
         line: &PinnedEngineLine,
     ) -> Result<(), StoreError> {
         self.update_analysis(id, |data| data.pinned_lines.push(line.clone()))
+    }
+
+    /// Completes a finite engine pass and optionally makes it the source's sole default.
+    pub fn complete_computer_analysis(
+        &self,
+        id: &str,
+        evaluations: Vec<ComputerEvaluation>,
+        make_default: bool,
+    ) -> Result<(), StoreError> {
+        self.update_analysis(id, |data| {
+            data.computer_evaluations = evaluations;
+            data.computer_analysis_complete = true;
+            data.default_analysis = false;
+        })?;
+        if make_default {
+            self.designate_default_analysis(id)?;
+        }
+        Ok(())
+    }
+
+    pub fn designate_default_analysis(&self, id: &str) -> Result<(), StoreError> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let writer = WorkspaceWriter::new(&transaction);
+        let analysis = writer
+            .analysis_record(id)?
+            .ok_or_else(|| StoreError::Message("Analysis Record is unavailable".into()))?;
+        let source = writer
+            .get_game_record(&analysis.source_snapshot.source_id)?
+            .ok_or_else(|| StoreError::Message("source Completed Game is unavailable".into()))?;
+        if source.kind != GameRecordKind::Played || source.payload.result.is_none() {
+            return Err(StoreError::Message(
+                "Default Analysis must be directly associated with a Completed Game".into(),
+            ));
+        }
+        for sibling in writer.derivations_from(&analysis.source_snapshot.source_id)? {
+            if sibling != id {
+                writer.update_analysis(&sibling, |data| data.default_analysis = false)?;
+            }
+        }
+        writer.update_analysis(id, |data| data.default_analysis = true)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn derivations_from(&self, id: &str) -> Result<Vec<String>, StoreError> {

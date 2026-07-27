@@ -122,6 +122,7 @@ name = "omachess-core"
 version = "0.1.0"
 dependencies = [
  "omachess-store",
+ "serde_json",
  "tempfile",
 ]
 
