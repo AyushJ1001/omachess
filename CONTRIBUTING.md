@@ -58,10 +58,11 @@ entry, the hicolor icon, and the installed documentation.
 
 `packaging/PKGBUILD` is the AUR recipe: it builds Omachess from a signed source
 tarball, depends hard on Omarchy 4, and installs nothing but program files, the
-launcher entry, its icon, and `docs/install.md`. It has no install scriptlet,
-no Hyprland rules, and no Omarchy hooks. Regenerate `packaging/.SRCINFO` with
-`makepkg --printsrcinfo -p PKGBUILD > .SRCINFO` whenever the recipe changes;
-a packaging test fails if the two drift apart.
+launcher entry, its icon, recipient-facing documentation, and the package's
+GPL text. It has no install scriptlet, no Hyprland rules, and no Omarchy hooks.
+Regenerate `packaging/.SRCINFO` with
+`makepkg --printsrcinfo -p PKGBUILD > .SRCINFO` whenever the recipe changes; a
+packaging test fails if the two drift apart.
 
 `com.omachess.Omachess` is the desktop entry ID, the icon name, and the Wayland
 app ID, and it is **fixed permanently for v0.1**. Changing it breaks every
@@ -71,6 +72,10 @@ inside the package.
 
 Backup paths for the Live Store and preferences are documented in
 [`docs/backup.md`](docs/backup.md).
+The source-archive publication gate is documented in
+[`docs/CORRESPONDING_SOURCE.md`](docs/CORRESPONDING_SOURCE.md); a release is
+not compliant until its exact signed archive and matching build inputs are
+published together.
 
 ## Tests
 
