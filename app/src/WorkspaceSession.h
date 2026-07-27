@@ -81,6 +81,7 @@ class WorkspaceSession : public QObject
 
     // Personal Library summaries from the Live Store.
     Q_PROPERTY(QVariantList libraryRecords READ libraryRecords NOTIFY libraryChanged)
+    Q_PROPERTY(QVariantList studies READ studies NOTIFY studiesChanged)
     // Open record tabs and the active Game Record id.
     Q_PROPERTY(QVariantList openTabs READ openTabs NOTIFY tabsChanged)
     Q_PROPERTY(QString activeRecordId READ activeRecordId NOTIFY tabsChanged)
@@ -109,6 +110,10 @@ class WorkspaceSession : public QObject
     Q_PROPERTY(QString ruleConflict READ ruleConflict NOTIFY workshopChanged)
     Q_PROPERTY(bool variantPlayable READ variantPlayable NOTIFY workshopChanged)
     Q_PROPERTY(QString variantValidationMessage READ variantValidationMessage NOTIFY workshopChanged)
+    Q_PROPERTY(QString variantAnalysisEvaluation READ variantAnalysisEvaluation NOTIFY variantAnalysisChanged)
+    Q_PROPERTY(QString variantAnalysisVariation READ variantAnalysisVariation NOTIFY variantAnalysisChanged)
+    Q_PROPERTY(QString variantAnalysisEvaluator READ variantAnalysisEvaluator NOTIFY variantAnalysisChanged)
+    Q_PROPERTY(QString variantAnalysisCaveat READ variantAnalysisCaveat NOTIFY variantAnalysisChanged)
     Q_PROPERTY(QVariantList pgnImportResults READ pgnImportResults NOTIFY pgnImportResultsChanged)
 
 public:
@@ -170,6 +175,7 @@ public:
     bool defaultAnalysis() const { return m_defaultAnalysis; }
 
     QVariantList libraryRecords() const { return m_libraryRecords; }
+    QVariantList studies() const { return m_studies; }
     QVariantList openTabs() const { return m_openTabs; }
     QString activeRecordId() const { return m_activeRecordId; }
     QString saveMode() const { return field(QStringLiteral("saveMode")); }
@@ -198,6 +204,10 @@ public:
     QVariantMap variantRules() const { return m_variantRules; }
     bool variantPlayable() const { return m_variantPlayable; }
     QString variantValidationMessage() const { return m_variantValidationMessage; }
+    QString variantAnalysisEvaluation() const { return m_variantAnalysisEvaluation; }
+    QString variantAnalysisVariation() const { return m_variantAnalysisVariation; }
+    QString variantAnalysisEvaluator() const { return m_variantAnalysisEvaluator; }
+    QString variantAnalysisCaveat() const { return m_variantAnalysisCaveat; }
     QString ruleConflict() const { return m_ruleConflict; }
     QVariantList pgnImportResults() const { return m_pgnImportResults; }
 
@@ -234,6 +244,11 @@ public:
 
     // Player intent: close a tab without removing the record from the library.
     Q_INVOKABLE void closeTab(const QString &id);
+    Q_INVOKABLE void createStudy(const QString &name);
+    Q_INVOKABLE void addStudyRecord(const QString &studyId, const QString &recordId);
+    Q_INVOKABLE void removeStudyRecord(const QString &studyId, const QString &recordId);
+    Q_INVOKABLE void reorderStudyRecord(const QString &studyId, const QString &recordId,
+                                        int position);
     Q_INVOKABLE void setSaveMode(const QString &mode);
     Q_INVOKABLE void saveRecord();
     Q_INVOKABLE void discardChanges();
@@ -256,6 +271,7 @@ public:
     Q_INVOKABLE void placeWorkshopPiece(const QString &square, const QString &piece);
     Q_INVOKABLE void toggleVariantRule(const QString &rule);
     Q_INVOKABLE void validateVariantDefinition();
+    Q_INVOKABLE void editVariantDefinition();
     Q_INVOKABLE void importPgn();
     Q_INVOKABLE void exportPgn(const QStringList &recordIds);
     Q_INVOKABLE void deriveAnalysisRecord();
@@ -297,8 +313,10 @@ signals:
     void tabsChanged();
     void restoreChanged();
     void workshopChanged();
+    void variantAnalysisChanged();
     void pgnImportResultsChanged();
     void analysisRecordChanged();
+    void studiesChanged();
 
 private:
     // Submits a command and applies every event it produced.
@@ -320,6 +338,7 @@ private:
     // one core-owned snapshot.
     QJsonObject m_state;
     QVariantList m_libraryRecords;
+    QVariantList m_studies;
     QVariantList m_boardPresets;
     QVariantList m_pieceCatalogue;
     QVariantList m_openTabs;
@@ -345,6 +364,10 @@ private:
     QString m_ruleConflict;
     bool m_variantPlayable = false;
     QString m_variantValidationMessage;
+    QString m_variantAnalysisEvaluation;
+    QString m_variantAnalysisVariation;
+    QString m_variantAnalysisEvaluator;
+    QString m_variantAnalysisCaveat;
     QVariantList m_pgnImportResults;
     QString m_exportPath;
     QVariantMap m_sourceSnapshot;

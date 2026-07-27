@@ -79,6 +79,11 @@ void WorkspaceSession::validateVariantDefinition()
     submit(command(QStringLiteral("validate_variant_definition")));
 }
 
+void WorkspaceSession::editVariantDefinition()
+{
+    submit(command(QStringLiteral("edit_variant_definition")));
+}
+
 void WorkspaceSession::toggleBuiltinPiece(const QString &code)
 {
     submit(command(QStringLiteral("toggle_builtin_piece"), {{QStringLiteral("code"), code}}));
@@ -148,6 +153,35 @@ void WorkspaceSession::openRecord(const QString &id)
 void WorkspaceSession::closeTab(const QString &id)
 {
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
+}
+
+void WorkspaceSession::createStudy(const QString &name)
+{
+    if (!name.trimmed().isEmpty())
+        submit(command(QStringLiteral("create_study"), {{QStringLiteral("name"), name}}));
+}
+
+void WorkspaceSession::addStudyRecord(const QString &studyId, const QString &recordId)
+{
+    submit(command(QStringLiteral("add_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId}}));
+}
+
+void WorkspaceSession::removeStudyRecord(const QString &studyId, const QString &recordId)
+{
+    submit(command(QStringLiteral("remove_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId}}));
+}
+
+void WorkspaceSession::reorderStudyRecord(const QString &studyId, const QString &recordId,
+                                          int position)
+{
+    submit(command(QStringLiteral("reorder_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId},
+                    {QStringLiteral("position"), QString::number(position)}}));
 }
 
 void WorkspaceSession::setSaveMode(const QString &mode)
@@ -505,6 +539,20 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         emit analysisRecordChanged();
         return;
     }
+    if (type == QStringLiteral("studies_changed")) {
+        m_studies.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("studies")).toArray()) {
+            const QJsonObject study = value.toObject();
+            m_studies.append(QVariantMap{
+                {QStringLiteral("id"), study.value(QStringLiteral("id")).toString()},
+                {QStringLiteral("name"), study.value(QStringLiteral("name")).toString()},
+                {QStringLiteral("recordIds"),
+                 study.value(QStringLiteral("recordIds")).toArray().toVariantList()},
+            });
+        }
+        emit studiesChanged();
+        return;
+    }
     if (type == QStringLiteral("record_graph_changed")) {
         m_recordSources.clear();
         for (const QJsonValue &value : event.value(QStringLiteral("sources")).toArray())
@@ -565,6 +613,14 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         for (const QJsonValue &value : event.value(QStringLiteral("pieces")).toArray())
             m_pieceCatalogue.append(value.toObject().toVariantMap());
         emit workshopChanged();
+        return;
+    }
+    if (type == QStringLiteral("variant_analysis_changed")) {
+        m_variantAnalysisEvaluation = event.value(QStringLiteral("evaluation")).toString();
+        m_variantAnalysisVariation = event.value(QStringLiteral("variation")).toString();
+        m_variantAnalysisEvaluator = event.value(QStringLiteral("evaluator")).toString();
+        m_variantAnalysisCaveat = event.value(QStringLiteral("caveat")).toString();
+        emit variantAnalysisChanged();
         return;
     }
     if (type == QStringLiteral("tabs_changed")) {

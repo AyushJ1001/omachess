@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use omachess_store::{
     AnalysisRecordData, AnalysisSideline, ComputerEvaluation, GameRecord, GameRecordKind,
     GameRecordPayload, GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine,
-    RecordResult,
+    RecordResult, Study,
 };
 
 use crate::board::{Orientation, Piece, Position};
@@ -51,6 +51,8 @@ pub struct Session {
     save_mode: SaveMode,
     dirty: bool,
     workshop: Option<VariantDefinition>,
+    variant_active: bool,
+    variant_snapshot: Option<VariantDefinition>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,8 @@ impl Session {
             save_mode: SaveMode::Autosave,
             dirty: false,
             workshop: None,
+            variant_active: false,
+            variant_snapshot: None,
         }
     }
 
@@ -262,6 +266,8 @@ impl Session {
             save_mode,
             dirty: false,
             workshop,
+            variant_active: false,
+            variant_snapshot: None,
         };
         // Completed records may reopen directly. Unfinished Played Games are
         // offered for restore and remain unloaded until the player chooses it.
@@ -311,6 +317,7 @@ impl Session {
             "place_workshop_piece" => self.place_workshop_piece(command)?,
             "toggle_variant_rule" => self.toggle_variant_rule(command)?,
             "validate_variant_definition" => self.validate_variant_definition()?,
+            "edit_variant_definition" => self.edit_variant_definition()?,
             "import_pgn" => self.import_pgn(command)?,
             "export_pgn" => self.export_pgn(command)?,
             "derive_analysis_record" => self.derive_analysis_record()?,
@@ -319,6 +326,10 @@ impl Session {
             "add_analysis_annotation" => self.add_analysis_annotation(command)?,
             "add_analysis_sideline" => self.add_analysis_sideline(command)?,
             "pin_engine_line" => self.pin_engine_line(command)?,
+            "create_study" => self.create_study(command)?,
+            "add_study_record" => self.add_study_record(command)?,
+            "remove_study_record" => self.remove_study_record(command)?,
+            "reorder_study_record" => self.reorder_study_record(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         if matches!(
@@ -337,10 +348,15 @@ impl Session {
         }
         let event = self.board_changed_event();
         self.events.push(event);
+        if self.variant_active {
+            let analysis = self.variant_analysis_event();
+            self.events.push(analysis);
+        }
         if kind == "describe_board" {
             if self.store.is_some() {
                 self.emit_library_changed();
                 self.emit_tabs_changed();
+                self.emit_studies_changed();
             }
             if let Some(offer) = &self.restore_offer {
                 self.events.push(restore_available_event(offer));
@@ -359,6 +375,50 @@ impl Session {
             ));
         }
         Ok(())
+    }
+
+    fn create_study(&mut self, command: &str) -> Result<(), CommandError> {
+        let name = json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .create_study(&format!("study-{}", new_record_id()), &name, &timestamp_now())
+            .map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn add_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .add_study_record(&study_id, &record_id).map_err(|_| CommandError::RejectedMove)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn remove_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .remove_study_record(&study_id, &record_id).map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn reorder_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        let position = json::read_string_field(command, "position")
+            .and_then(|value| value.parse().ok()).ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .reorder_study_record(&study_id, &record_id, position).map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn emit_studies_changed(&mut self) {
+        let Some(store) = self.store.as_ref() else { return };
+        let Ok(studies) = store.workspace().list_studies() else { return };
+        self.events.push(studies_changed_event(&studies));
     }
 
     fn derive_analysis_record(&mut self) -> Result<(), CommandError> {
@@ -650,6 +710,8 @@ impl Session {
 
     fn new_variant_definition(&mut self) -> Result<(), CommandError> {
         self.workshop = Some(VariantDefinition::default());
+        self.variant_active = false;
+        self.variant_snapshot = None;
         self.persist_variant_definition()
     }
 
@@ -842,6 +904,33 @@ impl Session {
                 definition.validation_message = "Playable — every validation stage passed.".into();
             }
         }
+        let playable_definition = definition.playable.then(|| definition.clone());
+        self.persist_variant_definition()?;
+        if let Some(definition) = playable_definition {
+            let adapter = compile_variant_adapter(&definition);
+            let adapter = String::from_utf8(adapter).map_err(|_| CommandError::MalformedCommand)?;
+            if !Rules::load_variant_adapter(&adapter) {
+                return Err(CommandError::RejectedMove);
+            }
+            self.game = Game::variant("omachess", &draft_variant_fen(&definition))
+                .ok_or(CommandError::RejectedMove)?;
+            self.setup = None;
+            self.variant_active = true;
+            self.variant_snapshot = Some(definition);
+            self.record_id = None;
+            self.persist_current_record()?;
+        }
+        Ok(())
+    }
+
+    fn edit_variant_definition(&mut self) -> Result<(), CommandError> {
+        let definition = self
+            .workshop
+            .as_mut()
+            .ok_or(CommandError::MalformedCommand)?;
+        definition.playable = false;
+        definition.validation_message.clear();
+        self.variant_active = false;
         self.persist_variant_definition()
     }
 
@@ -1269,6 +1358,8 @@ impl Session {
         self.metadata = GameMetadata::default();
         self.setup = None;
         self.dirty = false;
+        self.variant_active = false;
+        self.variant_snapshot = None;
         if let Some(store) = self.store.as_ref() {
             let _ = store.workspace().clear_residue("active_record_id");
         }
@@ -1467,6 +1558,7 @@ impl Session {
             .ok_or(CommandError::Store)?;
         let stored_result = record.payload.result.clone();
         let stored_clock = record.payload.clock.as_deref().and_then(decode_clock);
+        let variant = record.payload.variant.clone();
         let moves = record
             .payload
             .moves
@@ -1481,8 +1573,27 @@ impl Session {
                 },
             })
             .collect();
-        self.game =
-            Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+        if let Some(encoded) = variant.strip_prefix("omachess:v1:") {
+            let snapshot = decode_variant_definition(encoded).ok_or(CommandError::Store)?;
+            let adapter =
+                String::from_utf8(compile_variant_adapter(&snapshot)).map_err(|_| CommandError::Store)?;
+            if !Rules::load_variant_adapter(&adapter) {
+                return Err(CommandError::Store);
+            }
+            self.game = Game::variant_from_history(
+                "omachess",
+                &record.payload.start_fen,
+                moves,
+            )
+            .ok_or(CommandError::Store)?;
+            self.variant_snapshot = Some(snapshot);
+            self.variant_active = true;
+        } else {
+            self.game =
+                Game::from_history(&record.payload.start_fen, moves).ok_or(CommandError::Store)?;
+            self.variant_snapshot = None;
+            self.variant_active = false;
+        }
         if stored_result
             .as_ref()
             .is_some_and(|result| result.termination == "time_forfeit")
@@ -1548,7 +1659,11 @@ impl Session {
         };
         let result_score = result.as_ref().map(|result| result.score.clone());
         let payload = GameRecordPayload {
-            variant: "standard".into(),
+            variant: self
+                .variant_snapshot
+                .as_ref()
+                .map(|snapshot| format!("omachess:v1:{}", encode_variant_definition(snapshot)))
+                .unwrap_or_else(|| "standard".into()),
             start_fen: self.game.start_fen().to_owned(),
             moves: self
                 .game
@@ -1638,6 +1753,24 @@ impl Session {
         ));
     }
 
+    fn variant_analysis_event(&mut self) -> String {
+        let mut out = String::from(
+            "{\"type\":\"variant_analysis_changed\",\"evaluator\":\
+             \"Fairy-Stockfish c19b5f6 · generic handcrafted evaluation\",\
+             \"caveat\":\"This search does not prove the variant is balanced or establish its playing strength.\"",
+        );
+        if let Some((score, variation)) = self.game.analysis() {
+            out.push_str(",\"evaluation\":");
+            json::write_string(&mut out, &score.replace("cp ", ""));
+            out.push_str(",\"variation\":");
+            json::write_string(&mut out, &variation);
+        } else {
+            out.push_str(",\"evaluation\":\"—\",\"variation\":\"No principal variation\"");
+        }
+        out.push('}');
+        out
+    }
+
     fn tab_titles(&self) -> Vec<String> {
         let Some(store) = self.store.as_ref() else {
             return self
@@ -1677,11 +1810,21 @@ impl Session {
 
     fn board_changed_event(&mut self) -> String {
         let mut out = String::with_capacity(4096);
-        out.push_str("{\"type\":\"board_changed\",\"variant\":\"standard\",\"orientation\":");
+        out.push_str("{\"type\":\"board_changed\",\"variant\":");
+        json::write_string(
+            &mut out,
+            if self.variant_active {
+                "Untitled Variant"
+            } else {
+                "standard"
+            },
+        );
+        out.push_str(",\"orientation\":");
         json::write_string(&mut out, self.orientation.name());
 
         out.push_str(",\"squares\":[");
-        if let Some(definition) = &self.workshop {
+        if !self.variant_active {
+            if let Some(definition) = &self.workshop {
             let mut index = 0;
             for rank in (1..=definition.ranks).rev() {
                 for file in 0..definition.files {
@@ -1714,6 +1857,7 @@ impl Session {
             }
             out.push_str("],\"activity\":\"variant_workshop\",\"sideToMove\":\"white\",\"inCheck\":false,\"moves\":[],\"moveList\":[],\"cursor\":0,\"reviewing\":false,\"lastMove\":{\"from\":null,\"to\":null},\"result\":{\"over\":false,\"label\":\"\",\"status\":\"\",\"score\":\"\"},\"clock\":{\"enabled\":false,\"running\":false,\"whiteMs\":0,\"blackMs\":0},\"metadata\":{\"white\":\"\",\"black\":\"\",\"event\":\"\",\"date\":\"\",\"title\":\"\",\"tags\":\"\"}}");
             return out;
+            }
         }
         let position = self.setup.as_ref().map(|setup| &setup.position);
         let game_position;
@@ -1775,17 +1919,27 @@ impl Session {
                 },
             );
         } else {
-            let activity = self
-                .record_id
-                .as_ref()
-                .and_then(|id| self.store.as_ref()?.workspace().get_game_record(id).ok().flatten())
-                .map_or("played_game", |record| {
-                    if record.kind == GameRecordKind::Analysis {
-                        "analysis_record"
-                    } else {
-                        "played_game"
-                    }
-                });
+            let activity = if self.variant_active {
+                "variant_play"
+            } else {
+                self.record_id
+                    .as_ref()
+                    .and_then(|id| {
+                        self.store
+                            .as_ref()?
+                            .workspace()
+                            .get_game_record(id)
+                            .ok()
+                            .flatten()
+                    })
+                    .map_or("played_game", |record| {
+                        if record.kind == GameRecordKind::Analysis {
+                            "analysis_record"
+                        } else {
+                            "played_game"
+                        }
+                    })
+            };
             out.push_str(",\"activity\":");
             json::write_string(&mut out, activity);
         }
@@ -1960,7 +2114,10 @@ impl Session {
             .as_ref()
             .expect("workshop event needs a definition");
         let (max_files, max_ranks) = engine_geometry();
-        let mut out = String::from("{\"type\":\"workshop_changed\",\"active\":true,\"step\":");
+        let mut out = format!(
+            "{{\"type\":\"workshop_changed\",\"active\":{},\"step\":",
+            if self.variant_active { "false" } else { "true" }
+        );
         out.push_str(&definition.step.to_string());
         out.push_str(",\"files\":");
         out.push_str(&definition.files.to_string());
@@ -2492,6 +2649,25 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
             None => out.push_str("null"),
         }
         out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn studies_changed_event(studies: &[Study]) -> String {
+    let mut out = String::from("{\"type\":\"studies_changed\",\"studies\":[");
+    for (index, study) in studies.iter().enumerate() {
+        if index > 0 { out.push(','); }
+        out.push_str("{\"id\":");
+        json::write_string(&mut out, &study.id);
+        out.push_str(",\"name\":");
+        json::write_string(&mut out, &study.name);
+        out.push_str(",\"recordIds\":[");
+        for (record_index, id) in study.record_ids.iter().enumerate() {
+            if record_index > 0 { out.push(','); }
+            json::write_string(&mut out, id);
+        }
+        out.push_str("]}");
     }
     out.push_str("]}");
     out
