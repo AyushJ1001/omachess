@@ -34,7 +34,10 @@ def fake_engine(path: Path, behavior: str, execution_log: Path) -> None:
                         name = "Definitely Not Stockfish" if behavior == "identity-mismatch" else "Stockfish 18"
                         print("id name " + name, flush=True)
                         print("id author The Stockfish developers", flush=True)
-                        print("option name Threads type spin default 1 min 1 max 1024", flush=True)
+                        if behavior == "incomplete-capability-schema":
+                            print("option name Threads type spin default 1", flush=True)
+                        else:
+                            print("option name Threads type spin default 1 min 1 max 1024", flush=True)
                         print("option name Style type combo default Normal var Solid var Normal var Risky", flush=True)
                         if behavior == "registration":
                             print("registration error", flush=True)
@@ -187,6 +190,88 @@ class EngineJourney(unittest.TestCase):
                         )
                     )
                     self.assertNotIn("Ready", screen.labels["engineState:stockfish"])
+
+    def register_custom(self, workspace: Workspace, engine: Path) -> None:
+        workspace.click("engineProfilesButton")
+        workspace.enter_text("customEngineArguments", "--uci test")
+        workspace.enter_text("customEngineWorkingDirectory", str(engine.parent))
+        workspace.enter_text("customEnginePath", engine.as_uri())
+        workspace.click("registerCustomEngine")
+
+    def test_conforming_custom_engine_warns_then_becomes_ready(self) -> None:
+        engine = self.data_home / "outside catalog" / "my-engine"
+        fake_engine(engine, "ready", self.log)
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            self.register_custom(workspace, engine)
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:custom") == "Consent required"
+            )
+            self.assertEqual(screen.labels["enginePath:custom"], str(engine))
+            self.assertEqual(screen.labels["engineArguments:custom"], "--uci test")
+            self.assertEqual(screen.labels["engineWorkingDirectory:custom"], str(engine.parent))
+            self.assertIn("your permissions", screen.labels["engineWarning:custom"])
+            self.assertFalse(self.log.exists())
+
+            workspace.click("engineConsent:custom")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:custom") == "Ready"
+            )
+            self.assertEqual(screen.labels["engineIdentity:custom"], "Stockfish 18")
+            self.assertIn("Threads", screen.labels["engineCapabilities:custom"])
+
+            workspace.restart()
+            workspace.click("engineProfilesButton")
+            screen = workspace.screen_when(
+                lambda value: "enginePath:custom" in value.labels
+            )
+            self.assertEqual(screen.labels["enginePath:custom"], str(engine))
+            self.assertEqual(screen.labels["engineArguments:custom"], "--uci test")
+            self.assertEqual(screen.labels["engineWorkingDirectory:custom"], str(engine.parent))
+            self.assertEqual(
+                screen.labels["engineState:custom"], "Consent granted — probe required"
+            )
+
+    def test_non_uci_custom_executable_reports_probe_failure(self) -> None:
+        executable = self.data_home / "not-uci"
+        executable.write_text("#!/bin/sh\necho not-uci\n", encoding="utf-8")
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            self.register_custom(workspace, executable)
+            workspace.click("engineConsent:custom")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:custom", "").startswith("Probe failed")
+            )
+            self.assertNotIn("Ready", screen.labels["engineState:custom"])
+
+    def test_custom_capabilities_require_a_compatible_advertised_schema(self) -> None:
+        engine = self.data_home / "odd-options"
+        fake_engine(engine, "incomplete-capability-schema", self.log)
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            self.register_custom(workspace, engine)
+            workspace.click("engineConsent:custom")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:custom") == "Ready"
+            )
+            self.assertNotIn("engineCapabilities:custom", screen.labels)
+
+    def test_custom_engine_missing_uciok_reports_probe_failure(self) -> None:
+        engine = self.data_home / "never-uciok"
+        fake_engine(engine, "missing-uciok", self.log)
+        with Workspace(
+            executable_under_test(), data_home=self.data_home, environment=self.environment
+        ) as workspace:
+            self.register_custom(workspace, engine)
+            workspace.click("engineConsent:custom")
+            screen = workspace.screen_when(
+                lambda value: value.labels.get("engineState:custom", "").startswith("Probe failed")
+            )
+            self.assertIn("startup timeout", screen.labels["engineState:custom"])
 
     def test_catalog_engine_installs_then_requires_consent_and_probe(self) -> None:
         self.serve_upstream("ready")

@@ -6,6 +6,7 @@
 #include <QProcess>
 #include <QQmlEngine>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantList>
 
 // Curated engines are discovered only at catalog-owned paths. A discovered
@@ -33,6 +34,11 @@ public:
         FoundRole,
         ConsentRequiredRole,
         InstallOfferedRole,
+        ExecutablePathRole,
+        LaunchArgumentsRole,
+        LaunchWorkingDirectoryRole,
+        CapabilitiesRole,
+        CustomRole,
         InstallingRole,
     };
 
@@ -63,6 +69,11 @@ signals:
     void livePlayChanged();
     void liveMove(const QString &from, const QString &to, const QString &promotion);
 
+public:
+    Q_INVOKABLE void registerCustomEngine(const QUrl &path,
+                                          const QString &arguments,
+                                          const QString &workingDirectory);
+
 private:
     struct Profile {
         QString key;
@@ -81,6 +92,10 @@ private:
         bool found = false;
         bool detectOnly = false;
         bool identityMismatch = false;
+        bool custom = false;
+        QString arguments;
+        QString workingDirectory;
+        QStringList capabilities;
         QString upstreamUrl;
     };
 
@@ -98,6 +113,8 @@ private:
     };
 
     void discover();
+    void loadCustomEngine();
+    void saveCustomEngine(const Profile &profile);
     QString discoverPath(const Profile &profile) const;
     int indexOf(const QString &key) const;
     void startProbe(int index);

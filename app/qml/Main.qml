@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import Omachess
 
@@ -82,6 +83,14 @@ ApplicationWindow {
             close.accepted = false
             requestWorkspaceClose()
         }
+    }
+
+    FileDialog {
+        id: customEngineFileDialog
+        objectName: "customEngineFileDialog"
+        title: qsTr("Choose a UCI engine executable")
+        fileMode: FileDialog.OpenFile
+        onAccepted: customEnginePath.text = selectedFile
     }
 
     Component.onCompleted: {
@@ -1007,6 +1016,47 @@ ApplicationWindow {
                         checkable: true
                     }
 
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: engineProfilesButton.checked
+                        spacing: 4
+
+                        TextField {
+                            id: customEnginePath
+                            objectName: "customEnginePath"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Choose or enter an executable path")
+                        }
+                        TextField {
+                            id: customEngineArguments
+                            objectName: "customEngineArguments"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Optional arguments")
+                        }
+                        TextField {
+                            id: customEngineWorkingDirectory
+                            objectName: "customEngineWorkingDirectory"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Optional working directory")
+                        }
+                        Button {
+                            objectName: "chooseCustomEngine"
+                            Layout.fillWidth: true
+                            text: qsTr("Choose Custom Engine…")
+                            onClicked: customEngineFileDialog.open()
+                        }
+                        Button {
+                            objectName: "registerCustomEngine"
+                            Layout.fillWidth: true
+                            enabled: customEnginePath.text.length > 0
+                            text: qsTr("Register Custom Engine")
+                            onClicked: EngineManager.registerCustomEngine(
+                                           customEnginePath.text,
+                                           customEngineArguments.text,
+                                           customEngineWorkingDirectory.text)
+                        }
+                    }
+
                     ListView {
                         id: engines
                         objectName: "engineProfiles"
@@ -1032,6 +1082,11 @@ ApplicationWindow {
                             property bool showLivePlaySettings: false
                             property int liveSearchTime: EngineManager.livePlaySearchTime(key)
                             property int liveClock: EngineManager.livePlayClock(key)
+                            required property string executablePath
+                            required property string launchArguments
+                            required property string launchWorkingDirectory
+                            required property string capabilities
+                            required property bool custom
                             required property bool installOffered
                             required property bool installing
 
@@ -1070,6 +1125,35 @@ ApplicationWindow {
                                     wrapMode: Text.WordWrap
                                 }
                                 Label {
+                                    objectName: "enginePath:" + key
+                                    Layout.fillWidth: true
+                                    visible: custom
+                                    text: executablePath
+                                    elide: Text.ElideMiddle
+                                }
+                                Label {
+                                    objectName: "engineArguments:" + key
+                                    Layout.fillWidth: true
+                                    visible: custom && launchArguments.length > 0
+                                    text: launchArguments
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    objectName: "engineWorkingDirectory:" + key
+                                    Layout.fillWidth: true
+                                    visible: custom && launchWorkingDirectory.length > 0
+                                    text: launchWorkingDirectory
+                                    elide: Text.ElideMiddle
+                                }
+                                Label {
+                                    objectName: "engineWarning:" + key
+                                    Layout.fillWidth: true
+                                    visible: custom && consentRequired
+                                    text: qsTr("Warning: this program will execute with your permissions.")
+                                    color: Theme.yellow
+                                    wrapMode: Text.WordWrap
+                                }
+                                Label {
                                     objectName: "engineIdentity:" + key
                                     Layout.fillWidth: true
                                     visible: identity.length > 0
@@ -1081,6 +1165,13 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     visible: optionCount > 0
                                     text: qsTr("%1 UCI options").arg(optionCount)
+                                }
+                                Label {
+                                    objectName: "engineCapabilities:" + key
+                                    Layout.fillWidth: true
+                                    visible: custom && capabilities.length > 0
+                                    text: capabilities
+                                    wrapMode: Text.WordWrap
                                 }
                                 SpinBox {
                                     objectName: "engineRatingEditor:" + key
