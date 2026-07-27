@@ -192,6 +192,11 @@ QJsonObject TestChannel::handle(const QJsonObject &command)
         QCoreApplication::processEvents();
         return QJsonObject{{"ok", invoked}};
     }
+    if (name == QStringLiteral("close_window")) {
+        m_window->close();
+        QCoreApplication::processEvents();
+        return QJsonObject{{"ok", true}};
+    }
     if (name == QStringLiteral("quit")) {
         QCoreApplication::quit();
         return QJsonObject{{"ok", true}};

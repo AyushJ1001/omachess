@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QFile>
+#include <QNetworkAccessManager>
 #include <QProcess>
 #include <QQmlEngine>
 #include <QTimer>
@@ -31,6 +33,7 @@ public:
         FoundRole,
         ConsentRequiredRole,
         InstallOfferedRole,
+        InstallingRole,
     };
 
     explicit EngineManager(QObject *parent = nullptr);
@@ -39,6 +42,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE void grantConsent(const QString &key);
+    Q_INVOKABLE void install(const QString &key);
+    Q_INVOKABLE void cancelInstall(const QString &key);
     Q_INVOKABLE void setDisplayRating(const QString &key, int rating);
     Q_INVOKABLE void setLivePlaySearchTime(const QString &key, int milliseconds);
     Q_INVOKABLE int livePlaySearchTime(const QString &key) const;
@@ -76,6 +81,7 @@ private:
         bool found = false;
         bool detectOnly = false;
         bool identityMismatch = false;
+        QString upstreamUrl;
     };
 
     enum class Stage {
@@ -103,6 +109,9 @@ private:
     void finishReady();
     bool identityMatches(const Profile &profile) const;
     void stopProcess();
+    void finishInstall();
+    void failInstall(const QString &reason);
+    QString storeDirectory(const Profile &profile) const;
     int deadline(int productionMs) const;
     void failLivePlay(const QString &reason);
     void requestLiveMove();
@@ -123,4 +132,8 @@ private:
     int m_liveWhiteMs = 0;
     int m_liveBlackMs = 0;
     int m_liveSearchTimeMs = 250;
+    QNetworkAccessManager m_network;
+    QNetworkReply *m_download = nullptr;
+    QFile m_downloadFile;
+    int m_installing = -1;
 };

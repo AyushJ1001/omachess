@@ -1,4 +1,4 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network Svg Test Widgets)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -41,7 +41,6 @@ qt_add_qml_module(omachess
     qml/engine-art/stockfish.svg
     qml/engine-art/leela.svg
     qml/engine-art/reckless.svg
-    qml/engine-art/komodo.svg
     qml/engine-art/README.md
   SOURCES
     src/WorkspaceSession.h
@@ -62,6 +61,7 @@ target_link_libraries(omachess PRIVATE
   # Piece Set artwork is vector, so the workspace needs the SVG image handler.
   Qt6::Svg
   Qt6::Test
+  Qt6::Widgets
   omachess::core
 )
 
@@ -73,6 +73,14 @@ install(FILES "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.desktop"
 install(FILES "${CMAKE_SOURCE_DIR}/packaging/icons/com.omachess.Omachess.svg"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
 
-# Backup, export, and removal guidance ships with the package.
-install(FILES "${CMAKE_SOURCE_DIR}/docs/install.md"
+# Recipient-facing legal, source, release, and recovery guidance ships with
+# the package rather than depending on a repository checkout.
+install(FILES
+  "${CMAKE_SOURCE_DIR}/docs/install.md"
+  "${CMAKE_SOURCE_DIR}/docs/backup.md"
+  "${CMAKE_SOURCE_DIR}/docs/THIRD_PARTY_NOTICES.md"
+  "${CMAKE_SOURCE_DIR}/docs/CORRESPONDING_SOURCE.md"
+  "${CMAKE_SOURCE_DIR}/docs/RELEASE_NOTES_0.1.md"
   DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/omachess")

@@ -20,10 +20,139 @@ ApplicationWindow {
     visible: true
     title: qsTr("Omachess")
     color: Theme.background
+    property var selectedLibraryIds: []
+
+    property string pendingCloseRecordId: ""
+    property bool pendingWorkspaceClose: false
+    property string pendingAction: ""
+    property string pendingOpenRecordId: ""
+
+    function askBeforeAbandoning(action, id) {
+        if (!WorkspaceSession.needsUnsavedDecision)
+            return false
+        pendingAction = action
+        pendingOpenRecordId = id || ""
+        pendingWorkspaceClose = action === "workspace"
+        pendingCloseRecordId = action === "record" ? id : ""
+        unsavedClose.open()
+        return true
+    }
+
+    function continuePendingAction() {
+        const action = pendingAction
+        const id = pendingOpenRecordId
+        pendingAction = ""
+        pendingOpenRecordId = ""
+        if (action === "workspace")
+            workspace.close()
+        else if (action === "record")
+            WorkspaceSession.closeTab(pendingCloseRecordId)
+        else if (action === "new")
+            WorkspaceSession.newGame()
+        else if (action === "open")
+            WorkspaceSession.openRecord(id)
+        pendingCloseRecordId = ""
+    }
+
+    function requestNewGame() {
+        if (!askBeforeAbandoning("new", ""))
+            WorkspaceSession.newGame()
+    }
+
+    function requestOpenRecord(id) {
+        if (id === WorkspaceSession.activeRecordId)
+            return
+        if (!askBeforeAbandoning("open", id))
+            WorkspaceSession.openRecord(id)
+    }
+
+    function requestRecordClose(id) {
+        if (id !== WorkspaceSession.activeRecordId
+                || !askBeforeAbandoning("record", id))
+            WorkspaceSession.closeTab(id)
+    }
+
+    function requestWorkspaceClose() {
+        if (!askBeforeAbandoning("workspace", ""))
+            workspace.close()
+    }
+
+    onClosing: function(close) {
+        if (WorkspaceSession.needsUnsavedDecision && !pendingWorkspaceClose) {
+            close.accepted = false
+            requestWorkspaceClose()
+        }
+    }
 
     Component.onCompleted: {
         WorkspaceSession.describeBoard()
         actionSource.rebuild()
+    }
+
+    Connections {
+        target: WorkspaceSession
+        function onPgnImportResultsChanged() { pgnImportResultsDialog.open() }
+    }
+
+    Dialog {
+        id: pgnImportResultsDialog
+        objectName: "pgnImportResultsDialog"
+        title: qsTr("PGN import results")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, parent.width - 40)
+        standardButtons: Dialog.Close
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "pgnImportSummary"
+                text: {
+                    let imported = 0
+                    let failed = 0
+                    for (const entry of WorkspaceSession.pgnImportResults)
+                        entry.status === "imported" ? imported++ : failed++
+                    return qsTr("%1 imported · %2 failed").arg(imported).arg(failed)
+                }
+                font.bold: true
+            }
+            Repeater {
+                model: WorkspaceSession.pgnImportResults
+                Label {
+                    required property var modelData
+                    objectName: "pgnImportEntry:" + modelData.entry
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: modelData.status === "imported"
+                          ? qsTr("Entry %1 — %2: imported").arg(modelData.entry).arg(modelData.title)
+                          : qsTr("Entry %1 — %2: failed — %3")
+                                .arg(modelData.entry).arg(modelData.title).arg(modelData.reason)
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: experimentalReleaseDialog
+        objectName: "experimentalReleaseDialog"
+        title: qsTr("Omachess v0.1 — experimental")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, parent.width - 40)
+        standardButtons: Dialog.Close
+
+        contentItem: ColumnLayout {
+            Label {
+                objectName: "experimentalReleaseTitle"
+                text: qsTr("Protect your library while v0.1 evolves")
+                font.bold: true
+            }
+            Label {
+                objectName: "experimentalReleaseGuidance"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Before migration or upgrade, close Omachess and copy the whole Live Store for recovery. Export important Game Records as PGN too. The Library Portability Package is not available in v0.1; see the installed release notes and backup guide for exact XDG paths.")
+            }
+        }
     }
 
     function focusPane(delta) {
@@ -101,7 +230,12 @@ ApplicationWindow {
                 action("palette", qsTr("Command palette"), "Ctrl+K",
                        function() { commandPalette.open() }),
                 action("new-game", qsTr("New game"), "Ctrl+N",
-                       function() { WorkspaceSession.newGame() }),
+                       function() { workspace.requestNewGame() }),
+                action("save-record", qsTr("Save Game Record"), "Ctrl+S",
+                       function() { WorkspaceSession.saveRecord() },
+                       WorkspaceSession.dirty),
+                action("close-workspace", qsTr("Close workspace"), "Ctrl+Q",
+                       function() { workspace.requestWorkspaceClose() }),
                 action("flip", qsTr("Flip board"), "F",
                        function() { WorkspaceSession.flipBoard() }),
                 action("first", qsTr("First position"), "Home",
@@ -150,7 +284,7 @@ ApplicationWindow {
                 actions.push(action("open-" + id, qsTr("Open %1").arg(record.title),
                                     index < 9 ? "Alt+" + (index + 1)
                                               : "Alt+Right · ↑/↓ · Enter",
-                                    function() { WorkspaceSession.openRecord(id) },
+                                    function() { workspace.requestOpenRecord(id) },
                                     true, index < 9 ? "Alt+" + (index + 1) : ""))
             }
             for (let index = 0; index < WorkspaceSession.openTabs.length; ++index) {
@@ -159,12 +293,12 @@ ApplicationWindow {
                 actions.push(action("switch-" + id, qsTr("Switch to %1").arg(tab.title),
                                     index < 9 ? "Ctrl+" + (index + 1)
                                               : "Alt+Right · Tab · Enter",
-                                    function() { WorkspaceSession.openRecord(id) },
+                                    function() { workspace.requestOpenRecord(id) },
                                     true, index < 9 ? "Ctrl+" + (index + 1) : ""))
                 const active = id === WorkspaceSession.activeRecordId
                 actions.push(action("close-" + id, qsTr("Close %1").arg(tab.title),
                                     active ? "Ctrl+W" : "Alt+Right · Tab · Enter",
-                                    function() { WorkspaceSession.closeTab(id) },
+                                    function() { workspace.requestRecordClose(id) },
                                     true, active ? "Ctrl+W" : ""))
             }
             if (WorkspaceSession.restoreAvailable) {
@@ -287,7 +421,50 @@ ApplicationWindow {
             Button {
                 objectName: "newGameButton"
                 text: qsTr("New game")
-                onClicked: WorkspaceSession.newGame()
+                onClicked: workspace.requestNewGame()
+            }
+
+            Button {
+                objectName: "autosaveMode"
+                text: qsTr("Autosave Mode")
+                checkable: true
+                checked: WorkspaceSession.saveMode === "autosave"
+                onClicked: WorkspaceSession.setSaveMode("autosave")
+            }
+
+            Button {
+                objectName: "manualSaveMode"
+                text: qsTr("Manual Save Mode")
+                checkable: true
+                checked: WorkspaceSession.saveMode === "manual"
+                onClicked: WorkspaceSession.setSaveMode("manual")
+            }
+
+            Label {
+                objectName: "dirtyState"
+                visible: WorkspaceSession.dirty
+                text: qsTr("Unsaved")
+                color: Theme.accent
+            }
+
+            Button {
+                objectName: "saveRecord"
+                visible: WorkspaceSession.saveMode === "manual"
+                enabled: WorkspaceSession.dirty
+                text: qsTr("Save")
+                onClicked: WorkspaceSession.saveRecord()
+            }
+            Button {
+                objectName: "newVariantButton"
+                text: qsTr("New variant")
+                onClicked: WorkspaceSession.newVariantDefinition()
+            }
+
+            Button {
+                objectName: "experimentalReleaseButton"
+                text: qsTr("v0.1 experimental")
+                flat: true
+                onClicked: experimentalReleaseDialog.open()
             }
 
             Button {
@@ -447,6 +624,22 @@ ApplicationWindow {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 8
+                        Button {
+                            objectName: "importPgnButton"
+                            text: qsTr("Import PGN…")
+                            onClicked: WorkspaceSession.importPgn()
+                        }
+                        Button {
+                            objectName: "exportPgnButton"
+                            text: qsTr("Export selected…")
+                            enabled: workspace.selectedLibraryIds.length > 0
+                            onClicked: WorkspaceSession.exportPgn(workspace.selectedLibraryIds)
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
@@ -489,7 +682,9 @@ ApplicationWindow {
                                     objectName: "libraryMeta:" + modelData.id
                                     Layout.fillWidth: true
                                     text: {
-                                        const kind = modelData.kind === "analysis"
+                                        const kind = modelData.kind === "variant"
+                                                   ? qsTr("Draft Variant Definition")
+                                                   : modelData.kind === "analysis"
                                                    ? qsTr("Analysis") : qsTr("Played")
                                         const score = modelData.resultScore
                                         return score && score.length > 0
@@ -501,15 +696,38 @@ ApplicationWindow {
                                 }
                             }
 
+                            Row {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                CheckBox {
+                                    objectName: "selectRecord:" + modelData.id
+                                    checked: workspace.selectedLibraryIds.indexOf(modelData.id) >= 0
+                                    onClicked: {
+                                        let ids = workspace.selectedLibraryIds.slice()
+                                        const at = ids.indexOf(modelData.id)
+                                        if (checked && at < 0)
+                                            ids.push(modelData.id)
+                                        else if (!checked && at >= 0)
+                                            ids.splice(at, 1)
+                                        workspace.selectedLibraryIds = ids
+                                    }
+                                }
+                                Button {
+                                    objectName: "exportRecord:" + modelData.id
+                                    text: qsTr("Export")
+                                    onClicked: WorkspaceSession.exportPgn([modelData.id])
+                                }
+                            }
+
                             background: Rectangle {
                                 color: libraryItem.highlighted ? Theme.selection
                                        : (libraryItem.hovered ? Theme.selection : "transparent")
                                 opacity: libraryItem.highlighted || libraryItem.hovered ? 1 : 0
                             }
 
-                            onClicked: WorkspaceSession.openRecord(modelData.id)
-                            Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
-                            Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
+                            onClicked: workspace.requestOpenRecord(modelData.id)
+                            Keys.onReturnPressed: workspace.requestOpenRecord(modelData.id)
+                            Keys.onEnterPressed: workspace.requestOpenRecord(modelData.id)
                         }
 
                         Label {
@@ -570,8 +788,8 @@ ApplicationWindow {
                                               ? Theme.muted : "transparent"
                                 border.width: 1
                                 activeFocusOnTab: true
-                                Keys.onReturnPressed: WorkspaceSession.openRecord(modelData.id)
-                                Keys.onEnterPressed: WorkspaceSession.openRecord(modelData.id)
+                                Keys.onReturnPressed: workspace.requestOpenRecord(modelData.id)
+                                Keys.onEnterPressed: workspace.requestOpenRecord(modelData.id)
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -596,14 +814,14 @@ ApplicationWindow {
                                         Layout.preferredHeight: 22
                                         flat: true
                                         text: "×"
-                                        onClicked: WorkspaceSession.closeTab(modelData.id)
+                                        onClicked: workspace.requestRecordClose(modelData.id)
                                     }
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
                                     z: -1
-                                    onClicked: WorkspaceSession.openRecord(modelData.id)
+                                    onClicked: workspace.requestOpenRecord(modelData.id)
                                 }
                             }
                         }
@@ -814,6 +1032,8 @@ ApplicationWindow {
                             property bool showLivePlaySettings: false
                             property int liveSearchTime: EngineManager.livePlaySearchTime(key)
                             property int liveClock: EngineManager.livePlayClock(key)
+                            required property bool installOffered
+                            required property bool installing
 
                             width: engines.width
                             padding: 6
@@ -973,6 +1193,18 @@ ApplicationWindow {
                                         }
                                     }
                                 }
+                                Button {
+                                    objectName: "engineInstall:" + key
+                                    visible: installOffered
+                                    text: qsTr("Install from upstream")
+                                    onClicked: EngineManager.install(key)
+                                }
+                                Button {
+                                    objectName: "engineCancelInstall:" + key
+                                    visible: installing
+                                    text: qsTr("Cancel install")
+                                    onClicked: EngineManager.cancelInstall(key)
+                                }
                             }
                         }
                     }
@@ -995,14 +1227,128 @@ ApplicationWindow {
 
                     Label {
                         objectName: "rightRailHeading"
-                        text: WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
+                        text: WorkspaceSession.workshopActive ? qsTr("Variant Workshop")
+                              : WorkspaceSession.positionSetup ? qsTr("Position Setup") : qsTr("Moves")
                         font.bold: true
                         font.pixelSize: 11
                         font.capitalization: Font.AllUppercase
                         color: Theme.muted
                     }
 
+                    ColumnLayout {
+                        visible: WorkspaceSession.workshopActive
+                        z: 2
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+
+                        Label {
+                            objectName: "workshopStatus"
+                            text: qsTr("Draft Variant Definition · v1")
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "workshopStepHeading"
+                            text: WorkspaceSession.workshopStep === 1
+                                  ? qsTr("1. Board") : qsTr("2. Pieces")
+                            font.bold: true
+                        }
+                        ColumnLayout {
+                            visible: WorkspaceSession.workshopStep === 1
+                            Repeater {
+                                model: WorkspaceSession.boardPresets
+                                Button {
+                                    required property var modelData
+                                    objectName: "boardPreset:" + modelData.id
+                                    Layout.fillWidth: true
+                                    enabled: modelData.available
+                                    text: modelData.name + (modelData.available
+                                          ? "" : " — Unavailable: " + modelData.reason)
+                                    onClicked: WorkspaceSession.selectBoardPreset(modelData.id)
+                                }
+                            }
+                        }
+                        Flickable {
+                            visible: WorkspaceSession.workshopStep === 2
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentHeight: pieceControls.implicitHeight
+                            clip: true
+                            ColumnLayout {
+                                id: pieceControls
+                                width: parent.width
+                                Repeater {
+                                    model: WorkspaceSession.pieceCatalogue
+                                    CheckBox {
+                                        required property var modelData
+                                        objectName: "piece:" + modelData.code
+                                        text: modelData.name + " · " + modelData.betza
+                                        checked: WorkspaceSession.selectedPieces.indexOf(modelData.code) >= 0
+                                        enabled: modelData.code !== "K" && modelData.code !== "P"
+                                        onClicked: WorkspaceSession.toggleBuiltinPiece(modelData.code)
+                                    }
+                                }
+                                Label { text: qsTr("One custom Betza piece"); font.bold: true }
+                                TextField {
+                                    id: customName
+                                    objectName: "customPieceName"
+                                    placeholderText: qsTr("Name")
+                                    text: WorkspaceSession.customPieceName
+                                }
+                                TextField {
+                                    id: customLetter
+                                    objectName: "customPieceLetter"
+                                    placeholderText: qsTr("Letter")
+                                    text: WorkspaceSession.customPieceLetter
+                                }
+                                TextField {
+                                    id: customBetza
+                                    objectName: "customPieceBetza"
+                                    placeholderText: qsTr("Betza movement")
+                                    text: WorkspaceSession.customPieceBetza
+                                    onTextChanged: {
+                                        if (customName.text.length > 0
+                                                && customLetter.text.length > 0
+                                                && text.length > 0)
+                                            WorkspaceSession.setCustomPiece(
+                                                customName.text, customLetter.text, text)
+                                    }
+                                }
+                                Button {
+                                    objectName: "saveCustomPiece"
+                                    text: qsTr("Use custom piece")
+                                    onClicked: WorkspaceSession.setCustomPiece(
+                                                   customName.text, customLetter.text, customBetza.text)
+                                }
+                                Label {
+                                    objectName: "betzaErrorLabel"
+                                    visible: WorkspaceSession.betzaError.length > 0
+                                    text: WorkspaceSession.betzaError
+                                    color: Theme.red
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button {
+                                objectName: "workshopBack"
+                                text: qsTr("Back")
+                                enabled: WorkspaceSession.workshopStep > 1
+                                onClicked: WorkspaceSession.setWorkshopStep(
+                                               WorkspaceSession.workshopStep - 1)
+                            }
+                            Button {
+                                objectName: "workshopContinue"
+                                Layout.fillWidth: true
+                                text: qsTr("Continue")
+                                enabled: WorkspaceSession.workshopStep < 2
+                                onClicked: WorkspaceSession.setWorkshopStep(
+                                               WorkspaceSession.workshopStep + 1)
+                            }
+                        }
+                    }
+
                     Label {
+                        visible: !WorkspaceSession.workshopActive
                         text: qsTr("Game Metadata")
                         font.bold: true
                         color: Theme.muted
@@ -1204,6 +1550,60 @@ ApplicationWindow {
     }
 
     // The choice a promoting pawn needs before its move exists.
+    Dialog {
+        id: unsavedClose
+        objectName: "unsavedCloseDialog"
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: qsTr("Unsaved changes")
+
+        ColumnLayout {
+            Label {
+                objectName: "unsavedCloseTitle"
+                text: workspace.pendingWorkspaceClose
+                      ? qsTr("Close workspace with unsaved changes?")
+                      : qsTr("Close Game Record with unsaved changes?")
+            }
+            Label {
+                text: qsTr("Save the Game Record, discard it back to its Saved Snapshot, or cancel.")
+                wrapMode: Text.WordWrap
+                Layout.preferredWidth: 420
+            }
+            RowLayout {
+                Button {
+                    objectName: "saveUnsavedClose"
+                    text: qsTr("Save")
+                    onClicked: {
+                        WorkspaceSession.saveRecord()
+                        unsavedClose.close()
+                        workspace.continuePendingAction()
+                    }
+                }
+                Button {
+                    objectName: "discardUnsavedClose"
+                    text: qsTr("Discard")
+                    onClicked: {
+                        WorkspaceSession.discardChanges()
+                        unsavedClose.close()
+                        workspace.continuePendingAction()
+                    }
+                }
+                Button {
+                    objectName: "cancelUnsavedClose"
+                    text: qsTr("Cancel")
+                    onClicked: {
+                        unsavedClose.close()
+                        workspace.pendingCloseRecordId = ""
+                        workspace.pendingWorkspaceClose = false
+                        workspace.pendingAction = ""
+                        workspace.pendingOpenRecordId = ""
+                    }
+                }
+            }
+        }
+    }
+
     Dialog {
         id: promotion
         objectName: "promotionDialog"
