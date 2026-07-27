@@ -96,6 +96,11 @@ char *omachess_session_poll_event(OmachessSession *session);
 /* Releases a string returned by this ABI. Passing NULL is a no-op. */
 void omachess_string_free(char *text);
 
+/* Whether `uci_move` is legal in standard chess's starting position.
+ * Used by bounded engine conformance probes; the answer still comes from the
+ * Rules Authority rather than a second move list in the workspace. */
+int32_t omachess_standard_start_move_is_legal(const char *uci_move);
+
 #ifdef __cplusplus
 }
 #endif
