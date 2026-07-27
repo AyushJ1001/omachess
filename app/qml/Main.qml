@@ -682,6 +682,87 @@ ApplicationWindow {
                         opacity: 0.4
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 8
+                        TextField {
+                            id: newStudyName
+                            objectName: "newStudyName"
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("New Study")
+                        }
+                        Button {
+                            objectName: "createStudyButton"
+                            text: qsTr("Create")
+                            enabled: newStudyName.text.trim().length > 0
+                            onClicked: {
+                                WorkspaceSession.createStudy(newStudyName.text)
+                                newStudyName.clear()
+                            }
+                        }
+                    }
+
+                    ListView {
+                        id: studiesList
+                        objectName: "studiesList"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(contentHeight, 220)
+                        clip: true
+                        model: WorkspaceSession.studies
+                        delegate: ColumnLayout {
+                            id: studyItem
+                            required property var modelData
+                            required property int index
+                            width: studiesList.width
+                            spacing: 2
+                            Label {
+                                objectName: "studyTitle:" + modelData.id
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                text: modelData.name
+                                font.bold: true
+                            }
+                            Repeater {
+                                model: modelData.recordIds
+                                RowLayout {
+                                    required property string modelData
+                                    required property int index
+                                    Layout.fillWidth: true
+                                    Button {
+                                        objectName: "studyMember:" + studyItem.modelData.id
+                                                    + ":" + index + ":" + modelData
+                                        Layout.fillWidth: true
+                                        text: modelData
+                                        onClicked: workspace.requestOpenRecord(modelData)
+                                    }
+                                    Button {
+                                        objectName: "studyMemberUp:" + studyItem.modelData.id
+                                                    + ":" + modelData
+                                        text: qsTr("↑")
+                                        enabled: index > 0
+                                        onClicked: WorkspaceSession.reorderStudyRecord(
+                                                       studyItem.modelData.id, modelData, index - 1)
+                                    }
+                                    Button {
+                                        objectName: "removeStudyMember:" + studyItem.modelData.id
+                                                    + ":" + modelData
+                                        text: qsTr("×")
+                                        onClicked: WorkspaceSession.removeStudyRecord(
+                                                       studyItem.modelData.id, modelData)
+                                    }
+                                }
+                            }
+                            Button {
+                                objectName: "addActiveToStudy:" + modelData.id
+                                Layout.leftMargin: 10
+                                text: qsTr("Add active record")
+                                enabled: WorkspaceSession.activeRecordId.length > 0
+                                onClicked: WorkspaceSession.addStudyRecord(
+                                               modelData.id, WorkspaceSession.activeRecordId)
+                            }
+                        }
+                    }
+
                     ListView {
                         id: libraryList
                         objectName: "pane:library:list"

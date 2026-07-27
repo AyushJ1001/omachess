@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omachess_store::{
     AnalysisRecordData, AnalysisSideline, GameRecord, GameRecordKind, GameRecordPayload,
-    GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine, RecordResult,
+    GameRecordSummary, LiveStore, MoveEntry, OpenError, PinnedEngineLine, RecordResult, Study,
 };
 
 use crate::board::{Orientation, Piece, Position};
@@ -323,6 +323,10 @@ impl Session {
             "add_analysis_annotation" => self.add_analysis_annotation(command)?,
             "add_analysis_sideline" => self.add_analysis_sideline(command)?,
             "pin_engine_line" => self.pin_engine_line(command)?,
+            "create_study" => self.create_study(command)?,
+            "add_study_record" => self.add_study_record(command)?,
+            "remove_study_record" => self.remove_study_record(command)?,
+            "reorder_study_record" => self.reorder_study_record(command)?,
             _ => return Err(CommandError::UnknownCommand),
         }
         if matches!(
@@ -349,6 +353,7 @@ impl Session {
             if self.store.is_some() {
                 self.emit_library_changed();
                 self.emit_tabs_changed();
+                self.emit_studies_changed();
             }
             if let Some(offer) = &self.restore_offer {
                 self.events.push(restore_available_event(offer));
@@ -367,6 +372,50 @@ impl Session {
             ));
         }
         Ok(())
+    }
+
+    fn create_study(&mut self, command: &str) -> Result<(), CommandError> {
+        let name = json::read_string_field(command, "name").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .create_study(&format!("study-{}", new_record_id()), &name, &timestamp_now())
+            .map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn add_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .add_study_record(&study_id, &record_id).map_err(|_| CommandError::RejectedMove)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn remove_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .remove_study_record(&study_id, &record_id).map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn reorder_study_record(&mut self, command: &str) -> Result<(), CommandError> {
+        let study_id = json::read_string_field(command, "study_id").ok_or(CommandError::MalformedCommand)?;
+        let record_id = json::read_string_field(command, "record_id").ok_or(CommandError::MalformedCommand)?;
+        let position = json::read_string_field(command, "position")
+            .and_then(|value| value.parse().ok()).ok_or(CommandError::MalformedCommand)?;
+        self.store.as_ref().ok_or(CommandError::Store)?.workspace()
+            .reorder_study_record(&study_id, &record_id, position).map_err(|_| CommandError::Store)?;
+        self.emit_studies_changed();
+        Ok(())
+    }
+
+    fn emit_studies_changed(&mut self) {
+        let Some(store) = self.store.as_ref() else { return };
+        let Ok(studies) = store.workspace().list_studies() else { return };
+        self.events.push(studies_changed_event(&studies));
     }
 
     fn derive_analysis_record(&mut self) -> Result<(), CommandError> {
@@ -2480,6 +2529,25 @@ fn library_changed_event(records: &[GameRecordSummary]) -> String {
             None => out.push_str("null"),
         }
         out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn studies_changed_event(studies: &[Study]) -> String {
+    let mut out = String::from("{\"type\":\"studies_changed\",\"studies\":[");
+    for (index, study) in studies.iter().enumerate() {
+        if index > 0 { out.push(','); }
+        out.push_str("{\"id\":");
+        json::write_string(&mut out, &study.id);
+        out.push_str(",\"name\":");
+        json::write_string(&mut out, &study.name);
+        out.push_str(",\"recordIds\":[");
+        for (record_index, id) in study.record_ids.iter().enumerate() {
+            if record_index > 0 { out.push(','); }
+            json::write_string(&mut out, id);
+        }
+        out.push_str("]}");
     }
     out.push_str("]}");
     out

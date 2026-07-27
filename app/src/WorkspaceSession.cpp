@@ -155,6 +155,35 @@ void WorkspaceSession::closeTab(const QString &id)
     submit(command(QStringLiteral("close_tab"), {{QStringLiteral("id"), id}}));
 }
 
+void WorkspaceSession::createStudy(const QString &name)
+{
+    if (!name.trimmed().isEmpty())
+        submit(command(QStringLiteral("create_study"), {{QStringLiteral("name"), name}}));
+}
+
+void WorkspaceSession::addStudyRecord(const QString &studyId, const QString &recordId)
+{
+    submit(command(QStringLiteral("add_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId}}));
+}
+
+void WorkspaceSession::removeStudyRecord(const QString &studyId, const QString &recordId)
+{
+    submit(command(QStringLiteral("remove_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId}}));
+}
+
+void WorkspaceSession::reorderStudyRecord(const QString &studyId, const QString &recordId,
+                                          int position)
+{
+    submit(command(QStringLiteral("reorder_study_record"),
+                   {{QStringLiteral("study_id"), studyId},
+                    {QStringLiteral("record_id"), recordId},
+                    {QStringLiteral("position"), QString::number(position)}}));
+}
+
 void WorkspaceSession::setSaveMode(const QString &mode)
 {
     submit(command(QStringLiteral("set_save_mode"), {{QStringLiteral("mode"), mode}}));
@@ -491,6 +520,20 @@ void WorkspaceSession::applyEvent(const QByteArray &eventJson)
         for (const QJsonValue &value : event.value(QStringLiteral("pinnedLines")).toArray())
             m_pinnedEngineLines.append(value.toObject().toVariantMap());
         emit analysisRecordChanged();
+        return;
+    }
+    if (type == QStringLiteral("studies_changed")) {
+        m_studies.clear();
+        for (const QJsonValue &value : event.value(QStringLiteral("studies")).toArray()) {
+            const QJsonObject study = value.toObject();
+            m_studies.append(QVariantMap{
+                {QStringLiteral("id"), study.value(QStringLiteral("id")).toString()},
+                {QStringLiteral("name"), study.value(QStringLiteral("name")).toString()},
+                {QStringLiteral("recordIds"),
+                 study.value(QStringLiteral("recordIds")).toArray().toVariantList()},
+            });
+        }
+        emit studiesChanged();
         return;
     }
     if (type == QStringLiteral("record_graph_changed")) {
