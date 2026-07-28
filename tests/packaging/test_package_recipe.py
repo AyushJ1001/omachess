@@ -81,7 +81,7 @@ class PackageRecipe(unittest.TestCase):
 
     def test_one_package_named_omachess_builds_from_this_repository(self) -> None:
         self.assertEqual(self.recipe["pkgname"], "omachess")
-        self.assertEqual(self.recipe["pkgver"], "0.1.0")
+        self.assertEqual(self.recipe["pkgver"], "0.1.1")
         self.assertIn("github.com/AyushJ1001/omachess", " ".join(self.recipe["source"]))
         # Source-built, not a repackaged binary: the recipe compiles the tree.
         self.assertIn("cmake", self.text)
