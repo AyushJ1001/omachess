@@ -7,7 +7,7 @@
 # or their chess work.
 
 pkgname=omachess
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Local-first chess workspace for Omarchy: play, study, and create forms of chess'
 arch=('x86_64' 'aarch64')
