@@ -113,9 +113,15 @@ class PackageRecipe(unittest.TestCase):
         depends = self.recipe["depends"]
         omarchy = [item for item in depends if item.startswith("omarchy")]
         self.assertTrue(omarchy, f"omarchy is not a dependency: {depends}")
-        self.assertTrue(
-            any(">=4" in item for item in omarchy),
-            f"the Omarchy 4/Quattro floor is not pinned: {omarchy}",
+        # Unversioned on purpose. Omarchy is supplied through an unversioned
+        # `provides`, and pacman cannot satisfy a versioned dependency from
+        # one, so a floor here would make the package uninstallable instead of
+        # safe. The Omarchy 4 floor lives where it can be checked: the adapter
+        # reads /usr/share/omarchy/version at runtime.
+        self.assertEqual(
+            omarchy,
+            ["omarchy"],
+            f"the Omarchy dependency must be plain and unversioned: {omarchy}",
         )
         # Hard dependency, so it may not also be offered as an optional one.
         self.assertNotIn(
