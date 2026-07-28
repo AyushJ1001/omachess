@@ -1,5 +1,6 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickWindow>
 #include <iostream>
 #include <iterator>
@@ -29,6 +30,14 @@ int main(int argc, char *argv[])
 #endif
     QGuiApplication app(argc, argv);
 
+    QString requestedRecordId;
+    for (int index = 1; index + 1 < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) == QStringLiteral("--record")) {
+            requestedRecordId = QString::fromLocal8Bit(argv[index + 1]);
+            break;
+        }
+    }
+
     // The stable identity Omarchy uses for the launcher entry, window rules,
     // and the Wayland app ID. It must match packaging/*.desktop.
     QGuiApplication::setDesktopFileName(QStringLiteral("com.omachess.Omachess"));
@@ -36,6 +45,8 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationVersion(QStringLiteral(OMACHESS_VERSION));
 
     QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("commandLineRecordId"),
+                                             requestedRecordId);
     engine.loadFromModule("Omachess", "Main");
     if (engine.rootObjects().isEmpty())
         return 1;

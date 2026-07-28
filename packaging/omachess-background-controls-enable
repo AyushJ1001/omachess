@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+plugin_id='com.omachess.background-controls'
+required_omarchy_major='4'
+source_root="/usr/share/omachess/omarchy-plugin/${plugin_id}"
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}/omarchy/plugins"
+destination="${config_root}/${plugin_id}"
+
+if [[ ! -d "${source_root}" ]]; then
+    printf 'Omachess Background Controls is not installed at %s\n' "${source_root}" >&2
+    exit 1
+fi
+
+if ! command -v omarchy >/dev/null 2>&1; then
+    printf 'Omachess Background Controls requires Omarchy %s.x.\n' "${required_omarchy_major}" >&2
+    exit 1
+fi
+omarchy_version="$(omarchy version 2>/dev/null || true)"
+omarchy_major="${omarchy_version%%.*}"
+if [[ "${omarchy_major}" != "${required_omarchy_major}" ]]; then
+    printf 'Omachess Background Controls requires Omarchy %s.x (found %s).\n' \
+        "${required_omarchy_major}" "${omarchy_version:-unknown}" >&2
+    exit 1
+fi
+
+mkdir -p "${destination}"
+cp -a "${source_root}/." "${destination}/"
+
+# These are explicit user actions. The package install has no pacman hook and
+# never writes shell.json or changes which widgets appear in the user's bar.
+omarchy plugin rescan
+omarchy plugin enable "${plugin_id}"
+omarchy bar plugin add "${plugin_id}"
+printf 'Enabled %s in the Omarchy bar.\n' "${plugin_id}"

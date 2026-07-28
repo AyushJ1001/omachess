@@ -26,6 +26,12 @@ struct EngineLaunch {
     QString workingDirectory;
 };
 
+struct ResumeConfiguration {
+    QString searchSettings;
+    int searchTimeMs = 1000;
+    int lineLimit = 2;
+};
+
 struct Position {
     uint ply = 0;
     QString fen;
@@ -394,6 +400,7 @@ public slots:
         const QByteArray record = recordId.toUtf8();
         if (!omachess_background_job_create(job.constData(), record.constData(), total))
             return {};
+        rememberResumeConfiguration(id, searchSettings, searchTimeMs, lineLimit);
         startRunner(id, 0, searchSettings, searchTimeMs);
         return id;
     }
@@ -421,6 +428,14 @@ public slots:
         startRunner(id, checkpoint, searchSettings, searchTimeMs);
         return true;
     }
+    bool ResumeDefault(const QString &id)
+    {
+        const ResumeConfiguration configuration = resumeConfiguration(id);
+        return Resume(id,
+                      configuration.searchSettings,
+                      configuration.searchTimeMs,
+                      configuration.lineLimit);
+    }
     bool Cancel(const QString &id)
     {
         const QByteArray job = id.toUtf8();
@@ -428,6 +443,7 @@ public slots:
         if (checkpoint == UINT_MAX || !omachess_background_job_checkpoint(job.constData(), checkpoint, "cancelled"))
             return false;
         stopRunner(id);
+        forgetResumeConfiguration(id);
         return true;
     }
     bool Dismiss(const QString &id)
@@ -437,6 +453,7 @@ public slots:
         if (checkpoint == UINT_MAX || !omachess_background_job_checkpoint(job.constData(), checkpoint, "dismissed"))
             return false;
         stopRunner(id);
+        forgetResumeConfiguration(id);
         return true;
     }
     QString Open(const QString &id)
@@ -466,6 +483,35 @@ public slots:
         return result;
     }
 private:
+    void rememberResumeConfiguration(const QString &id,
+                                     const QString &searchSettings,
+                                     int searchTimeMs,
+                                     int lineLimit)
+    {
+        m_resumeSettings.beginGroup(QStringLiteral("backgroundJobs/%1").arg(id));
+        m_resumeSettings.setValue(QStringLiteral("searchSettings"), searchSettings);
+        m_resumeSettings.setValue(QStringLiteral("searchTimeMs"), searchTimeMs);
+        m_resumeSettings.setValue(QStringLiteral("lineLimit"), lineLimit);
+        m_resumeSettings.endGroup();
+        m_resumeSettings.sync();
+    }
+    ResumeConfiguration resumeConfiguration(const QString &id)
+    {
+        ResumeConfiguration configuration;
+        m_resumeSettings.beginGroup(QStringLiteral("backgroundJobs/%1").arg(id));
+        configuration.searchSettings = m_resumeSettings.value(QStringLiteral("searchSettings")).toString();
+        configuration.searchTimeMs = m_resumeSettings.value(QStringLiteral("searchTimeMs"), 1000).toInt();
+        configuration.lineLimit = m_resumeSettings.value(QStringLiteral("lineLimit"), 2).toInt();
+        m_resumeSettings.endGroup();
+        return configuration;
+    }
+    void forgetResumeConfiguration(const QString &id)
+    {
+        m_resumeSettings.beginGroup(QStringLiteral("backgroundJobs"));
+        m_resumeSettings.remove(id);
+        m_resumeSettings.endGroup();
+        m_resumeSettings.sync();
+    }
     void startRunner(const QString &id,
                      uint checkpoint,
                      const QString &searchSettings,
@@ -480,6 +526,7 @@ private:
                 if (checkpoint != UINT_MAX)
                     omachess_background_job_checkpoint(job.constData(), checkpoint, "failed");
             }
+            forgetResumeConfiguration(id);
             stopRunner(id);
         });
         m_runners.insert(id, runner);
@@ -498,6 +545,7 @@ private:
         }
     }
     QHash<QString, AnalysisRunner *> m_runners;
+    QSettings m_resumeSettings;
 };
 
 int main(int argc, char **argv)

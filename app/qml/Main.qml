@@ -20,6 +20,13 @@ ApplicationWindow {
     minimumHeight: 480
     visible: true
 
+    // Used by the Background Controls Plugin's deep link. The plugin launches
+    // a normal standalone workspace; it never embeds or controls this window.
+    function openRecordFromArgument(recordId) {
+        if (recordId !== "")
+            WorkspaceSession.openRecord(recordId)
+    }
+
     function requestLivePositionAnalysis() {
         if (!computerAnalysisRunning && computerAnalysisRunState !== "Failed"
                 && analysisToggle.checked
@@ -49,6 +56,7 @@ ApplicationWindow {
     title: qsTr("Omachess")
     color: Theme.background
     property var selectedLibraryIds: []
+    property string activeRecordId: WorkspaceSession.activeRecordId
     property bool showArchivedRecords: false
     property bool computerAnalysisRunning: false
     property string computerAnalysisRunState: ""
@@ -366,6 +374,7 @@ ApplicationWindow {
         WorkspaceSession.describeBoard()
         workspace.refreshBackgroundComputerAnalysisJobs()
         actionSource.rebuild()
+        workspace.openRecordFromArgument(commandLineRecordId)
     }
 
     Connections {

@@ -87,11 +87,10 @@ class InstalledFootprint(unittest.TestCase):
         self.prefix = installed_prefix()
         self.files = installed_files(self.prefix)
 
-    def test_the_package_installs_no_hyprland_rules_or_omarchy_hooks(self) -> None:
+    def test_the_package_installs_no_hyprland_rules_or_pacman_hooks(self) -> None:
         for path in self.files:
             place = str(path.relative_to(self.prefix))
             self.assertNotIn("hypr", place.lower(), f"{place} installs compositor configuration")
-            self.assertNotIn("omarchy", place.lower(), f"{place} installs an Omarchy hook")
             self.assertFalse(
                 place.startswith("share/libalpm/"), f"{place} installs a pacman hook"
             )
@@ -100,8 +99,12 @@ class InstalledFootprint(unittest.TestCase):
         expected = {
             "bin/omachess",
             "bin/omachess-background-worker",
+            "bin/omachess-background-control",
+            "bin/omachess-background-controls-enable",
             f"share/applications/{DESKTOP_ID}.desktop",
             "share/dbus-1/services/com.omachess.Omachess.BackgroundWorker.service",
+            "share/omachess/omarchy-plugin/com.omachess.background-controls/manifest.json",
+            "share/omachess/omarchy-plugin/com.omachess.background-controls/Widget.qml",
         }
         places = {str(path.relative_to(self.prefix)) for path in self.files}
         self.assertTrue(expected <= places, f"missing {sorted(expected - places)}")
@@ -109,10 +112,36 @@ class InstalledFootprint(unittest.TestCase):
             self.assertTrue(
                 place.startswith(
                     ("bin/", "share/applications/", "share/dbus-1/services/", "share/icons/", "share/doc/",
-                     "share/licenses/")
+                     "share/licenses/", "share/omachess/")
                 ),
                 f"{place} is outside the program, launcher, icon, and documentation footprint",
             )
+
+    def test_the_plugin_is_shipped_but_not_enabled_by_installation(self) -> None:
+        plugin = self.prefix / "share/omachess/omarchy-plugin/com.omachess.background-controls"
+        manifest = (plugin / "manifest.json").read_text(encoding="utf-8")
+        widget = (plugin / "Widget.qml").read_text(encoding="utf-8")
+        enable = (self.prefix / "bin/omachess-background-controls-enable").read_text(encoding="utf-8")
+
+        self.assertIn('"id": "com.omachess.background-controls"', manifest)
+        self.assertIn('"kinds": ["bar-widget"]', manifest)
+        self.assertIn('"omarchyMajor": 4', manifest)
+        self.assertIn('"pluginSchemaVersion": 1', manifest)
+        self.assertIn('entryPoints', manifest)
+        self.assertIn('omachess-background-control", "jobs', widget)
+        self.assertIn('visible: root.hasControl(modelData, "pause")', widget)
+        self.assertIn('visible: root.hasControl(modelData, "resume")', widget)
+        self.assertIn('visible: root.hasControl(modelData, "cancel")', widget)
+        self.assertIn('visible: root.hasControl(modelData, "dismiss")', widget)
+        self.assertIn('previousStates', widget)
+        self.assertIn('Quickshell.execDetached(["omachess", "--record"', widget)
+        self.assertIn('omachess-background-control", "notify', widget)
+        self.assertIn('omarchy bar plugin add', enable)
+        self.assertIn("required_omarchy_major='4'", enable)
+        self.assertIn('omarchy version', enable)
+        # CMake installation must not create a shell config or run this helper.
+        self.assertFalse((self.prefix / "share/omarchy/shell.json").exists())
+        self.assertFalse((self.prefix / "etc").exists())
 
     def test_license_component_notices_and_source_offer_ship_with_the_package(self) -> None:
         license_file = self.prefix / "share/licenses/omachess/LICENSE"

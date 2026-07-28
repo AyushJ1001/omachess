@@ -285,6 +285,7 @@ QJsonObject TestChannel::snapshot() const
         {"themeName", themeName},
         {"boardThemeId", boardThemeId},
         {"pieceSetId", pieceSetId},
+        {"activeRecordId", m_window->property("activeRecordId").toString()},
         {"activeFocus", focused ? focused->objectName() : QString()},
         {"squares", squares},
         {"labels", labels},

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "com.omachess.background-controls",
+  "name": "Omachess Background Controls",
+  "version": "0.1.0",
+  "author": "Omachess",
+  "license": "GPL-3.0-or-later",
+  "description": "Shows and controls Omachess Background Jobs from the Omarchy bar.",
+  "compatibility": {
+    "omarchyMajor": 4,
+    "pluginSchemaVersion": 1
+  },
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omachess Background Jobs",
+    "description": "Monitor Omachess work without reopening the workspace.",
+    "category": "Applications",
+    "aliases": ["omachess-jobs"],
+    "allowMultiple": false,
+    "defaults": {},
+    "schema": []
+  }
+}

@@ -26,6 +26,30 @@ to run and no configuration file to edit. The package installs no Hyprland
 window rules and no Omarchy hooks: Omachess behaves as an ordinary tiled
 Wayland window under dwindle and scrolling layouts.
 
+### Optional Background Controls Plugin
+
+The package also ships an on-demand Omarchy bar-widget plugin for Background
+Jobs. It is intentionally not enabled by package installation, so installing
+or upgrading Omachess never changes the user's bar. To enable it explicitly:
+
+```bash
+omachess-background-controls-enable
+```
+
+This installs the version-matched plugin into the user's Omarchy plugin
+directory and adds it to the bar. The widget reconnects to the worker over
+D-Bus after an `omarchy-shell` restart; the worker remains the owner of job
+execution, checkpoints, and supported controls. A completed or failed job
+stays visible until **Dismiss**, and **Open record** launches a normal,
+standalone Omachess workspace on that Game Record.
+
+To remove it from the bar, use Omarchy's plugin commands:
+
+```bash
+omarchy bar plugin remove com.omachess.background-controls
+omarchy plugin disable com.omachess.background-controls
+```
+
 ### Desktop identity
 
 | Identity | Value |
