@@ -14,8 +14,10 @@ ApplicationWindow {
 
     // An ordinary resizable window: no fixed size, no compositor hints, so
     // dwindle and scrolling layouts can tile it like any other application.
-    width: 1100
-    height: 720
+    // Opens at the viewport the full cockpit is designed for, and never asks
+    // for more than the 640×480 floor the rails collapse down to.
+    width: 1280
+    height: 800
     minimumWidth: 640
     minimumHeight: 480
     visible: true
@@ -68,6 +70,121 @@ ApplicationWindow {
     property string backgroundComputerAnalysisId: ""
     property var backgroundComputerAnalysisJob: null
     property bool backgroundComputerAnalysisCloseApproved: false
+
+    // ── The v0.1 accessibility bar ───────────────────────────────────────
+    //
+    // Announcements are discrete: one per meaningful change, and only for
+    // changes a player asked for or needs to know about. Engine output is
+    // never announced while it arrives — a player asks for it (Ctrl+E).
+    property var announcements: []
+    property string lastAnnouncement: ""
+
+    function announce(text) {
+        if (text === undefined || text === null)
+            return
+        const spoken = text.toString().trim()
+        if (spoken.length === 0 || spoken === lastAnnouncement)
+            return
+        lastAnnouncement = spoken
+        announcements = announcements.concat([spoken])
+    }
+
+    function announceEngineOutput() {
+        if (!analysisToggle.checked) {
+            workspace.announce(qsTr("Live analysis is hidden."))
+            return
+        }
+        if (!EngineManager.analysisReady) {
+            workspace.announce(EngineManager.analysisMessage.length > 0
+                               ? EngineManager.analysisMessage
+                               : qsTr("No engine output yet."))
+            return
+        }
+        const lines = EngineManager.analysisVariations
+        workspace.announce(qsTr("Engine output · %1 · %2")
+                           .arg(EngineManager.analysisEvaluation)
+                           .arg(lines.length > 0 ? lines[0] : qsTr("no line")))
+    }
+
+    // ── Priority-based rail collapse ─────────────────────────────────────
+    //
+    // The board and the current surface's primary action are priority one and
+    // never collapse. The Personal Library rail goes first, the right rail
+    // second, so a 640×480 floor still plays and still acts.
+    readonly property string layoutMode:
+        (width >= 1280 && height >= 800) ? "full"
+      : (width >= 1024 && height >= 640) ? "compact"
+      : "minimal"
+    readonly property bool libraryRailVisible: layoutMode === "full"
+    readonly property bool rightRailVisible: layoutMode !== "minimal"
+
+    // What the surface on screen is for. It stays reachable at every viewport.
+    readonly property string primaryActionLabel:
+        WorkspaceSession.workshopActive
+            ? (WorkspaceSession.workshopStep < 4 ? qsTr("Continue") : qsTr("Validate"))
+      : WorkspaceSession.positionSetup ? qsTr("Start Played Game")
+      : WorkspaceSession.activity === "variant_play" ? qsTr("Edit definition")
+      : WorkspaceSession.restoreAvailable ? qsTr("Restore")
+      : qsTr("New game")
+
+    function invokePrimaryAction() {
+        if (WorkspaceSession.workshopActive) {
+            if (WorkspaceSession.workshopStep < 4)
+                WorkspaceSession.setWorkshopStep(WorkspaceSession.workshopStep + 1)
+            else
+                WorkspaceSession.validateVariantDefinition()
+            return
+        }
+        if (WorkspaceSession.positionSetup) {
+            WorkspaceSession.startSetupGame()
+            return
+        }
+        if (WorkspaceSession.activity === "variant_play") {
+            WorkspaceSession.editVariantDefinition()
+            return
+        }
+        if (WorkspaceSession.restoreAvailable) {
+            WorkspaceSession.restoreRecord()
+            return
+        }
+        workspace.requestNewGame()
+    }
+
+    // ── Optional typed move entry ────────────────────────────────────────
+    //
+    // The board is pointer-first. A player who would rather not use the
+    // pointer types the move instead; the core still decides whether it is a
+    // move at all.
+    property bool typedMoveEntryVisible: false
+    property string typedMoveError: ""
+
+    function playTypedMove(entry) {
+        const move = entry.trim().toLowerCase().replace(/[-\s]/g, "")
+        const squares = /^([a-z]\d+)([a-z]\d+)([qrbn]?)$/.exec(move)
+        if (squares === null) {
+            typedMoveError = qsTr("Type a move as its two squares, for example e2e4.")
+            workspace.announce(typedMoveError)
+            return false
+        }
+        const from = squares[1]
+        const to = squares[2]
+        const promotions = {"q": "queen", "r": "rook", "b": "bishop", "n": "knight"}
+        if (WorkspaceSession.destinationsFrom(from).indexOf(to) < 0) {
+            typedMoveError = qsTr("%1 is not a legal move here.").arg(move)
+            workspace.announce(typedMoveError)
+            return false
+        }
+        const offered = WorkspaceSession.promotionsFor(from, to)
+        const role = promotions[squares[3]] || ""
+        if (offered.length > 0 && offered.indexOf(role) < 0) {
+            typedMoveError = qsTr("This move promotes — add the piece, for example %1q.").arg(move)
+            workspace.announce(typedMoveError)
+            return false
+        }
+        typedMoveError = ""
+        WorkspaceSession.playMove(from, to, offered.length > 0 ? role : "")
+        return true
+    }
 
     Timer {
         id: computerAnalysisNextPositionTimer
@@ -375,6 +492,7 @@ ApplicationWindow {
         workspace.refreshBackgroundComputerAnalysisJobs()
         actionSource.rebuild()
         workspace.openRecordFromArgument(commandLineRecordId)
+        announcer.ready = true
     }
 
     Connections {
@@ -461,13 +579,30 @@ ApplicationWindow {
         }
     }
 
+    // Two-level traversal: this moves between panes, the pane itself moves
+    // within. A collapsed rail is not a pane a player can be sent to, so
+    // traversal skips it rather than dropping focus into nothing.
     function focusPane(delta) {
+        const panes = [libraryList, boardArea, moves]
+        const reachable = [workspace.libraryRailVisible, true, workspace.rightRailVisible]
         let current = paneIndexForItem(workspace.activeFocusItem)
         if (current < 0)
             current = delta > 0 ? -1 : 0
-        const focusedPane = (current + delta + 3) % 3
-        const panes = [libraryList, boardArea, moves]
-        panes[focusedPane].forceActiveFocus(Qt.ShortcutFocusReason)
+        for (let step = 1; step <= 3; ++step) {
+            const candidate = (current + delta * step + 6) % 3
+            if (reachable[candidate]) {
+                panes[candidate].forceActiveFocus(Qt.ShortcutFocusReason)
+                return
+            }
+        }
+    }
+
+    // A player asked for typed entry, so focus follows the request. Nothing
+    // else in the workspace moves focus on its own.
+    function showTypedMoveEntry() {
+        typedMoveEntryVisible = !typedMoveEntryVisible
+        if (typedMoveEntryVisible)
+            typedMoveInput.forceActiveFocus(Qt.ShortcutFocusReason)
     }
 
     function paneIndexForItem(item) {
@@ -517,6 +652,79 @@ ApplicationWindow {
         return false
     }
 
+    // One announcement per meaningful change, and nothing else.
+    //
+    // Each tracked value is a binding, so a change announces exactly once and
+    // an unchanged value stays silent. Values that stream — clock ticks,
+    // engine output, job progress counters — are deliberately absent.
+    QtObject {
+        id: announcer
+
+        // Startup is not a change, so the first frame stays quiet.
+        property bool ready: false
+
+        readonly property string status: WorkspaceSession.positionSetup
+              ? qsTr("Position Setup — %1").arg(WorkspaceSession.positionClass)
+              : WorkspaceSession.gameOver
+              ? qsTr("%1 (%2)").arg(WorkspaceSession.resultLabel)
+                               .arg(WorkspaceSession.resultScore)
+              : (WorkspaceSession.sideToMove === "white"
+                 ? qsTr("White to move") : qsTr("Black to move"))
+                + (WorkspaceSession.inCheck ? qsTr(" — in check") : "")
+        onStatusChanged: if (ready) workspace.announce(status)
+
+        readonly property string review: WorkspaceSession.reviewing
+              ? qsTr("Reviewing after %1 of %2 moves").arg(WorkspaceSession.cursor)
+                    .arg(WorkspaceSession.moveList.length)
+              : ""
+        onReviewChanged: if (ready && review.length > 0) workspace.announce(review)
+
+        readonly property string record: WorkspaceSession.gameTitle
+        onRecordChanged: if (ready && record.length > 0)
+                             workspace.announce(qsTr("Showing %1").arg(record))
+
+        readonly property bool unsaved: WorkspaceSession.dirty
+        onUnsavedChanged: if (ready)
+                              workspace.announce(unsaved ? qsTr("Unsaved changes")
+                                                         : qsTr("Game Record saved"))
+
+        readonly property bool restoreOffered: WorkspaceSession.restoreAvailable
+        onRestoreOfferedChanged: if (ready && restoreOffered)
+                                     workspace.announce(WorkspaceSession.restoreLabel)
+
+        // A Background Job announces its state, never its progress count.
+        readonly property string jobState: workspace.computerAnalysisRunState
+        onJobStateChanged: if (ready && jobState.length > 0)
+                               workspace.announce(qsTr("Computer Analysis · %1").arg(jobState))
+
+        readonly property string workshopStep: WorkspaceSession.workshopActive
+              ? workshopStepHeading.text : ""
+        onWorkshopStepChanged: if (ready && workshopStep.length > 0)
+                                   workspace.announce(qsTr("Variant Workshop · %1")
+                                                      .arg(workshopStep))
+
+        readonly property string validation: WorkspaceSession.variantValidationMessage
+        onValidationChanged: if (ready && validation.length > 0)
+                                 workspace.announce(validation)
+
+        readonly property string libraryPackage: WorkspaceSession.libraryPackageMessage
+        onLibraryPackageChanged: if (ready && libraryPackage.length > 0)
+                                     workspace.announce(libraryPackage)
+    }
+
+    // The live region an assistive technology reads announcements from. It is
+    // off-screen but present, so it announces without taking any space or any
+    // focus.
+    Label {
+        objectName: "liveAnnouncement"
+        text: workspace.lastAnnouncement
+        width: 1
+        height: 1
+        opacity: 0
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: workspace.lastAnnouncement
+    }
+
     QtObject {
         id: actionSource
 
@@ -559,7 +767,11 @@ ApplicationWindow {
                 action("next-pane", qsTr("Focus next pane"), "Alt+Right",
                        function() { workspace.focusPane(1) }),
                 action("previous-pane", qsTr("Focus previous pane"), "Alt+Left",
-                       function() { workspace.focusPane(-1) })
+                       function() { workspace.focusPane(-1) }),
+                action("announce-engine", qsTr("Announce engine output"), "Ctrl+E",
+                       function() { workspace.announceEngineOutput() }),
+                action("typed-move", qsTr("Typed move entry"), "Ctrl+M",
+                       function() { workspace.showTypedMoveEntry() })
             ]
 
             const themeBindings = {
@@ -711,6 +923,9 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
                 color: Theme.foreground
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+                Accessible.description: qsTr("Game status")
                 // A finished game reports its result; an unfinished one reports
                 // whose turn it is, and whether that side is in check.
                 text: WorkspaceSession.positionSetup
@@ -979,10 +1194,14 @@ ApplicationWindow {
             Rectangle {
                 id: libraryRail
                 objectName: "libraryRail"
-                Layout.preferredWidth: 220
-                Layout.maximumWidth: 260
+                // Priority three: the first rail to go as the viewport narrows.
+                visible: workspace.libraryRailVisible
+                Layout.preferredWidth: visible ? 220 : 0
+                Layout.maximumWidth: visible ? 260 : 0
                 Layout.fillHeight: true
                 color: Theme.panel
+                Accessible.role: Accessible.Pane
+                Accessible.name: qsTr("Personal Library")
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -997,6 +1216,8 @@ ApplicationWindow {
                         Label {
                             objectName: "libraryHeading"
                             Layout.fillWidth: true
+                            Accessible.role: Accessible.Heading
+                            Accessible.name: text
                             text: qsTr("Personal Library")
                             font.bold: true
                             font.pixelSize: 11
@@ -1192,6 +1413,17 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         clip: true
                         model: workspace.visibleLibraryRecords()
+                        Accessible.role: Accessible.List
+                        Accessible.name: qsTr("Game Records")
+
+                        Rectangle {
+                            objectName: "libraryFocusRing"
+                            anchors.fill: parent
+                            visible: libraryList.activeFocus
+                            color: "transparent"
+                            border.color: Theme.accent
+                            border.width: 2
+                        }
 
                         delegate: ItemDelegate {
                             required property var modelData
@@ -1202,6 +1434,12 @@ ApplicationWindow {
                             width: libraryList.width
                             highlighted: modelData.id === WorkspaceSession.activeRecordId
                             activeFocusOnTab: true
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: modelData.title
+                            Accessible.description: modelData.archived
+                                                    ? qsTr("Archived Game Record")
+                                                    : qsTr("Game Record")
+
 
                             contentItem: ColumnLayout {
                                 spacing: 2
@@ -1313,7 +1551,8 @@ ApplicationWindow {
             }
 
             Rectangle {
-                Layout.preferredWidth: 1
+                visible: workspace.libraryRailVisible
+                Layout.preferredWidth: visible ? 1 : 0
                 Layout.fillHeight: true
                 color: Theme.muted
                 opacity: 0.4
@@ -1329,6 +1568,8 @@ ApplicationWindow {
                 // Open-record tabs.
                 Rectangle {
                     objectName: "tabBar"
+                    Accessible.role: Accessible.PageTabList
+                    Accessible.name: qsTr("Open Game Records")
                     Layout.fillWidth: true
                     Layout.preferredHeight: WorkspaceSession.openTabs.length > 0 ? 36 : 0
                     visible: WorkspaceSession.openTabs.length > 0
@@ -1360,6 +1601,11 @@ ApplicationWindow {
                                               ? Theme.muted : "transparent"
                                 border.width: 1
                                 activeFocusOnTab: true
+                                Accessible.role: Accessible.PageTab
+                                Accessible.name: modelData.title
+                                Accessible.description:
+                                    modelData.id === WorkspaceSession.activeRecordId
+                                        ? qsTr("Showing") : qsTr("Open")
                                 Keys.onReturnPressed: workspace.requestOpenRecord(modelData.id)
                                 Keys.onEnterPressed: workspace.requestOpenRecord(modelData.id)
 
@@ -1455,6 +1701,25 @@ ApplicationWindow {
                             activeFocusOnTab: true
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Accessible.role: Accessible.Grouping
+                            Accessible.name: qsTr("Board")
+                            Accessible.description: WorkspaceSession.positionSetup
+                                ? qsTr("Position Setup board")
+                                : qsTr("Chess board, %1 to move")
+                                      .arg(WorkspaceSession.sideToMove)
+
+                            // Where the keyboard is, drawn where a player is
+                            // already looking.
+                            Rectangle {
+                                objectName: "boardFocusRing"
+                                anchors.fill: board
+                                anchors.margins: -3
+                                visible: boardArea.activeFocus
+                                color: "transparent"
+                                border.color: Theme.accent
+                                border.width: 2
+                                radius: 3
+                            }
 
                             Board {
                                 id: board
@@ -1467,6 +1732,71 @@ ApplicationWindow {
                                 onPromotionRequested: function (from, to, roles) {
                                     promotion.ask(from, to, roles)
                                 }
+                            }
+                        }
+
+                        // Optional typed move entry, for a player who would
+                        // rather not reach for the pointer.
+                        RowLayout {
+                            visible: workspace.typedMoveEntryVisible
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            TextField {
+                                id: typedMoveInput
+                                objectName: "typedMoveInput"
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Type a move, for example e2e4")
+                                Accessible.role: Accessible.EditableText
+                                Accessible.name: qsTr("Typed move")
+                                Accessible.description: qsTr(
+                                    "Enter a move as its two squares, adding q, r, b or n to promote.")
+                                onAccepted: {
+                                    if (workspace.playTypedMove(text))
+                                        clear()
+                                }
+                            }
+                            Button {
+                                objectName: "typedMoveSubmit"
+                                text: qsTr("Play")
+                                enabled: typedMoveInput.text.trim().length > 0
+                                onClicked: {
+                                    if (workspace.playTypedMove(typedMoveInput.text))
+                                        typedMoveInput.clear()
+                                }
+                            }
+                            Label {
+                                objectName: "typedMoveError"
+                                Layout.fillWidth: true
+                                visible: workspace.typedMoveError.length > 0
+                                text: workspace.typedMoveError
+                                wrapMode: Text.WordWrap
+                                color: Theme.danger
+                            }
+                        }
+
+                        // Priority one: the action this surface exists for
+                        // stays on screen after both rails have collapsed.
+                        RowLayout {
+                            visible: workspace.layoutMode === "minimal"
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Button {
+                                objectName: "primaryAction"
+                                text: workspace.primaryActionLabel
+                                Accessible.role: Accessible.Button
+                                Accessible.name: workspace.primaryActionLabel
+                                onClicked: workspace.invokePrimaryAction()
+                            }
+                            Label {
+                                objectName: "railCollapseSummary"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                color: Theme.muted
+                                text: qsTr("Personal Library and the right rail are collapsed "
+                                           + "at this size — the command palette (Ctrl+K) still "
+                                           + "reaches every action.")
                             }
                         }
 
@@ -1610,7 +1940,8 @@ ApplicationWindow {
             }
 
             Rectangle {
-                Layout.preferredWidth: 1
+                visible: workspace.rightRailVisible
+                Layout.preferredWidth: visible ? 1 : 0
                 Layout.fillHeight: true
                 color: Theme.muted
                 opacity: 0.4
@@ -1620,10 +1951,15 @@ ApplicationWindow {
             Rectangle {
                 id: rightRail
                 objectName: "rightRail"
-                Layout.preferredWidth: 240
-                Layout.maximumWidth: 280
+                // Priority two: it survives the compact viewport, not the floor.
+                visible: workspace.rightRailVisible
+                Layout.preferredWidth: visible ? 240 : 0
+                Layout.maximumWidth: visible ? 280 : 0
                 Layout.fillHeight: true
                 color: Theme.panel
+                Accessible.role: Accessible.Pane
+                Accessible.name: WorkspaceSession.workshopActive
+                                 ? qsTr("Variant Workshop") : qsTr("Moves and analysis")
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -2082,6 +2418,8 @@ ApplicationWindow {
 
                     Label {
                         objectName: "rightRailHeading"
+                        Accessible.role: Accessible.Heading
+                        Accessible.name: text
                         text: WorkspaceSession.activity === "variant_play"
                               ? qsTr("Live Position Analysis")
                               : WorkspaceSession.workshopActive ? qsTr("Variant Workshop")
@@ -2146,7 +2484,10 @@ ApplicationWindow {
                             font.bold: true
                         }
                         Label {
+                            id: workshopStepHeading
                             objectName: "workshopStepHeading"
+                            Accessible.role: Accessible.Heading
+                            Accessible.name: text
                             text: WorkspaceSession.workshopStep === 1
                                   ? qsTr("1. Board")
                                   : WorkspaceSession.workshopStep === 2
@@ -2634,9 +2975,20 @@ ApplicationWindow {
                         model: WorkspaceSession.moveList
                         visible: !WorkspaceSession.positionSetup
                                  && !WorkspaceSession.workshopActive
+                        Accessible.role: Accessible.List
+                        Accessible.name: qsTr("Moves")
                         // Follow play, and follow the player while they navigate.
                         currentIndex: WorkspaceSession.cursor - 1
                         onCountChanged: positionViewAtIndex(count - 1, ListView.Contain)
+
+                        Rectangle {
+                            objectName: "movesFocusRing"
+                            anchors.fill: parent
+                            visible: moves.activeFocus
+                            color: "transparent"
+                            border.color: Theme.accent
+                            border.width: 2
+                        }
 
                         delegate: ItemDelegate {
                             required property int index
@@ -2647,6 +2999,8 @@ ApplicationWindow {
                             // The position after this move is the one on screen.
                             highlighted: index + 1 === WorkspaceSession.cursor
                             activeFocusOnTab: true
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: text
                             text: (modelData.side === "white"
                                    ? modelData.number + ". "
                                    : modelData.number + "... ") + modelData.san
@@ -2769,6 +3123,10 @@ ApplicationWindow {
         }
 
         contentItem: ColumnLayout {
+            objectName: "permanentPurgeDialogBody"
+            Accessible.role: Accessible.Dialog
+            Accessible.name: qsTr("Permanent purge")
+
             Label {
                 objectName: "permanentPurgeTarget"
                 Layout.fillWidth: true
@@ -2813,16 +3171,25 @@ ApplicationWindow {
         onOpened: paletteList.forceActiveFocus(Qt.ShortcutFocusReason)
 
         contentItem: ColumnLayout {
+            objectName: "commandPaletteDialog"
+            Accessible.role: Accessible.Dialog
+            Accessible.name: qsTr("Command palette")
+
             Label {
                 objectName: "commandPaletteTitle"
                 text: qsTr("All chrome actions")
                 color: Theme.foreground
                 font.bold: true
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
             }
             ListView {
                 id: paletteList
+                objectName: "commandPaletteList"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Chrome actions")
                 model: ActionRegistry.actions
                 currentIndex: 0
                 clip: true
@@ -2844,6 +3211,9 @@ ApplicationWindow {
                     objectName: "paletteAction:" + modelData.id
                     enabled: modelData.enabled !== false
                     highlighted: ListView.isCurrentItem
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: modelData.title
+                    Accessible.description: modelData.binding
                     onClicked: {
                         commandPalette.close()
                         ActionRegistry.trigger(modelData.id)
@@ -2877,6 +3247,10 @@ ApplicationWindow {
         title: qsTr("Unsaved changes")
 
         ColumnLayout {
+            objectName: "unsavedCloseDialogBody"
+            Accessible.role: Accessible.Dialog
+            Accessible.name: qsTr("Unsaved changes")
+
             Label {
                 objectName: "unsavedCloseTitle"
                 text: workspace.pendingWorkspaceClose
@@ -2944,6 +3318,9 @@ ApplicationWindow {
         onRejected: board.cancel()
 
         RowLayout {
+            objectName: "promotionChoices"
+            Accessible.role: Accessible.Dialog
+            Accessible.name: qsTr("Promote to")
             spacing: 8
 
             Repeater {

@@ -55,6 +55,20 @@ class SquareOnScreen:
 
 
 @dataclass(frozen=True)
+class Semantics:
+    """What an assistive technology finds on one named chrome item."""
+
+    role: str
+    name: str
+    description: str
+    enabled: bool
+    visible: bool
+    focusable: bool
+    focused: bool
+    checked: bool | None
+
+
+@dataclass(frozen=True)
 class Screen:
     """What the workspace window currently shows."""
 
@@ -80,6 +94,14 @@ class Screen:
     # The text of every named item that shows any, by item name.
     labels: dict[str, str]
     active_focus: str
+    # Which rails the current viewport can afford: "full", "compact", "minimal".
+    layout_mode: str
+    # The public semantics of every named item, by item name.
+    semantics: dict[str, Semantics]
+    # The discrete announcements made so far, in the order they were made.
+    announcements: tuple[str, ...]
+    # WCAG contrast ratios for the pairs a player has to read, by pair name.
+    contrast: dict[str, float]
 
     def square(self, name: str) -> SquareOnScreen:
         for square in self.squares:
@@ -500,6 +522,22 @@ class Workspace:
             piece_set_id=raw["pieceSetId"],
             active_record_id=raw.get("activeRecordId", ""),
             active_focus=raw["activeFocus"],
+            layout_mode=raw["layoutMode"],
+            announcements=tuple(raw["announcements"]),
+            contrast={name: float(ratio) for name, ratio in raw["contrast"].items()},
+            semantics={
+                name: Semantics(
+                    role=item["role"],
+                    name=item["name"],
+                    description=item["description"],
+                    enabled=item["enabled"],
+                    visible=item["visible"],
+                    focusable=item["focusable"],
+                    focused=item["focused"],
+                    checked=item.get("checked"),
+                )
+                for name, item in raw["semantics"].items()
+            },
             labels=dict(raw["labels"]),
             squares=tuple(
                 SquareOnScreen(

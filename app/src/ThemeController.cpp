@@ -109,7 +109,184 @@ void selectBoardPair(const OmarchyAdapter::Palette &palette, QColor &light, QCol
     dark = bestDark;
 }
 
+// The colour a translucent mark actually paints over a square.
+QColor composite(const QColor &mark, double opacity, const QColor &base)
+{
+    auto mix = [&](int markChannel, int baseChannel) {
+        return static_cast<int>(std::round(markChannel * opacity + baseChannel * (1.0 - opacity)));
+    };
+    return QColor(mix(mark.red(), base.red()), mix(mark.green(), base.green()),
+                  mix(mark.blue(), base.blue()));
+}
+
+// Move `color` away from `against` until they clear `minimum`, keeping hue and
+// saturation so the palette's character survives the correction.
+QColor legibleAgainst(const QColor &color, const QColor &against, double minimum)
+{
+    if (!color.isValid() || !against.isValid() || contrastRatio(color, against) >= minimum)
+        return color;
+
+    // Darken against a light background, lighten against a dark one.
+    const bool darken = relativeLuminance(against) > 0.18;
+    float hue = 0;
+    float saturation = 0;
+    float lightness = 0;
+    color.getHslF(&hue, &saturation, &lightness);
+
+    QColor best = color;
+    for (int step = 0; step <= 100; ++step) {
+        const float candidateLightness =
+            darken ? std::max(0.0f, lightness - step / 100.0f)
+                   : std::min(1.0f, lightness + step / 100.0f);
+        const QColor candidate = QColor::fromHslF(hue < 0 ? 0 : hue, saturation,
+                                                  candidateLightness);
+        best = candidate;
+        if (contrastRatio(candidate, against) >= minimum)
+            break;
+    }
+    return best;
+}
+
+// A translucent board mark has to change the square it lands on, on both
+// square colours. Whichever direction achieves that first wins.
+QColor visibleMark(const QColor &mark, double opacity, const QColor &light, const QColor &dark,
+                   double minimum)
+{
+    auto weakest = [&](const QColor &candidate) {
+        return std::min(contrastRatio(composite(candidate, opacity, light), light),
+                        contrastRatio(composite(candidate, opacity, dark), dark));
+    };
+    if (weakest(mark) >= minimum)
+        return mark;
+
+    float hue = 0;
+    float saturation = 0;
+    float lightness = 0;
+    mark.getHslF(&hue, &saturation, &lightness);
+    const float safeHue = hue < 0 ? 0 : hue;
+
+    QColor best = mark;
+    double bestRatio = weakest(mark);
+    for (int step = 1; step <= 100; ++step) {
+        for (const float candidateLightness :
+             {std::max(0.0f, lightness - step / 100.0f), std::min(1.0f, lightness + step / 100.0f)}) {
+            const QColor candidate = QColor::fromHslF(safeHue, saturation, candidateLightness);
+            const double ratio = weakest(candidate);
+            if (ratio > bestRatio) {
+                bestRatio = ratio;
+                best = candidate;
+            }
+            if (bestRatio >= minimum)
+                return best;
+        }
+    }
+    return best;
+}
+
+// A panel is a surface with two jobs: it carries body text, and it reads as a
+// distinct surface against the window behind it. Neither correction is allowed
+// to undo the other.
+QColor surfaceFor(const QColor &panel, const QColor &text, const QColor &background,
+                  double textMinimum, double surfaceMinimum)
+{
+    auto score = [&](const QColor &candidate) {
+        return std::min(contrastRatio(candidate, text) / textMinimum,
+                        contrastRatio(candidate, background) / surfaceMinimum);
+    };
+    if (score(panel) >= 1.0)
+        return panel;
+
+    float hue = 0;
+    float saturation = 0;
+    float lightness = 0;
+    panel.getHslF(&hue, &saturation, &lightness);
+    const float safeHue = hue < 0 ? 0 : hue;
+
+    QColor best = panel;
+    double bestScore = score(panel);
+    for (int step = 0; step <= 100; ++step) {
+        for (const float candidateLightness :
+             {std::max(0.0f, lightness - step / 100.0f), std::min(1.0f, lightness + step / 100.0f)}) {
+            const QColor candidate = QColor::fromHslF(safeHue, saturation, candidateLightness);
+            const double candidateScore = score(candidate);
+            if (candidateScore > bestScore) {
+                bestScore = candidateScore;
+                best = candidate;
+            }
+            if (bestScore >= 1.0)
+                return best;
+        }
+    }
+    return best;
+}
+
+// The opacities Square.qml paints its marks with, so the contrast the report
+// states is the contrast a player sees.
+constexpr double lastMoveOpacity = 0.42;
+constexpr double selectedOpacity = 0.45;
+constexpr double moveTargetOpacity = 0.32;
+
+// The bar v0.1 claims: body text, secondary text and status colour, board
+// squares, and a mark that is visible on either square.
+constexpr double textMinimum = 4.5;
+constexpr double secondaryMinimum = 3.0;
+constexpr double squareMinimum = 2.0;
+constexpr double markMinimum = 1.2;
+constexpr double surfaceMinimum = 1.1;
+
 } // namespace
+
+void ThemeController::enforceContrast(Roles &roles)
+{
+    roles.foreground = legibleAgainst(roles.foreground, roles.background, textMinimum);
+    // Panels carry the same body text, so the panel moves rather than the text:
+    // a palette's foreground stays the colour the desktop asked for.
+    roles.panel = surfaceFor(roles.panel, roles.foreground, roles.background, textMinimum,
+                             surfaceMinimum);
+    roles.selection = legibleAgainst(roles.selection, roles.foreground, textMinimum);
+    roles.muted = legibleAgainst(roles.muted, roles.panel, secondaryMinimum);
+    roles.accent = legibleAgainst(roles.accent, roles.panel, secondaryMinimum);
+    roles.accent = legibleAgainst(roles.accent, roles.background, secondaryMinimum);
+    roles.danger = legibleAgainst(roles.danger, roles.panel, secondaryMinimum);
+    roles.warning = legibleAgainst(roles.warning, roles.panel, secondaryMinimum);
+    roles.success = legibleAgainst(roles.success, roles.panel, secondaryMinimum);
+
+    roles.darkSquare = legibleAgainst(roles.darkSquare, roles.lightSquare, squareMinimum);
+    roles.lastMove = visibleMark(roles.lastMove, lastMoveOpacity, roles.lightSquare,
+                                 roles.darkSquare, markMinimum);
+    roles.selectedSquare = visibleMark(roles.selectedSquare, selectedOpacity, roles.lightSquare,
+                                       roles.darkSquare, markMinimum);
+    roles.moveTarget = visibleMark(roles.moveTarget, moveTargetOpacity, roles.lightSquare,
+                                   roles.darkSquare, markMinimum);
+}
+
+QVariantMap ThemeController::contrastReport() const
+{
+    auto markRatio = [](const QColor &mark, double opacity, const QColor &base) {
+        return contrastRatio(composite(mark, opacity, base), base);
+    };
+    auto weakestMark = [&](const QColor &mark, double opacity) {
+        return std::min(markRatio(mark, opacity, m_lightSquare),
+                        markRatio(mark, opacity, m_darkSquare));
+    };
+
+    return QVariantMap{
+        {QStringLiteral("board_squares"), contrastRatio(m_lightSquare, m_darkSquare)},
+        {QStringLiteral("chrome_text"), contrastRatio(m_foreground, m_background)},
+        {QStringLiteral("panel_text"), contrastRatio(m_foreground, m_panel)},
+        {QStringLiteral("selection_text"), contrastRatio(m_foreground, m_selection)},
+        {QStringLiteral("muted_text"), contrastRatio(m_muted, m_panel)},
+        {QStringLiteral("panel_surface"), contrastRatio(m_panel, m_background)},
+        {QStringLiteral("focus_ring"), std::min(contrastRatio(m_accent, m_background),
+                                                contrastRatio(m_accent, m_panel))},
+        {QStringLiteral("status_danger"), contrastRatio(m_danger, m_panel)},
+        {QStringLiteral("status_warning"), contrastRatio(m_warning, m_panel)},
+        {QStringLiteral("status_success"), contrastRatio(m_success, m_panel)},
+        {QStringLiteral("last_move_mark"), weakestMark(m_lastMove, lastMoveOpacity)},
+        {QStringLiteral("selected_mark"), weakestMark(m_selectedSquare, selectedOpacity)},
+        {QStringLiteral("move_target_mark"), weakestMark(m_moveTarget, moveTargetOpacity)},
+    };
+}
 
 ThemeController::ThemeController(QObject *parent)
     : QObject(parent)
@@ -248,6 +425,7 @@ void ThemeController::applyRoles(const Roles &roles, const QString &source)
     Roles painted = roles;
     if (boardThemePinned())
         painted = pinnedBoardTheme(m_boardThemeId, roles);
+    enforceContrast(painted);
 
     m_background = painted.background;
     m_foreground = painted.foreground;

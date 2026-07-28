@@ -7,6 +7,7 @@
 #include <QQmlEngine>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 
 // Omachess-owned visual roles derived from the Quattro Palette (or the
 // Built-in Palette), plus Board Theme pinning and Piece Set selection.
@@ -36,6 +37,11 @@ class ThemeController : public QObject
     Q_PROPERTY(QColor lastMove READ lastMove NOTIFY themeChanged)
     Q_PROPERTY(QColor selectedSquare READ selectedSquare NOTIFY themeChanged)
     Q_PROPERTY(QColor moveTarget READ moveTarget NOTIFY themeChanged)
+
+    // The contrast the workspace is actually painting, as WCAG ratios by the
+    // pair a player has to read: board squares, board marks, chrome text,
+    // focus, selection, and status colours. Asserted across palettes.
+    Q_PROPERTY(QVariantMap contrastReport READ contrastReport NOTIFY themeChanged)
 
     // Where the active colours came from: "quattro", "last_valid", or "builtin".
     Q_PROPERTY(QString paletteSource READ paletteSource NOTIFY themeChanged)
@@ -75,6 +81,8 @@ public:
     QColor lastMove() const { return m_lastMove; }
     QColor selectedSquare() const { return m_selectedSquare; }
     QColor moveTarget() const { return m_moveTarget; }
+
+    QVariantMap contrastReport() const;
 
     QString paletteSource() const { return m_paletteSource; }
     QString themeName() const { return m_themeName; }
@@ -121,6 +129,10 @@ private:
     static Roles builtInRoles();
     static Roles rolesFromPalette(const OmarchyAdapter::Palette &palette);
     static Roles pinnedBoardTheme(const QString &id, const Roles &chrome);
+
+    // Raise painted roles to the legibility bar v0.1 claims. A palette decides
+    // the look; this decides that the look stays readable.
+    static void enforceContrast(Roles &roles);
 
     void applyRoles(const Roles &roles, const QString &source);
     void refreshBoardFromPin();
