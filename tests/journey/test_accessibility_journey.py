@@ -291,6 +291,31 @@ class ContrastJourney(unittest.TestCase):
                         screen = workspace.screen_when(lambda s, t=theme: s.board_theme_id == t)
                         self.assert_contrast_bar(screen, f"{label} · {theme}")
 
+    def test_an_illegible_palette_is_raised_to_the_bar_and_still_followed(self) -> None:
+        # A desktop palette whose own foreground, panel, and squares are far
+        # below the bar. The workspace still follows it — the palette is the
+        # source, and the source stays visible in the board's hue — but it does
+        # not paint an unreadable workspace.
+        illegible = dict(VALID_PALETTE_A)
+        illegible.update(
+            {
+                "background": "#20242c",
+                "foreground": "#252a33",
+                "lighter_background": "#22262e",
+                "muted": "#232830",
+                "selection": "#212630",
+                "accent": "#232833",
+                "red": "#242830",
+                "yellow": "#252932",
+                "green": "#212731",
+            }
+        )
+        with Workspace(executable_under_test(), palette=illegible, theme_name="illegible") as ws:
+            screen = ws.screen_when(cockpit_chrome_is_up)
+            self.assertEqual(screen.palette_source, "quattro")
+            self.assertEqual(screen.theme_name, "illegible")
+            self.assert_contrast_bar(screen, "illegible palette")
+
     def test_the_builtin_palette_clears_the_bar(self) -> None:
         with Workspace(executable_under_test(), install_palette=False) as workspace:
             screen = workspace.screen_when(cockpit_chrome_is_up)
@@ -347,6 +372,34 @@ class ViewportJourney(unittest.TestCase):
             screen = workspace.screen_when(lambda s: "e4" not in s.pieces())
             workspace.press_key("alt+right")
             self.assertTrue(workspace.screen().active_focus.startswith("pane:board"))
+
+    def test_a_short_window_keeps_both_rails(self) -> None:
+        # Rails cost width, not height, so a short-but-wide window keeps them.
+        with Workspace(executable_under_test()) as workspace:
+            workspace.screen_when(cockpit_chrome_is_up)
+            workspace.resize(1280, 560)
+            screen = workspace.screen_when(lambda s: (s.width, s.height) == (1280, 560))
+            self.assertEqual(screen.layout_mode, "full")
+            self.assertTrue(screen.semantics["libraryRail"].visible)
+            self.assertTrue(screen.semantics["rightRail"].visible)
+            self.board_fits(screen)
+
+    def test_a_collapsing_rail_hands_the_keyboard_to_the_board(self) -> None:
+        with Workspace(executable_under_test()) as workspace:
+            workspace.screen_when(cockpit_chrome_is_up)
+            workspace.resize(1280, 800)
+            workspace.screen_when(lambda s: s.layout_mode == "full")
+
+            workspace.press_key("alt+right")
+            self.assertTrue(
+                workspace.screen().active_focus.startswith(("pane:library", "library:"))
+            )
+
+            # The rail the keyboard was in collapses. The keyboard lands on the
+            # board rather than on nothing.
+            workspace.resize(640, 480)
+            screen = workspace.screen_when(lambda s: s.layout_mode == "minimal")
+            self.assertTrue(screen.active_focus.startswith("pane:board"))
 
     def test_the_current_surface_keeps_its_own_primary_action_at_the_floor(self) -> None:
         with Workspace(executable_under_test()) as workspace:

@@ -172,9 +172,6 @@ TestChannel::TestChannel(QQuickWindow *window, QObject *parent)
     : QObject(parent)
     , m_window(window)
 {
-    // An assistive technology switches accessibility on when it attaches. A
-    // journey asserts what such a technology would find, so it attaches too.
-    QAccessible::setActive(true);
     connect(&m_server, &QLocalServer::newConnection, this, &TestChannel::acceptConnection);
 }
 

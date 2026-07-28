@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 
 namespace {
 
@@ -119,95 +120,27 @@ QColor composite(const QColor &mark, double opacity, const QColor &base)
                   mix(mark.blue(), base.blue()));
 }
 
-// Move `color` away from `against` until they clear `minimum`, keeping hue and
-// saturation so the palette's character survives the correction.
-QColor legibleAgainst(const QColor &color, const QColor &against, double minimum)
+// Search a colour's own lightness for the first shade that scores well enough,
+// keeping hue and saturation so the palette's character survives the
+// correction. `score` reads 1.0 when a shade is good enough, so every
+// correction below is one scoring rule plus this one search.
+QColor correctLightness(const QColor &color, const std::function<double(const QColor &)> &score)
 {
-    if (!color.isValid() || !against.isValid() || contrastRatio(color, against) >= minimum)
+    if (!color.isValid() || score(color) >= 1.0)
         return color;
 
-    // Darken against a light background, lighten against a dark one.
-    const bool darken = relativeLuminance(against) > 0.18;
     float hue = 0;
     float saturation = 0;
     float lightness = 0;
     color.getHslF(&hue, &saturation, &lightness);
+    const float safeHue = hue < 0 ? 0 : hue;
 
     QColor best = color;
-    for (int step = 0; step <= 100; ++step) {
-        const float candidateLightness =
-            darken ? std::max(0.0f, lightness - step / 100.0f)
-                   : std::min(1.0f, lightness + step / 100.0f);
-        const QColor candidate = QColor::fromHslF(hue < 0 ? 0 : hue, saturation,
-                                                  candidateLightness);
-        best = candidate;
-        if (contrastRatio(candidate, against) >= minimum)
-            break;
-    }
-    return best;
-}
-
-// A translucent board mark has to change the square it lands on, on both
-// square colours. Whichever direction achieves that first wins.
-QColor visibleMark(const QColor &mark, double opacity, const QColor &light, const QColor &dark,
-                   double minimum)
-{
-    auto weakest = [&](const QColor &candidate) {
-        return std::min(contrastRatio(composite(candidate, opacity, light), light),
-                        contrastRatio(composite(candidate, opacity, dark), dark));
-    };
-    if (weakest(mark) >= minimum)
-        return mark;
-
-    float hue = 0;
-    float saturation = 0;
-    float lightness = 0;
-    mark.getHslF(&hue, &saturation, &lightness);
-    const float safeHue = hue < 0 ? 0 : hue;
-
-    QColor best = mark;
-    double bestRatio = weakest(mark);
+    double bestScore = score(color);
     for (int step = 1; step <= 100; ++step) {
-        for (const float candidateLightness :
-             {std::max(0.0f, lightness - step / 100.0f), std::min(1.0f, lightness + step / 100.0f)}) {
-            const QColor candidate = QColor::fromHslF(safeHue, saturation, candidateLightness);
-            const double ratio = weakest(candidate);
-            if (ratio > bestRatio) {
-                bestRatio = ratio;
-                best = candidate;
-            }
-            if (bestRatio >= minimum)
-                return best;
-        }
-    }
-    return best;
-}
-
-// A panel is a surface with two jobs: it carries body text, and it reads as a
-// distinct surface against the window behind it. Neither correction is allowed
-// to undo the other.
-QColor surfaceFor(const QColor &panel, const QColor &text, const QColor &background,
-                  double textMinimum, double surfaceMinimum)
-{
-    auto score = [&](const QColor &candidate) {
-        return std::min(contrastRatio(candidate, text) / textMinimum,
-                        contrastRatio(candidate, background) / surfaceMinimum);
-    };
-    if (score(panel) >= 1.0)
-        return panel;
-
-    float hue = 0;
-    float saturation = 0;
-    float lightness = 0;
-    panel.getHslF(&hue, &saturation, &lightness);
-    const float safeHue = hue < 0 ? 0 : hue;
-
-    QColor best = panel;
-    double bestScore = score(panel);
-    for (int step = 0; step <= 100; ++step) {
-        for (const float candidateLightness :
-             {std::max(0.0f, lightness - step / 100.0f), std::min(1.0f, lightness + step / 100.0f)}) {
-            const QColor candidate = QColor::fromHslF(safeHue, saturation, candidateLightness);
+        for (const float shade : {std::max(0.0f, lightness - step / 100.0f),
+                                  std::min(1.0f, lightness + step / 100.0f)}) {
+            const QColor candidate = QColor::fromHslF(safeHue, saturation, shade);
             const double candidateScore = score(candidate);
             if (candidateScore > bestScore) {
                 bestScore = candidateScore;
@@ -218,6 +151,40 @@ QColor surfaceFor(const QColor &panel, const QColor &text, const QColor &backgro
         }
     }
     return best;
+}
+
+// Text, or any colour that has to be read against one surface.
+QColor legibleAgainst(const QColor &color, const QColor &against, double minimum)
+{
+    if (!against.isValid())
+        return color;
+    return correctLightness(color, [&](const QColor &candidate) {
+        return contrastRatio(candidate, against) / minimum;
+    });
+}
+
+// A translucent board mark has to change the square it lands on, on both
+// square colours.
+QColor visibleMark(const QColor &mark, double opacity, const QColor &light, const QColor &dark,
+                   double minimum)
+{
+    return correctLightness(mark, [&](const QColor &candidate) {
+        return std::min(contrastRatio(composite(candidate, opacity, light), light),
+                        contrastRatio(composite(candidate, opacity, dark), dark))
+            / minimum;
+    });
+}
+
+// A panel is a surface with two jobs: it carries body text, and it reads as a
+// distinct surface against the window behind it. Neither correction is allowed
+// to undo the other, so one search answers both.
+QColor surfaceFor(const QColor &panel, const QColor &text, const QColor &background,
+                  double textMinimum, double surfaceMinimum)
+{
+    return correctLightness(panel, [&](const QColor &candidate) {
+        return std::min(contrastRatio(candidate, text) / textMinimum,
+                        contrastRatio(candidate, background) / surfaceMinimum);
+    });
 }
 
 // The opacities Square.qml paints its marks with, so the contrast the report

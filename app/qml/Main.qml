@@ -111,12 +111,30 @@ ApplicationWindow {
     // The board and the current surface's primary action are priority one and
     // never collapse. The Personal Library rail goes first, the right rail
     // second, so a 640×480 floor still plays and still acts.
+    //
+    // Width decides, because it is width the rails consume: a short window
+    // keeps both rails, a narrow one gives them up in priority order.
     readonly property string layoutMode:
-        (width >= 1280 && height >= 800) ? "full"
-      : (width >= 1024 && height >= 640) ? "compact"
+        width >= 1280 ? "full"
+      : width >= 1024 ? "compact"
       : "minimal"
     readonly property bool libraryRailVisible: layoutMode === "full"
     readonly property bool rightRailVisible: layoutMode !== "minimal"
+
+    // A rail that collapses under the keyboard would strand it. Focus moves to
+    // the board, which is the one pane that never collapses.
+    // The pane the keyboard was last sent to, so a collapse knows whether it
+    // is pulling the floor out from under the player.
+    property string focusedPane: "board"
+
+    onLayoutModeChanged: {
+        const collapsed = (focusedPane === "library" && layoutMode !== "full")
+                          || (focusedPane === "right" && layoutMode === "minimal")
+        if (collapsed) {
+            focusedPane = "board"
+            boardArea.forceActiveFocus(Qt.OtherFocusReason)
+        }
+    }
 
     // What the surface on screen is for. It stays reachable at every viewport.
     readonly property string primaryActionLabel:
@@ -591,6 +609,7 @@ ApplicationWindow {
         for (let step = 1; step <= 3; ++step) {
             const candidate = (current + delta * step + 6) % 3
             if (reachable[candidate]) {
+                focusedPane = ["library", "board", "right"][candidate]
                 panes[candidate].forceActiveFocus(Qt.ShortcutFocusReason)
                 return
             }
@@ -679,9 +698,9 @@ ApplicationWindow {
               : ""
         onReviewChanged: if (ready && review.length > 0) workspace.announce(review)
 
-        readonly property string record: WorkspaceSession.gameTitle
-        onRecordChanged: if (ready && record.length > 0)
-                             workspace.announce(qsTr("Showing %1").arg(record))
+        readonly property string recordTitle: WorkspaceSession.gameTitle
+        onRecordTitleChanged: if (ready && recordTitle.length > 0)
+                                  workspace.announce(qsTr("Showing %1").arg(recordTitle))
 
         readonly property bool unsaved: WorkspaceSession.dirty
         onUnsavedChanged: if (ready)
@@ -1098,6 +1117,8 @@ ApplicationWindow {
             ComboBox {
                 id: clockPicker
                 objectName: "clockPicker"
+                Accessible.role: Accessible.ComboBox
+                Accessible.name: qsTr("Clock")
                 model: [
                     { text: qsTr("No clock"), milliseconds: 0 },
                     { text: qsTr("1 second"), milliseconds: 1000 },
@@ -1119,6 +1140,8 @@ ApplicationWindow {
             ComboBox {
                 id: boardThemePicker
                 objectName: "boardThemePicker"
+                Accessible.role: Accessible.ComboBox
+                Accessible.name: qsTr("Board Theme")
                 model: Theme.boardThemeIds
                 displayText: qsTr("Board: %1").arg(currentText)
                 implicitWidth: 140
@@ -1151,6 +1174,8 @@ ApplicationWindow {
             ComboBox {
                 id: pieceSetPicker
                 objectName: "pieceSetPicker"
+                Accessible.role: Accessible.ComboBox
+                Accessible.name: qsTr("Piece Set")
                 model: Theme.pieceSetIds
                 displayText: qsTr("Pieces: %1").arg(currentText)
                 implicitWidth: 140
@@ -1667,6 +1692,9 @@ ApplicationWindow {
                         // restored and open tabs did not already restore it.
                         Frame {
                             objectName: "restoreCard"
+                            Accessible.role: Accessible.Grouping
+                            Accessible.name: qsTr("Restore offer")
+                            Accessible.description: WorkspaceSession.restoreLabel
                             visible: WorkspaceSession.restoreAvailable
                             Layout.fillWidth: true
 
@@ -1860,6 +1888,10 @@ ApplicationWindow {
                         }
 
                         Frame {
+                            objectName: "positionSetupPanel"
+                            Accessible.role: Accessible.Grouping
+                            Accessible.name: qsTr("Position Setup")
+                            Accessible.description: WorkspaceSession.positionCapabilities
                             visible: WorkspaceSession.positionSetup
                             Layout.fillWidth: true
 
@@ -2018,6 +2050,8 @@ ApplicationWindow {
                     ListView {
                         id: engines
                         objectName: "engineProfiles"
+                        Accessible.role: Accessible.List
+                        Accessible.name: qsTr("Engine Profiles")
                         Layout.fillWidth: true
                         Layout.preferredHeight: engineProfilesButton.checked
                                                 ? Math.min(contentHeight, 250) : 0
@@ -2277,6 +2311,10 @@ ApplicationWindow {
                     Button {
                         id: analysisToggle
                         objectName: "analysisToggle"
+                        Accessible.role: Accessible.Button
+                        Accessible.name: text
+                        Accessible.description: qsTr(
+                            "Live Position Analysis is announced on request with Ctrl+E.")
                         Layout.fillWidth: true
                         visible: WorkspaceSession.activity !== "variant_play"
                         text: checked ? qsTr("Hide live analysis") : qsTr("Show live analysis")
