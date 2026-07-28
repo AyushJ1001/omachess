@@ -51,6 +51,8 @@ class CommandPaletteJourney(unittest.TestCase):
             ("Latest position", "End"),
             ("Focus next pane", "Alt+Right"),
             ("Focus previous pane", "Alt+Left"),
+            ("Announce engine output", "Ctrl+E"),
+            ("Typed move entry", "Ctrl+M"),
             ("Follow desktop Board Theme", "Alt+T"),
             ("Use classic Board Theme", "Alt+Shift+T"),
             ("Use slate Board Theme", "Alt+S"),

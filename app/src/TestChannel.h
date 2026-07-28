@@ -15,7 +15,9 @@ class QQuickWindow;
 // the running application rather than its QML structure.
 //
 // The protocol is newline-delimited JSON in both directions:
-//   {"command":"snapshot"}                    -> window geometry, squares, labels
+//   {"command":"snapshot"}                    -> geometry, squares, labels,
+//                                                accessible semantics,
+//                                                announcements, contrast
 //   {"command":"key","key":"f"}               -> synthesised key press/release
 //   {"command":"click","target":"flipButton"} -> click the centre of an item
 //   {"command":"resize","width":W,"height":H} -> resize the window

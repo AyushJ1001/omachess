@@ -39,6 +39,16 @@ Rectangle {
     height: size
     color: light ? Theme.lightSquare : Theme.darkSquare
 
+    // What an assistive technology reads off this square: where it is, what
+    // stands on it, and what the player may currently do with it.
+    Accessible.role: Accessible.Cell
+    Accessible.name: piece === "" ? squareName
+                                  : squareName + ", " + piece.replace("_", " ")
+    Accessible.description: selected ? qsTr("picked up")
+                          : target ? qsTr("can move here")
+                          : lastMove ? qsTr("part of the last move")
+                          : ""
+
     // The move just played, so a player can see what changed.
     Rectangle {
         anchors.fill: parent

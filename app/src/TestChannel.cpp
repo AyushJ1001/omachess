@@ -2,6 +2,7 @@
 
 #include "ThemeController.h"
 
+#include <QAccessible>
 #include <QCoreApplication>
 #include <QFile>
 #include <QGuiApplication>
@@ -12,6 +13,7 @@
 #include <QLocalSocket>
 #include <QLoggingCategory>
 #include <QMouseEvent>
+#include <QQmlProperty>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QTest>
@@ -73,6 +75,82 @@ QQuickItem *findItem(QQuickWindow *window, const QString &objectName)
 QString colorHex(const QColor &color)
 {
     return color.name(QColor::HexRgb);
+}
+
+// The AT-SPI role names an assistive technology would read, for the roles the
+// workspace actually uses. Anything else is reported by number, so a missing
+// name is visible rather than silently "none".
+QString roleName(QAccessible::Role role)
+{
+    switch (role) {
+    case QAccessible::NoRole: return QStringLiteral("none");
+    case QAccessible::Button: return QStringLiteral("button");
+    case QAccessible::CheckBox: return QStringLiteral("checkbox");
+    case QAccessible::ComboBox: return QStringLiteral("combobox");
+    case QAccessible::Dialog: return QStringLiteral("dialog");
+    case QAccessible::EditableText: return QStringLiteral("editabletext");
+    case QAccessible::Grouping: return QStringLiteral("grouping");
+    case QAccessible::Heading: return QStringLiteral("heading");
+    case QAccessible::List: return QStringLiteral("list");
+    case QAccessible::ListItem: return QStringLiteral("listitem");
+    case QAccessible::PageTab: return QStringLiteral("pagetab");
+    case QAccessible::PageTabList: return QStringLiteral("pagetablist");
+    case QAccessible::Pane: return QStringLiteral("pane");
+    case QAccessible::SpinBox: return QStringLiteral("spinbox");
+    case QAccessible::StaticText: return QStringLiteral("statictext");
+    case QAccessible::AlertMessage: return QStringLiteral("alert");
+    case QAccessible::Graphic: return QStringLiteral("graphic");
+    case QAccessible::Table: return QStringLiteral("table");
+    case QAccessible::Cell: return QStringLiteral("cell");
+    default: return QStringLiteral("role-%1").arg(static_cast<int>(role));
+    }
+}
+
+// What an assistive technology can learn about one item.
+//
+// The accessible interface is the real seam, so it is asked first; the
+// declared attached properties answer for items whose interface has not been
+// realised yet. Either way the answer is the public semantics, never the item.
+QJsonObject semanticsOf(QQuickItem *item)
+{
+    QString name;
+    QString description;
+    QString role;
+
+    if (QAccessibleInterface *interface = QAccessible::queryAccessibleInterface(item)) {
+        if (interface->role() != QAccessible::NoRole)
+            role = roleName(interface->role());
+        name = interface->text(QAccessible::Name);
+        description = interface->text(QAccessible::Description);
+    }
+    if (role.isEmpty()) {
+        const QVariant declared = QQmlProperty(item, QStringLiteral("Accessible.role"),
+                                               qmlContext(item)).read();
+        if (declared.isValid())
+            role = roleName(static_cast<QAccessible::Role>(declared.toInt()));
+    }
+    if (name.isEmpty()) {
+        name = QQmlProperty(item, QStringLiteral("Accessible.name"), qmlContext(item))
+                   .read().toString();
+    }
+    if (description.isEmpty()) {
+        description = QQmlProperty(item, QStringLiteral("Accessible.description"), qmlContext(item))
+                          .read().toString();
+    }
+
+    QJsonObject semantics{
+        {"role", role.isEmpty() ? QStringLiteral("none") : role},
+        {"name", name},
+        {"description", description},
+        {"enabled", item->isEnabled()},
+        {"visible", item->isVisible()},
+        {"focusable", item->activeFocusOnTab()},
+        {"focused", item->hasActiveFocus()},
+    };
+    const QVariant checked = item->property("checked");
+    if (checked.isValid() && checked.canConvert<bool>())
+        semantics.insert("checked", checked.toBool());
+    return semantics;
 }
 
 } // namespace
@@ -246,6 +324,16 @@ QJsonObject TestChannel::snapshot() const
             labels.insert(name, text.toString());
     }
 
+    // What an assistive technology finds on every named chrome item: its role,
+    // its name, and the states that decide whether it can be reached.
+    QJsonObject semantics;
+    for (QQuickItem *item : items) {
+        const QString name = item->objectName();
+        if (name.isEmpty())
+            continue;
+        semantics.insert(name, semanticsOf(item));
+    }
+
     // Theme roles the workspace is currently painting. Journeys assert these
     // against the Quattro Palette fixture they installed, not against adapter
     // internals.
@@ -269,6 +357,19 @@ QJsonObject TestChannel::snapshot() const
     const QString pieceSetId =
         activeTheme ? activeTheme->pieceSetId() : QStringLiteral("cburnett");
 
+    // The discrete announcements the workspace has made, in order, exactly as
+    // an assistive technology would have heard them.
+    QJsonArray announcements;
+    for (const QVariant &announcement : m_window->property("announcements").toList())
+        announcements.append(announcement.toString());
+
+    QJsonObject contrast;
+    if (activeTheme) {
+        const QVariantMap report = activeTheme->contrastReport();
+        for (auto entry = report.constBegin(); entry != report.constEnd(); ++entry)
+            contrast.insert(entry.key(), entry.value().toDouble());
+    }
+
     return QJsonObject{
         {"appId", QGuiApplication::desktopFileName()},
         {"title", m_window->title()},
@@ -287,8 +388,12 @@ QJsonObject TestChannel::snapshot() const
         {"pieceSetId", pieceSetId},
         {"activeRecordId", m_window->property("activeRecordId").toString()},
         {"activeFocus", focused ? focused->objectName() : QString()},
+        {"layoutMode", m_window->property("layoutMode").toString()},
         {"squares", squares},
         {"labels", labels},
+        {"semantics", semantics},
+        {"announcements", announcements},
+        {"contrast", contrast},
     };
 }
 

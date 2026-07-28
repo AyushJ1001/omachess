@@ -28,6 +28,12 @@ int main(int argc, char *argv[])
         qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
     }
 #endif
+    // Wayland compositors hand out fractional scale factors such as 1.25 or
+    // 1.5. Passing them through unrounded keeps the workspace at the size the
+    // desktop asked for, so layout thresholds stay honest at every viewport.
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+
     QGuiApplication app(argc, argv);
 
     QString requestedRecordId;
