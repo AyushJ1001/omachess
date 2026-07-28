@@ -21,7 +21,7 @@ pkgbase = omachess
 	source = omachess-0.1.1.tar.gz::https://github.com/AyushJ1001/omachess/releases/download/v0.1.1/omachess-0.1.1.tar.gz
 	source = omachess-0.1.1.tar.gz.sig::https://github.com/AyushJ1001/omachess/releases/download/v0.1.1/omachess-0.1.1.tar.gz.sig
 	validpgpkeys = 9F20651D9E6414773BBDEFD327F405346508E367
-	sha256sums = 5b020c230b9ac6672fc9bbe273ce3cf3348416f36ce72ddec64f49e7acd4466e
+	sha256sums = d5b2f31c56ea25a55af1567fa81ebba4b96a660147800046fbeeb027834df354
 	sha256sums = SKIP
 
 pkgname = omachess
