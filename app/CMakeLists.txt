@@ -73,6 +73,20 @@ qt_add_executable(omachess-background-worker
 )
 target_link_libraries(omachess-background-worker PRIVATE Qt6::Core Qt6::DBus omachess::core)
 install(TARGETS omachess-background-worker RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# The shell plugin talks to the worker through this small, version-matched
+# command boundary. It contains no job execution or durable state of its own.
+qt_add_executable(omachess-background-control
+  src/BackgroundControls.cpp
+)
+target_link_libraries(omachess-background-control PRIVATE Qt6::Core Qt6::DBus)
+install(TARGETS omachess-background-control RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/packaging/omarchy-plugin/"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/omachess/omarchy-plugin"
+  FILES_MATCHING PATTERN "manifest.json" PATTERN "Widget.qml" PATTERN "README.md")
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/omachess-background-controls-enable"
+  DESTINATION "${CMAKE_INSTALL_BINDIR}")
 configure_file(
   "${CMAKE_SOURCE_DIR}/packaging/com.omachess.Omachess.BackgroundWorker.service.in"
   "${CMAKE_CURRENT_BINARY_DIR}/com.omachess.Omachess.BackgroundWorker.service"

@@ -75,6 +75,7 @@ class Screen:
     theme_name: str
     board_theme_id: str
     piece_set_id: str
+    active_record_id: str
     squares: tuple[SquareOnScreen, ...]
     # The text of every named item that shows any, by item name.
     labels: dict[str, str]
@@ -202,6 +203,7 @@ class Workspace:
         import_pgn: Path | None = None,
         export_pgn: Path | None = None,
         environment: dict[str, str] | None = None,
+        launch_arguments: tuple[str, ...] = (),
     ) -> None:
         self._executable = executable
         self._platform = platform or os.environ.get("OMACHESS_TEST_QPA", "offscreen")
@@ -224,6 +226,7 @@ class Workspace:
         self._import_pgn = import_pgn
         self._export_pgn = export_pgn
         self._extra_environment = environment or {}
+        self._launch_arguments = launch_arguments
         self._process: subprocess.Popen[bytes] | None = None
         self._connection: socket.socket | None = None
         self._buffer = b""
@@ -232,6 +235,11 @@ class Workspace:
     def data_home(self) -> Path:
         """The isolated XDG data home this run uses for the Live Store."""
         return self._root / "xdg_data_home"
+
+    @property
+    def workspace_root(self) -> Path:
+        """The complete isolated XDG root, reusable for a relaunch journey."""
+        return self._root
 
     def __enter__(self) -> "Workspace":
         self.start()
@@ -279,7 +287,7 @@ class Workspace:
             pass
 
         self._process = subprocess.Popen(
-            [str(self._executable)],
+            [str(self._executable), *self._launch_arguments],
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -490,6 +498,7 @@ class Workspace:
             theme_name=raw["themeName"],
             board_theme_id=raw["boardThemeId"],
             piece_set_id=raw["pieceSetId"],
+            active_record_id=raw.get("activeRecordId", ""),
             active_focus=raw["activeFocus"],
             labels=dict(raw["labels"]),
             squares=tuple(
