@@ -1,7 +1,7 @@
 pkgbase = omachess
 	pkgdesc = Local-first chess workspace for Omarchy: play, study, and create forms of chess
 	pkgver = 0.1.1
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/AyushJ1001/omachess
 	arch = x86_64
 	arch = aarch64
@@ -11,7 +11,7 @@ pkgbase = omachess
 	makedepends = rust
 	makedepends = cargo
 	makedepends = python>=3.11
-	depends = omarchy>=4.0.0
+	depends = omarchy
 	depends = qt6-base
 	depends = qt6-declarative
 	depends = qt6-svg
