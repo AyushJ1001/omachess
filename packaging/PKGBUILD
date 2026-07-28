@@ -54,7 +54,7 @@ source=(
 )
 # The tarball's digest is pinned; a detached signature has no digest of its own,
 # and it is what makepkg verifies against validpgpkeys anyway.
-sha256sums=('5b020c230b9ac6672fc9bbe273ce3cf3348416f36ce72ddec64f49e7acd4466e'
+sha256sums=('d5b2f31c56ea25a55af1567fa81ebba4b96a660147800046fbeeb027834df354'
             'SKIP')
 
 build() {
